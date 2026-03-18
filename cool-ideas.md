@@ -1,0 +1,2 @@
+- [ ] fzf integration
+- [ ] completions for repositories in file scope
