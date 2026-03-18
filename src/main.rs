@@ -11,8 +11,8 @@ fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Diff { repo, .. } => get_diff(&repo.as_deref().unwrap_or("."))?, // do diff stufss
-        Commands::Tree { size, .. } => println!("tree! size: {:?}", size),         // do tree tings
+        Commands::Diff { repo, .. } => get_diff(repo.as_deref().unwrap_or("."))?, // do diff stufss
+        Commands::Tree { size, .. } => println!("tree! size: {:?}", size),        // do tree tings
     }
     Ok(())
 }
