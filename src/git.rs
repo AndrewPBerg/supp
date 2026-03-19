@@ -1,8 +1,65 @@
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::mpsc;
 
 use anyhow::{anyhow, Result};
-use git2::{Delta, DiffFormat, Repository};
+use git2::{Delta, DiffFormat, Repository, Status};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum FileStatus {
+    Modified,
+    Added,
+    Deleted,
+    Renamed,
+    Untracked,
+}
+
+/// Returns a map of repo-relative paths → FileStatus for every dirty file.
+/// Returns `Ok(None)` when `path` is not inside a git repository.
+pub fn get_status_map(path: &str) -> Result<Option<(HashMap<String, FileStatus>, String)>> {
+    let repo = match Repository::discover(path) {
+        Ok(r) => r,
+        Err(_) => return Ok(None),
+    };
+
+    let mut so = git2::StatusOptions::new();
+    so.include_untracked(true)
+        .recurse_untracked_dirs(true)
+        .include_ignored(false);
+
+    let statuses = repo.statuses(Some(&mut so))?;
+    let mut map = HashMap::new();
+
+    for entry in statuses.iter() {
+        let Some(p) = entry.path() else { continue };
+        let s = entry.status();
+        let fs = if s.intersects(Status::INDEX_NEW) {
+            FileStatus::Added
+        } else if s.intersects(Status::INDEX_RENAMED) {
+            FileStatus::Renamed
+        } else if s.intersects(Status::INDEX_DELETED | Status::WT_DELETED) {
+            FileStatus::Deleted
+        } else if s.intersects(Status::INDEX_MODIFIED | Status::WT_MODIFIED) {
+            FileStatus::Modified
+        } else if s.intersects(Status::WT_NEW) {
+            FileStatus::Untracked
+        } else {
+            continue;
+        };
+        map.insert(p.to_string(), fs);
+    }
+
+    // Compute the repo-relative prefix for the requested path
+    let workdir = repo.workdir().ok_or_else(|| anyhow!("bare repository"))?;
+    let abs_path = std::fs::canonicalize(path).unwrap_or_else(|_| Path::new(path).to_path_buf());
+    let prefix = abs_path
+        .strip_prefix(std::fs::canonicalize(workdir).unwrap_or_else(|_| workdir.to_path_buf()))
+        .unwrap_or(Path::new(""))
+        .to_string_lossy()
+        .into_owned();
+
+    Ok(Some((map, prefix)))
+}
 
 const MAX_UNTRACKED_FILE_SIZE: u64 = 10 * 1024 * 1024; // 10 MB
 

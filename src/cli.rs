@@ -58,7 +58,13 @@ pub enum Commands {
 
     },
     Tree {
-        #[arg(long)]
-        size: Option<String>,
+        /// Directory to display (defaults to ".")
+        path: Option<String>,
+        /// Maximum depth to display
+        #[arg(short = 'd', long)]
+        depth: Option<usize>,
+        /// Disable git status indicators
+        #[arg(long = "no-git")]
+        no_git: bool,
     },
 }
