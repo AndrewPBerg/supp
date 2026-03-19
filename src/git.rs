@@ -90,6 +90,7 @@ pub struct DiffResult {
     pub text: String,
     pub has_conflicts: bool,
     pub is_branch_comparison: bool,
+    pub commit_count: Option<usize>,
     pub stale_check: Option<mpsc::Receiver<bool>>,
 }
 
@@ -288,6 +289,66 @@ pub fn get_diff(repo_path: &str, opts: DiffOptions) -> Result<DiffResult> {
     Ok(result)
 }
 
+fn diff_branch_against_remote(
+    repo: &Repository,
+    _local_branch: &str,
+    remote_branch: &str,
+    diff_opts: &mut git2::DiffOptions,
+    label: String,
+) -> Result<DiffResult> {
+    let refname = format!("refs/remotes/origin/{}", remote_branch);
+    let pre_oid = repo.find_reference(&refname).ok().and_then(|r| r.target());
+
+    let (tx, rx) = mpsc::channel();
+    let repo_path_owned = repo.path().to_path_buf();
+    let branch_for_fetch = remote_branch.to_string();
+    std::thread::spawn(move || {
+        let result = (|| -> Option<bool> {
+            let repo = Repository::open(&repo_path_owned).ok()?;
+            let mut fetch_opts = make_fetch_options(&repo).ok()?;
+            let mut remote = repo.find_remote("origin").ok()?;
+            remote.fetch(&[&branch_for_fetch], Some(&mut fetch_opts), None).ok()?;
+            let post_oid = repo.find_reference(&format!("refs/remotes/origin/{}", branch_for_fetch))
+                .ok()?.target();
+            Some(pre_oid != post_oid)
+        })();
+        let _ = tx.send(result.unwrap_or(false));
+    });
+
+    let base_ref = repo.find_reference(&refname)?;
+    let base_commit = base_ref.peel_to_commit()?;
+    let base_tree = base_commit.tree()?;
+
+    let head = repo.head()?;
+    let local_commit = head.peel_to_commit()?;
+    let local_tree = local_commit.tree()?;
+
+    let commit_count = (|| -> Option<usize> {
+        let mut revwalk = repo.revwalk().ok()?;
+        revwalk.push(local_commit.id()).ok()?;
+        revwalk.hide(base_commit.id()).ok()?;
+        Some(revwalk.count())
+    })();
+
+    let diff = repo.diff_tree_to_tree(Some(&base_tree), Some(&local_tree), Some(diff_opts))?;
+    let (files, text) = collect_diff_data(&diff);
+
+    let has_conflicts = repo
+        .merge_commits(&base_commit, &local_commit, None)
+        .map(|idx| idx.has_conflicts())
+        .unwrap_or(false);
+
+    Ok(DiffResult {
+        label,
+        files,
+        text,
+        has_conflicts,
+        is_branch_comparison: true,
+        commit_count,
+        stale_check: Some(rx),
+    })
+}
+
 fn get_diff_inner(
     repo: &Repository,
     _repo_path: &str,
@@ -302,6 +363,7 @@ fn get_diff_inner(
             text,
             has_conflicts: false,
             is_branch_comparison: false,
+            commit_count: None,
             stale_check: None,
         });
     }
@@ -323,6 +385,7 @@ fn get_diff_inner(
             text,
             has_conflicts: false,
             is_branch_comparison: false,
+            commit_count: None,
             stale_check: None,
         });
     }
@@ -336,6 +399,7 @@ fn get_diff_inner(
             text,
             has_conflicts: false,
             is_branch_comparison: false,
+            commit_count: None,
             stale_check: None,
         });
     }
@@ -399,64 +463,11 @@ fn get_diff_inner(
             text,
             has_conflicts: false,
             is_branch_comparison: false,
+            commit_count: None,
             stale_check: None,
         });
     }
 
-    if opts.self_branch {
-        let current_branch = {
-            let head = repo.head()?;
-            head.shorthand()
-                .ok_or_else(|| anyhow!("Detached HEAD — use -b <branch> to specify a target"))?
-                .to_string()
-        };
-
-        let refname = format!("refs/remotes/origin/{}", current_branch);
-        let pre_oid = repo.find_reference(&refname).ok().and_then(|r| r.target());
-
-        let (tx, rx) = mpsc::channel();
-        let repo_path_owned = repo.path().to_path_buf();
-        let branch_for_fetch = current_branch.clone();
-        std::thread::spawn(move || {
-            let result = (|| -> Option<bool> {
-                let repo = Repository::open(&repo_path_owned).ok()?;
-                let mut fetch_opts = make_fetch_options(&repo).ok()?;
-                let mut remote = repo.find_remote("origin").ok()?;
-                remote.fetch(&[&branch_for_fetch], Some(&mut fetch_opts), None).ok()?;
-                let post_oid = repo.find_reference(&format!("refs/remotes/origin/{}", branch_for_fetch))
-                    .ok()?.target();
-                Some(pre_oid != post_oid)
-            })();
-            let _ = tx.send(result.unwrap_or(false));
-        });
-
-        let base_ref = repo.find_reference(&refname)?;
-        let base_commit = base_ref.peel_to_commit()?;
-        let base_tree = base_commit.tree()?;
-
-        let head = repo.head()?;
-        let local_commit = head.peel_to_commit()?;
-        let local_tree = local_commit.tree()?;
-
-        let diff = repo.diff_tree_to_tree(Some(&base_tree), Some(&local_tree), Some(diff_opts))?;
-        let (files, text) = collect_diff_data(&diff);
-
-        let has_conflicts = repo
-            .merge_commits(&base_commit, &local_commit, None)
-            .map(|idx| idx.has_conflicts())
-            .unwrap_or(false);
-
-        return Ok(DiffResult {
-            label: format!("origin/{} ... {}", current_branch, current_branch),
-            files,
-            text,
-            has_conflicts,
-            is_branch_comparison: true,
-            stale_check: Some(rx),
-        });
-    }
-
-    // Remote diff (default): compare current branch against the default branch
     let current_branch = {
         let head = repo.head()?;
         head.shorthand()
@@ -464,6 +475,17 @@ fn get_diff_inner(
             .to_string()
     };
 
+    if opts.self_branch {
+        return diff_branch_against_remote(
+            repo,
+            &current_branch,
+            &current_branch,
+            diff_opts,
+            format!("origin/{} ... {}", current_branch, current_branch),
+        );
+    }
+
+    // Remote diff (default): compare current branch against the default branch
     let base_branch = match opts.branch {
         Some(b) => b,
         None => {
@@ -486,49 +508,13 @@ fn get_diff_inner(
         }
     };
 
-    let refname = format!("refs/remotes/origin/{}", base_branch);
-    let pre_oid = repo.find_reference(&refname).ok().and_then(|r| r.target());
-
-    let (tx, rx) = mpsc::channel();
-    let repo_path_owned = repo.path().to_path_buf();
-    let branch_for_fetch = base_branch.clone();
-    std::thread::spawn(move || {
-        let result = (|| -> Option<bool> {
-            let repo = Repository::open(&repo_path_owned).ok()?;
-            let mut fetch_opts = make_fetch_options(&repo).ok()?;
-            let mut remote = repo.find_remote("origin").ok()?;
-            remote.fetch(&[&branch_for_fetch], Some(&mut fetch_opts), None).ok()?;
-            let post_oid = repo.find_reference(&format!("refs/remotes/origin/{}", branch_for_fetch))
-                .ok()?.target();
-            Some(pre_oid != post_oid)
-        })();
-        let _ = tx.send(result.unwrap_or(false));
-    });
-
-    let base_ref = repo.find_reference(&refname)?;
-    let base_commit = base_ref.peel_to_commit()?;
-    let base_tree = base_commit.tree()?;
-
-    let head = repo.head()?;
-    let local_commit = head.peel_to_commit()?;
-    let local_tree = local_commit.tree()?;
-
-    let diff = repo.diff_tree_to_tree(Some(&base_tree), Some(&local_tree), Some(diff_opts))?;
-    let (files, text) = collect_diff_data(&diff);
-
-    let has_conflicts = repo
-        .merge_commits(&base_commit, &local_commit, None)
-        .map(|idx| idx.has_conflicts())
-        .unwrap_or(false);
-
-    Ok(DiffResult {
-        label: format!("origin/{} ... {}", base_branch, current_branch),
-        files,
-        text,
-        has_conflicts,
-        is_branch_comparison: true,
-        stale_check: Some(rx),
-    })
+    diff_branch_against_remote(
+        repo,
+        &current_branch,
+        &base_branch,
+        diff_opts,
+        format!("origin/{} ... {}", base_branch, current_branch),
+    )
 }
 
 #[cfg(test)]

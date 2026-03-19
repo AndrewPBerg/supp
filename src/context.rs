@@ -5,6 +5,8 @@ use anyhow::{Result, bail};
 use ignore::WalkBuilder;
 use regex::Regex;
 
+use crate::compress;
+use crate::compress::Mode;
 use crate::tree;
 
 pub struct ContextResult {
@@ -12,9 +14,16 @@ pub struct ContextResult {
     pub file_count: usize,
     pub total_bytes: usize,
     pub total_lines: usize,
+    /// Original bytes before compression (same as total_bytes in Full mode)
+    pub original_bytes: usize,
 }
 
-pub fn generate_context(paths: &[String], depth: usize, regex: Option<&str>) -> Result<ContextResult> {
+pub fn generate_context(
+    paths: &[String],
+    depth: usize,
+    regex: Option<&str>,
+    mode: Mode,
+) -> Result<ContextResult> {
     let re = regex.map(Regex::new).transpose()?;
 
     // Collect all file paths to read
@@ -28,10 +37,10 @@ pub fn generate_context(paths: &[String], depth: usize, regex: Option<&str>) -> 
             bail!("path does not exist: {}", p);
         }
         if path.is_file() {
-            if let Some(ref re) = re {
-                if !re.is_match(p) {
-                    continue;
-                }
+            if let Some(ref re) = re
+                && !re.is_match(p)
+            {
+                continue;
             }
             file_paths.push(p.clone());
             individual_files.push(p.clone());
@@ -43,10 +52,10 @@ pub fn generate_context(paths: &[String], depth: usize, regex: Option<&str>) -> 
             for entry in walker.flatten() {
                 if entry.path().is_file() {
                     let rel = entry.path().to_string_lossy().to_string();
-                    if let Some(ref re) = re {
-                        if !re.is_match(&rel) {
-                            continue;
-                        }
+                    if let Some(ref re) = re
+                        && !re.is_match(&rel)
+                    {
+                        continue;
                     }
                     file_paths.push(rel);
                 }
@@ -58,15 +67,17 @@ pub fn generate_context(paths: &[String], depth: usize, regex: Option<&str>) -> 
         bail!("no files matched the given paths/filters");
     }
 
-    // Concurrent reads
-    let results: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(Vec::new()));
+    // Concurrent reads: (path, compressed_content, original_byte_len)
+    let results: Arc<Mutex<Vec<(String, String, usize)>>> = Arc::new(Mutex::new(Vec::new()));
     std::thread::scope(|s| {
         for fp in &file_paths {
             let results = Arc::clone(&results);
             let fp = fp.clone();
             s.spawn(move || {
                 if let Ok(content) = std::fs::read_to_string(&fp) {
-                    results.lock().unwrap().push((fp, content));
+                    let original_len = content.len();
+                    let compressed = compress::compress(&content, &fp, mode);
+                    results.lock().unwrap().push((fp, compressed, original_len));
                 }
             });
         }
@@ -79,16 +90,36 @@ pub fn generate_context(paths: &[String], depth: usize, regex: Option<&str>) -> 
         .enumerate()
         .map(|(i, p)| (p.as_str(), i))
         .collect();
-    read_files.sort_by_key(|(p, _)| order.get(p.as_str()).copied().unwrap_or(usize::MAX));
+    read_files.sort_by_key(|(p, _, _)| order.get(p.as_str()).copied().unwrap_or(usize::MAX));
 
     let file_count = read_files.len();
-    let total_bytes: usize = read_files.iter().map(|(_, c)| c.len()).sum();
-    let total_lines: usize = read_files.iter().map(|(_, c)| c.lines().count()).sum();
+    let original_bytes: usize = read_files.iter().map(|(_, _, orig)| orig).sum();
+    let total_bytes: usize = read_files.iter().map(|(_, c, _)| c.len()).sum();
+    let total_lines: usize = read_files.iter().map(|(_, c, _)| c.lines().count()).sum();
 
     // Assemble plain output
     let mut plain = String::new();
     plain.push_str("CONTEXT FOR LLM\n");
     plain.push_str("================================\n");
+
+    match mode {
+        Mode::Slim => {
+            plain.push_str("NOTE: This context was generated in SLIM mode.\n");
+            plain.push_str("Comments have been stripped and blank lines collapsed.\n");
+            plain.push_str("All code is intact — only documentation artifacts were removed.\n\n");
+        }
+        Mode::Map => {
+            plain.push_str("NOTE: This context was generated in MAP mode.\n");
+            plain.push_str(
+                "Only imports, type definitions, and function/method signatures are shown.\n",
+            );
+            plain.push_str(
+                "Function bodies have been replaced with { ... } (or : ... for Python).\n",
+            );
+            plain.push_str("Request the full file if you need implementation details.\n\n");
+        }
+        Mode::Full => {}
+    }
 
     // Directory/file listing header
     for dir in &dir_paths {
@@ -110,15 +141,24 @@ pub fn generate_context(paths: &[String], depth: usize, regex: Option<&str>) -> 
     plain.push_str("\n--- FILE CONTENTS ---\n");
     plain.push_str("<documents>\n");
 
-    for (i, (path, content)) in read_files.iter().enumerate() {
+    for (i, (path, content, _)) in read_files.iter().enumerate() {
         plain.push_str(&format!("<document index=\"{}\">\n", i + 1));
         plain.push_str(&format!("<source>{}</source>\n", path));
         plain.push_str("<document_content>\n");
 
         let lines: Vec<&str> = content.lines().collect();
-        let width = if lines.is_empty() { 1 } else { lines.len().to_string().len() };
+        let width = if lines.is_empty() {
+            1
+        } else {
+            lines.len().to_string().len()
+        };
         for (line_num, line) in lines.iter().enumerate() {
-            plain.push_str(&format!("{:>width$}  {}\n", line_num + 1, line, width = width));
+            plain.push_str(&format!(
+                "{:>width$}  {}\n",
+                line_num + 1,
+                line,
+                width = width
+            ));
         }
 
         plain.push_str("</document_content>\n");
@@ -132,6 +172,7 @@ pub fn generate_context(paths: &[String], depth: usize, regex: Option<&str>) -> 
         file_count,
         total_bytes,
         total_lines,
+        original_bytes,
     })
 }
 
@@ -157,11 +198,8 @@ mod tests {
     fn single_file_context() {
         let dir = setup(&[("hello.txt", "hello world")]);
         let file = dir.path().join("hello.txt");
-        let result = generate_context(
-            &[file.to_string_lossy().to_string()],
-            2,
-            None,
-        ).unwrap();
+        let result =
+            generate_context(&[file.to_string_lossy().to_string()], 2, None, Mode::Full).unwrap();
         assert_eq!(result.file_count, 1);
         assert!(result.plain.contains("1  hello world"));
         assert!(result.plain.contains("CONTEXT FOR LLM"));
@@ -174,7 +212,9 @@ mod tests {
             &[dir.path().to_string_lossy().to_string()],
             2,
             None,
-        ).unwrap();
+            Mode::Full,
+        )
+        .unwrap();
         assert_eq!(result.file_count, 2);
         assert!(result.plain.contains("aaa"));
         assert!(result.plain.contains("bbb"));
@@ -187,7 +227,9 @@ mod tests {
             &[dir.path().to_string_lossy().to_string()],
             2,
             Some(r"\.rs$"),
-        ).unwrap();
+            Mode::Full,
+        )
+        .unwrap();
         assert_eq!(result.file_count, 1);
         assert!(result.plain.contains("fn main()"));
         assert!(!result.plain.contains("# Readme"));
@@ -195,7 +237,12 @@ mod tests {
 
     #[test]
     fn nonexistent_path_errors() {
-        let result = generate_context(&["/tmp/nonexistent_supp_test_path".to_string()], 2, None);
+        let result = generate_context(
+            &["/tmp/nonexistent_supp_test_path".to_string()],
+            2,
+            None,
+            Mode::Full,
+        );
         assert!(result.is_err());
     }
 
@@ -206,6 +253,7 @@ mod tests {
             &[dir.path().to_string_lossy().to_string()],
             2,
             Some(r"\.rs$"),
+            Mode::Full,
         );
         assert!(result.is_err());
     }
@@ -214,11 +262,8 @@ mod tests {
     fn output_contains_metadata() {
         let dir = setup(&[("test.txt", "content")]);
         let file = dir.path().join("test.txt");
-        let result = generate_context(
-            &[file.to_string_lossy().to_string()],
-            2,
-            None,
-        ).unwrap();
+        let result =
+            generate_context(&[file.to_string_lossy().to_string()], 2, None, Mode::Full).unwrap();
         assert!(result.plain.contains("================================"));
         assert!(result.plain.contains("--- FILE CONTENTS ---"));
         assert!(result.plain.contains("<documents>"));
@@ -232,7 +277,9 @@ mod tests {
             &[dir.path().to_string_lossy().to_string()],
             2,
             None,
-        ).unwrap();
+            Mode::Full,
+        )
+        .unwrap();
         assert_eq!(result.total_bytes, 10);
     }
 }

@@ -274,8 +274,18 @@ pub(crate) fn format_number(n: usize) -> String {
 }
 
 pub fn print_diff_result(result: DiffResult, no_copy: bool, start: std::time::Instant, token_handle: std::thread::JoinHandle<Option<usize>>) {
+    let now = chrono::Local::now().format("%Y-%m-%d %H:%M").to_string();
+
+    let mut meta_parts: Vec<String> = Vec::new();
+    if let Some(count) = result.commit_count {
+        let suffix = if count == 1 { "commit" } else { "commits" };
+        meta_parts.push(format!("{} {}", count, suffix));
+    }
+    meta_parts.push(now.clone());
+    let meta = meta_parts.join("  ·  ");
+
     println!();
-    println!("  {}  {}", "supp diff".bold().cyan(), result.label.dimmed());
+    println!("  {}  {}  ·  {}", "supp diff".bold().cyan(), result.label.dimmed(), meta.dimmed());
     println!("  {}", "─".repeat(40).dimmed());
 
     if result.is_branch_comparison {
@@ -293,32 +303,6 @@ pub fn print_diff_result(result: DiffResult, no_copy: bool, start: std::time::In
         let (name_col, add_w, del_w) = print_file_tree(&result.files);
         print_summary(&result.files, name_col, add_w, del_w);
         println!();
-
-        if no_copy {
-            println!(
-                "  {} {}",
-                "–".dimmed(),
-                format!("({}, not copied)", format_size(result.text.len())).dimmed(),
-            );
-        } else {
-            match copy_to_clipboard(&result.text) {
-                Ok(()) => {
-                    println!(
-                        "  {} {} {}",
-                        "✓".green().bold(),
-                        "Copied to clipboard".green(),
-                        format!("({})", format_size(result.text.len())).dimmed(),
-                    );
-                }
-                Err(e) => {
-                    println!(
-                        "  {} {}",
-                        "✗".red().bold(),
-                        format!("Clipboard error: {}", e).red(),
-                    );
-                }
-            }
-        }
     }
     if let Some(rx) = result.stale_check
         && let Ok(true) = rx.recv_timeout(std::time::Duration::from_millis(300))
@@ -329,15 +313,12 @@ pub fn print_diff_result(result: DiffResult, no_copy: bool, start: std::time::In
             format!("{} has new commits — re-run for latest", result.label.split(" ... ").next().unwrap_or(&result.label)).yellow()
         );
     }
-    if let Some(count) = token_handle.join().ok().flatten() {
-        println!(
-            "  {} {}",
-            "≈".dimmed(),
-            format!("~{} tokens (cl100k est.)", format_number(count)).dimmed(),
-        );
-    }
-    println!("  {}", format!("Done in {}", format_elapsed(start.elapsed())).dimmed());
-    println!();
+    let mut clipboard_header = format!("supp diff  {}\n", result.label);
+    clipboard_header.push_str(&meta);
+    clipboard_header.push_str("\n---\n\n");
+    let clipboard_text = format!("{}{}", clipboard_header, result.text);
+
+    print_footer(&clipboard_text, no_copy, start, token_handle, None, false);
 }
 
 // ── Tree display ───────────────────────────────────────────────────
@@ -395,24 +376,43 @@ pub fn print_tree_result(result: TreeResult, root: &str, no_copy: bool, start: s
     }
     println!();
 
+    print_footer(&result.plain, no_copy, start, token_handle, None, false);
+}
+
+// ── Shared footer (clipboard, compression, tokens, timing) ──────
+
+fn print_footer(
+    text: &str,
+    no_copy: bool,
+    start: std::time::Instant,
+    token_handle: std::thread::JoinHandle<Option<usize>>,
+    original_bytes: Option<(usize, usize)>,
+    use_stderr: bool,
+) {
+    macro_rules! out {
+        ($($arg:tt)*) => {
+            if use_stderr { eprintln!($($arg)*); } else { println!($($arg)*); }
+        };
+    }
+
     if no_copy {
-        println!(
+        out!(
             "  {} {}",
             "–".dimmed(),
-            format!("({}, not copied)", format_size(result.plain.len())).dimmed(),
+            format!("({}, not copied)", format_size(text.len())).dimmed(),
         );
     } else {
-        match copy_to_clipboard(&result.plain) {
+        match copy_to_clipboard(text) {
             Ok(()) => {
-                println!(
+                out!(
                     "  {} {} {}",
                     "✓".green().bold(),
                     "Copied to clipboard".green(),
-                    format!("({})", format_size(result.plain.len())).dimmed(),
+                    format!("({})", format_size(text.len())).dimmed(),
                 );
             }
             Err(e) => {
-                println!(
+                out!(
                     "  {} {}",
                     "✗".red().bold(),
                     format!("Clipboard error: {}", e).red(),
@@ -420,15 +420,30 @@ pub fn print_tree_result(result: TreeResult, root: &str, no_copy: bool, start: s
             }
         }
     }
+    if let Some((original, total)) = original_bytes
+        && original > total
+    {
+        let pct = 100.0 * (1.0 - total as f64 / original as f64);
+        out!(
+            "  {} {}",
+            "↓".dimmed(),
+            format!(
+                "{} → {} ({:.0}% reduction)",
+                format_size(original),
+                format_size(total),
+                pct,
+            ).dimmed(),
+        );
+    }
     if let Some(count) = token_handle.join().ok().flatten() {
-        println!(
+        out!(
             "  {} {}",
             "≈".dimmed(),
             format!("~{} tokens (cl100k est.)", format_number(count)).dimmed(),
         );
     }
-    println!("  {}", format!("Done in {}", format_elapsed(start.elapsed())).dimmed());
-    println!();
+    out!("  {}", format!("Done in {}", format_elapsed(start.elapsed())).dimmed());
+    out!();
 }
 
 // ── Context display ─────────────────────────────────────────────
@@ -439,40 +454,8 @@ pub fn print_context_result(result: ContextResult, no_copy: bool, start: std::ti
     println!("  {}", "─".repeat(40).dimmed());
     println!();
 
-    if no_copy {
-        println!(
-            "  {} {}",
-            "–".dimmed(),
-            format!("({}, not copied)", format_size(result.plain.len())).dimmed(),
-        );
-    } else {
-        match copy_to_clipboard(&result.plain) {
-            Ok(()) => {
-                println!(
-                    "  {} {} {}",
-                    "✓".green().bold(),
-                    "Copied to clipboard".green(),
-                    format!("({})", format_size(result.plain.len())).dimmed(),
-                );
-            }
-            Err(e) => {
-                println!(
-                    "  {} {}",
-                    "✗".red().bold(),
-                    format!("Clipboard error: {}", e).red(),
-                );
-            }
-        }
-    }
-    if let Some(count) = token_handle.join().ok().flatten() {
-        println!(
-            "  {} {}",
-            "≈".dimmed(),
-            format!("~{} tokens (cl100k est.)", format_number(count)).dimmed(),
-        );
-    }
-    println!("  {}", format!("Done in {}", format_elapsed(start.elapsed())).dimmed());
-    println!();
+    let compression = Some((result.original_bytes, result.total_bytes));
+    print_footer(&result.plain, no_copy, start, token_handle, compression, false);
 }
 
 // ── Pick display ────────────────────────────────────────────────
@@ -482,40 +465,9 @@ pub fn print_pick_stats(result: ContextResult, no_copy: bool, start: std::time::
     eprintln!("  {}  {} file{}, {} line{}, {}", "pick".bold().cyan(), result.file_count, if result.file_count == 1 { "" } else { "s" }, result.total_lines, if result.total_lines == 1 { "" } else { "s" }, format_size(result.total_bytes).dimmed());
     eprintln!("  {}", "─".repeat(40).dimmed());
     eprintln!();
-    if no_copy {
-        eprintln!(
-            "  {} {}",
-            "–".dimmed(),
-            format!("({}, not copied)", format_size(result.plain.len())).dimmed(),
-        );
-    } else {
-        match copy_to_clipboard(&result.plain) {
-            Ok(()) => {
-                eprintln!(
-                    "  {} {} {}",
-                    "✓".green().bold(),
-                    "Copied to clipboard".green(),
-                    format!("({})", format_size(result.plain.len())).dimmed(),
-                );
-            }
-            Err(e) => {
-                eprintln!(
-                    "  {} {}",
-                    "✗".red().bold(),
-                    format!("Clipboard error: {}", e).red(),
-                );
-            }
-        }
-    }
-    if let Some(count) = token_handle.join().ok().flatten() {
-        eprintln!(
-            "  {} {}",
-            "≈".dimmed(),
-            format!("~{} tokens (cl100k est.)", format_number(count)).dimmed(),
-        );
-    }
-    eprintln!("  {}", format!("Done in {}", format_elapsed(start.elapsed())).dimmed());
-    eprintln!();
+
+    let compression = Some((result.original_bytes, result.total_bytes));
+    print_footer(&result.plain, no_copy, start, token_handle, compression, true);
 }
 
 #[cfg(test)]

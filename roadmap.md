@@ -1,2 +1,4 @@
-- [ ] Get supp context working 90% w/ l
 - [ ] Configurable ~/.supp/config.toml with defaults that override, needs fleshing out ofc asdfasdf
+- [ ] Include more shortcuts in pick, and cleaner UX around closing and opening around w/ hybrid flows between fzf and typed paths. Selecting Directories from pick is non-existent functionality
+- [ ] migrate to gix for fun
+- [ ] I don't love my diff arg arms

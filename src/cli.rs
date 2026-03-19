@@ -1,7 +1,7 @@
 use clap::{CommandFactory, Parser, Subcommand};
 
 #[derive(Parser)]
-#[command(args_conflicts_with_subcommands = true)]
+#[command(subcommand_negates_reqs = true)]
 pub struct Cli {
     /// Skip copying to clipboard and just show the stats
     #[arg(short = 'n', long = "no-copy", aliases = &["no"], global = true)]
@@ -17,6 +17,14 @@ pub struct Cli {
 
     /// Paths for context generation (files and/or directories)
     pub paths: Vec<String>,
+
+    /// Strip comments and collapse blank lines
+    #[arg(short = 'S', long, global = true)]
+    pub slim: bool,
+
+    /// Extract only signatures and definitions (codemap)
+    #[arg(short = 'M', long, global = true, conflicts_with = "slim")]
+    pub map: bool,
 
     /// Tree depth in context header (default: 2)
     #[arg(short = 'd', long = "depth", default_value = "2")]
@@ -92,6 +100,10 @@ pub enum Commands {
 }
 
 impl Cli {
+    pub fn resolve_mode(&self) -> crate::compress::Mode {
+        if self.map { crate::compress::Mode::Map } else if self.slim { crate::compress::Mode::Slim } else { crate::compress::Mode::Full }
+    }
+
     pub fn generate_completions(shell: clap_complete::Shell) {
         let mut cmd = Cli::command();
         clap_complete::generate(shell, &mut cmd, "supp", &mut std::io::stdout());
@@ -325,6 +337,40 @@ mod tests {
             Some(Commands::Pick { path, .. }) => assert_eq!(path.as_deref(), Some("/tmp/dir")),
             _ => panic!("expected pick"),
         }
+    }
+
+    // ── Compression flags ────────────────────────────────────────
+
+    #[test]
+    fn slim_flag() {
+        let cli = parse(&["supp", "--slim", "src/"]).unwrap();
+        assert!(cli.slim);
+        assert!(!cli.map);
+    }
+
+    #[test]
+    fn map_flag() {
+        let cli = parse(&["supp", "--map", "src/"]).unwrap();
+        assert!(cli.map);
+        assert!(!cli.slim);
+    }
+
+    #[test]
+    fn slim_position_independent() {
+        let cli = parse(&["supp", "src/", "--slim"]).unwrap();
+        assert!(cli.slim);
+    }
+
+    #[test]
+    fn map_position_independent() {
+        let cli = parse(&["supp", "src/", "--map"]).unwrap();
+        assert!(cli.map);
+    }
+
+    #[test]
+    fn slim_and_map_conflict() {
+        let result = parse(&["supp", "--slim", "--map", "src/"]);
+        assert!(result.is_err());
     }
 
     // ── Combined flags ───────────────────────────────────────────

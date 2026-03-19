@@ -17,10 +17,10 @@ pub fn collect_files(root: &str, regex: Option<&str>) -> Result<Vec<String>> {
     for entry in walker.flatten() {
         if entry.path().is_file() {
             let rel = entry.path().to_string_lossy().to_string();
-            if let Some(ref re) = re {
-                if !re.is_match(&rel) {
-                    continue;
-                }
+            if let Some(ref re) = re
+                && !re.is_match(&rel)
+            {
+                continue;
             }
             files.push(rel);
         }
