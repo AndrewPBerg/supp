@@ -22,6 +22,7 @@ fn copy_to_clipboard(text: &str) -> anyhow::Result<()> {
             if let Some(mut stdin) = child.stdin.take() {
                 stdin.write_all(text.as_bytes())?;
             }
+            child.wait()?;
             return Ok(());
         }
     }

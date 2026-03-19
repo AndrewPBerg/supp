@@ -1,5 +1,3 @@
-- [ ] Get Diff working 90%
-  - [ ] 
 - [ ] Get Tree working 90%, simple easy output that is auto copied and clean w/ configurable levels, ignores what git .ignores ofc
 - [ ] Get supp context working 90% w/ l
 - [ ] Get tiktoken estimates going, run in parallel with all current diff tree and root supp args to display estimated token context if passed

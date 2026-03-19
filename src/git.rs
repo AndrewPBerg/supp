@@ -24,6 +24,7 @@ pub struct FileEntry {
     pub status: Delta,
     pub additions: usize,
     pub deletions: usize,
+    pub patch: String,
 }
 
 pub struct DiffResult {
@@ -76,6 +77,7 @@ fn collect_untracked_files(repo: &Repository) -> Result<(Vec<FileEntry>, String)
         {
             let full_path = workdir.join(path);
             let mut additions = 0usize;
+            let mut file_patch = String::new();
 
             // OOM guard: skip files larger than 10 MB
             let too_large = std::fs::metadata(&full_path)
@@ -85,9 +87,13 @@ fn collect_untracked_files(repo: &Repository) -> Result<(Vec<FileEntry>, String)
             if !too_large
                 && let Ok(content) = std::fs::read_to_string(&full_path)
             {
-                text.push_str(&format!("--- /dev/null\n+++ b/{}\n", path));
+                let header = format!("--- /dev/null\n+++ b/{}\n", path);
+                text.push_str(&header);
+                file_patch.push_str(&header);
                 for line in content.lines() {
-                    text.push_str(&format!("+{}\n", line));
+                    let diff_line = format!("+{}\n", line);
+                    text.push_str(&diff_line);
+                    file_patch.push_str(&diff_line);
                     additions += 1;
                 }
             }
@@ -98,6 +104,7 @@ fn collect_untracked_files(repo: &Repository) -> Result<(Vec<FileEntry>, String)
                 status: Delta::Untracked,
                 additions,
                 deletions: 0,
+                patch: file_patch,
             });
         }
     }
@@ -113,19 +120,27 @@ fn collect_diff_data(diff: &git2::Diff) -> (Vec<FileEntry>, String) {
         .unwrap_or(4096);
     let mut text = String::with_capacity(capacity);
     let mut line_counts: HashMap<String, (usize, usize)> = HashMap::new();
+    let mut per_file_patch: HashMap<String, String> = HashMap::new();
 
     let _ = diff.print(DiffFormat::Patch, |delta, _hunk, line| {
-        if let Ok(s) = std::str::from_utf8(line.content()) {
-            text.push_str(s);
-        }
+        let origin = line.origin();
         let path = delta
             .new_file()
             .path()
             .or_else(|| delta.old_file().path())
             .map(|p| p.to_string_lossy().into_owned())
             .unwrap_or_default();
+        let file_text = per_file_patch.entry(path.clone()).or_default();
+        if matches!(origin, '+' | '-' | ' ') {
+            text.push(origin);
+            file_text.push(origin);
+        }
+        if let Ok(s) = std::str::from_utf8(line.content()) {
+            text.push_str(s);
+            file_text.push_str(s);
+        }
         let counts = line_counts.entry(path).or_insert((0, 0));
-        match line.origin() {
+        match origin {
             '+' => counts.0 += 1,
             '-' => counts.1 += 1,
             _ => {}
@@ -151,12 +166,14 @@ fn collect_diff_data(diff: &git2::Diff) -> (Vec<FileEntry>, String) {
                 None
             };
             let (additions, deletions) = line_counts.get(&path).copied().unwrap_or((0, 0));
+            let patch = per_file_patch.remove(&path).unwrap_or_default();
             FileEntry {
                 path,
                 old_path,
                 status: delta.status(),
                 additions,
                 deletions,
+                patch,
             }
         })
         .collect();
@@ -204,6 +221,11 @@ pub fn get_diff(repo_path: &str, opts: DiffOptions) -> Result<DiffResult> {
     }
     if let Some(ref pattern) = regex {
         result.files = apply_regex_filter(result.files, pattern)?;
+    }
+
+    // Rebuild text from remaining files' patches after filtering
+    if filter.is_some() || regex.is_some() {
+        result.text = result.files.iter().map(|f| f.patch.as_str()).collect();
     }
 
     Ok(result)
@@ -284,21 +306,27 @@ fn get_diff_inner(
                 status: f.status,
                 additions: 0,
                 deletions: 0,
+                patch: String::new(),
             });
             entry.additions += f.additions;
             entry.deletions += f.deletions;
+            entry.patch.push_str(&f.patch);
+            if f.old_path.is_some() {
+                entry.old_path = f.old_path.clone();
+            }
             if matches!(f.status, Delta::Modified | Delta::Deleted | Delta::Renamed) {
                 entry.status = f.status;
             }
         }
         // Append untracked paths not already covered
-        for f in &untracked_files {
+        for f in untracked_files {
             merged.entry(f.path.clone()).or_insert(FileEntry {
                 path: f.path.clone(),
                 old_path: None,
                 status: Delta::Untracked,
                 additions: f.additions,
                 deletions: 0,
+                patch: f.patch,
             });
         }
 
@@ -437,7 +465,7 @@ fn get_diff_inner(
         .unwrap_or(false);
 
     Ok(DiffResult {
-        label: format!("{} ... {}", base_branch, current_branch),
+        label: format!("origin/{} ... {}", base_branch, current_branch),
         files,
         text,
         has_conflicts,
