@@ -12,3 +12,6 @@ git2 = "0.20.4"
 ignore = "0.4.25"
 regex = "1"
 tiktoken-rs = "0.9"
+
+[dev-dependencies]
+tempfile = "3"

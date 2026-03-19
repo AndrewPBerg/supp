@@ -205,3 +205,168 @@ fn render(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+    use std::fs;
+
+    fn setup_tree(files: &[&str]) -> TempDir {
+        let dir = TempDir::new().unwrap();
+        for f in files {
+            let path = dir.path().join(f);
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent).unwrap();
+            }
+            fs::write(&path, "content").unwrap();
+        }
+        dir
+    }
+
+    // ── Structure ────────────────────────────────────────────────
+
+    #[test]
+    fn empty_dir() {
+        let dir = TempDir::new().unwrap();
+        let result = build_tree(dir.path().to_str().unwrap(), None, None, None).unwrap();
+        assert_eq!(result.file_count, 0);
+        assert_eq!(result.dir_count, 0);
+    }
+
+    #[test]
+    fn single_file() {
+        let dir = setup_tree(&["hello.txt"]);
+        let result = build_tree(dir.path().to_str().unwrap(), None, None, None).unwrap();
+        assert_eq!(result.file_count, 1);
+        assert_eq!(result.dir_count, 0);
+        assert!(result.plain.contains("hello.txt"));
+    }
+
+    #[test]
+    fn nested_dirs() {
+        let dir = setup_tree(&["src/main.rs", "src/lib.rs"]);
+        let result = build_tree(dir.path().to_str().unwrap(), None, None, None).unwrap();
+        assert_eq!(result.file_count, 2);
+        assert_eq!(result.dir_count, 1);
+        assert!(result.plain.contains("src/"));
+        assert!(result.plain.contains("main.rs"));
+        assert!(result.plain.contains("lib.rs"));
+    }
+
+    #[test]
+    fn deeply_nested() {
+        let dir = setup_tree(&["a/b/c/d.txt"]);
+        let result = build_tree(dir.path().to_str().unwrap(), None, None, None).unwrap();
+        assert_eq!(result.file_count, 1);
+        assert_eq!(result.dir_count, 3); // a, b, c
+    }
+
+    // ── max_depth ────────────────────────────────────────────────
+
+    #[test]
+    fn max_depth_limits_output() {
+        let dir = setup_tree(&["a/b/c/deep.txt", "top.txt"]);
+        let result = build_tree(dir.path().to_str().unwrap(), Some(1), None, None).unwrap();
+        // depth 1 = only immediate children
+        assert!(result.plain.contains("top.txt"));
+        assert!(!result.plain.contains("deep.txt"));
+    }
+
+    #[test]
+    fn max_depth_none_unlimited() {
+        let dir = setup_tree(&["a/b/c/deep.txt"]);
+        let result = build_tree(dir.path().to_str().unwrap(), None, None, None).unwrap();
+        assert!(result.plain.contains("deep.txt"));
+    }
+
+    #[test]
+    fn max_depth_large_on_shallow() {
+        let dir = setup_tree(&["file.txt"]);
+        let result = build_tree(dir.path().to_str().unwrap(), Some(100), None, None).unwrap();
+        assert_eq!(result.file_count, 1);
+    }
+
+    // ── regex_filter ─────────────────────────────────────────────
+
+    #[test]
+    fn regex_keeps_matching_files() {
+        let dir = setup_tree(&["main.rs", "lib.rs", "readme.md"]);
+        let result = build_tree(dir.path().to_str().unwrap(), None, Some(r"\.rs$"), None).unwrap();
+        assert_eq!(result.file_count, 2);
+        assert!(!result.plain.contains("readme.md"));
+    }
+
+    #[test]
+    fn regex_no_match_zero_files() {
+        let dir = setup_tree(&["main.rs"]);
+        let result = build_tree(dir.path().to_str().unwrap(), None, Some(r"\.py$"), None).unwrap();
+        assert_eq!(result.file_count, 0);
+    }
+
+    #[test]
+    fn regex_invalid_returns_err() {
+        let dir = setup_tree(&["file.txt"]);
+        let result = build_tree(dir.path().to_str().unwrap(), None, Some(r"[invalid"), None);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn regex_prunes_empty_dirs() {
+        let dir = setup_tree(&["src/main.rs", "docs/readme.md"]);
+        let result = build_tree(dir.path().to_str().unwrap(), None, Some(r"\.rs$"), None).unwrap();
+        // docs/ should be pruned since it has no matching files
+        assert!(!result.plain.contains("docs/"));
+        assert!(result.plain.contains("src/"));
+    }
+
+    // ── git statuses ─────────────────────────────────────────────
+
+    #[test]
+    fn status_counts_populated() {
+        let dir = setup_tree(&["modified.rs", "added.rs"]);
+        let mut statuses = HashMap::new();
+        statuses.insert("modified.rs".to_string(), FileStatus::Modified);
+        statuses.insert("added.rs".to_string(), FileStatus::Added);
+        let result = build_tree(
+            dir.path().to_str().unwrap(),
+            None,
+            None,
+            Some((&statuses, "")),
+        ).unwrap();
+        assert_eq!(result.status_counts.get(&FileStatus::Modified), Some(&1));
+        assert_eq!(result.status_counts.get(&FileStatus::Added), Some(&1));
+    }
+
+    #[test]
+    fn no_statuses_empty_counts() {
+        let dir = setup_tree(&["file.txt"]);
+        let result = build_tree(dir.path().to_str().unwrap(), None, None, None).unwrap();
+        assert!(result.status_counts.is_empty());
+    }
+
+    // ── Output format ────────────────────────────────────────────
+
+    #[test]
+    fn plain_contains_tree_chars() {
+        let dir = setup_tree(&["a.txt", "b.txt"]);
+        let result = build_tree(dir.path().to_str().unwrap(), None, None, None).unwrap();
+        assert!(result.plain.contains("├──") || result.plain.contains("└──"));
+    }
+
+    #[test]
+    fn plain_has_no_ansi() {
+        let dir = setup_tree(&["a.txt"]);
+        let result = build_tree(dir.path().to_str().unwrap(), None, None, None).unwrap();
+        assert!(!result.plain.contains("\x1b["));
+    }
+
+    #[test]
+    fn root_line_format() {
+        let dir = setup_tree(&["a.txt"]);
+        let root = dir.path().to_str().unwrap();
+        let result = build_tree(root, None, None, None).unwrap();
+        let first_line = result.plain.lines().next().unwrap();
+        assert!(first_line.ends_with('/'));
+    }
+}

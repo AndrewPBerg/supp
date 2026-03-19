@@ -260,7 +260,7 @@ fn print_summary(files: &[FileEntry], global_max_name_col: usize, max_add_w: usi
     );
 }
 
-fn format_number(n: usize) -> String {
+pub(crate) fn format_number(n: usize) -> String {
     let s = n.to_string();
     let mut result = String::new();
     for (i, c) in s.chars().rev().enumerate() {
@@ -428,4 +428,143 @@ pub fn print_tree_result(result: TreeResult, root: &str, no_copy: bool, start: s
     }
     println!("  {}", format!("Done in {}", format_elapsed(start.elapsed())).dimmed());
     println!();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    // ── format_size ──────────────────────────────────────────────
+
+    #[test]
+    fn format_size_zero_bytes() {
+        assert_eq!(format_size(0), "0 B");
+    }
+
+    #[test]
+    fn format_size_one_byte() {
+        assert_eq!(format_size(1), "1 B");
+    }
+
+    #[test]
+    fn format_size_just_below_kb() {
+        assert_eq!(format_size(1023), "1023 B");
+    }
+
+    #[test]
+    fn format_size_exact_kb() {
+        assert_eq!(format_size(1024), "1.0 KB");
+    }
+
+    #[test]
+    fn format_size_1_5_kb() {
+        assert_eq!(format_size(1536), "1.5 KB");
+    }
+
+    #[test]
+    fn format_size_just_below_mb() {
+        assert_eq!(format_size(1_048_575), "1024.0 KB");
+    }
+
+    #[test]
+    fn format_size_exact_mb() {
+        assert_eq!(format_size(1_048_576), "1.0 MB");
+    }
+
+    #[test]
+    fn format_size_exact_gb() {
+        assert_eq!(format_size(1_073_741_824), "1.0 GB");
+    }
+
+    // ── format_elapsed ───────────────────────────────────────────
+
+    #[test]
+    fn format_elapsed_zero() {
+        assert_eq!(format_elapsed(Duration::from_millis(0)), "0ms");
+    }
+
+    #[test]
+    fn format_elapsed_150ms() {
+        assert_eq!(format_elapsed(Duration::from_millis(150)), "150ms");
+    }
+
+    #[test]
+    fn format_elapsed_999ms() {
+        assert_eq!(format_elapsed(Duration::from_millis(999)), "999ms");
+    }
+
+    #[test]
+    fn format_elapsed_1000ms_switches_to_seconds() {
+        assert_eq!(format_elapsed(Duration::from_millis(1000)), "1.00s");
+    }
+
+    #[test]
+    fn format_elapsed_2500ms() {
+        assert_eq!(format_elapsed(Duration::from_millis(2500)), "2.50s");
+    }
+
+    // ── format_number ────────────────────────────────────────────
+
+    #[test]
+    fn format_number_zero() {
+        assert_eq!(format_number(0), "0");
+    }
+
+    #[test]
+    fn format_number_small() {
+        assert_eq!(format_number(42), "42");
+    }
+
+    #[test]
+    fn format_number_999() {
+        assert_eq!(format_number(999), "999");
+    }
+
+    #[test]
+    fn format_number_1000() {
+        assert_eq!(format_number(1000), "1,000");
+    }
+
+    #[test]
+    fn format_number_12345() {
+        assert_eq!(format_number(12345), "12,345");
+    }
+
+    #[test]
+    fn format_number_millions() {
+        assert_eq!(format_number(1_234_567), "1,234,567");
+    }
+
+    // ── file_status_indicator ────────────────────────────────────
+
+    #[test]
+    fn file_status_indicator_modified() {
+        let (plain, _) = file_status_indicator(FileStatus::Modified);
+        assert_eq!(plain, "[M]");
+    }
+
+    #[test]
+    fn file_status_indicator_added() {
+        let (plain, _) = file_status_indicator(FileStatus::Added);
+        assert_eq!(plain, "[A]");
+    }
+
+    #[test]
+    fn file_status_indicator_deleted() {
+        let (plain, _) = file_status_indicator(FileStatus::Deleted);
+        assert_eq!(plain, "[D]");
+    }
+
+    #[test]
+    fn file_status_indicator_renamed() {
+        let (plain, _) = file_status_indicator(FileStatus::Renamed);
+        assert_eq!(plain, "[R]");
+    }
+
+    #[test]
+    fn file_status_indicator_untracked() {
+        let (plain, _) = file_status_indicator(FileStatus::Untracked);
+        assert_eq!(plain, "[?]");
+    }
 }
