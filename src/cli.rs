@@ -27,8 +27,8 @@ pub struct Cli {
     pub map: bool,
 
     /// Tree depth in context header (default: 2)
-    #[arg(short = 'd', long = "depth", default_value = "2")]
-    pub depth: usize,
+    #[arg(short = 'd', long = "depth")]
+    pub depth: Option<usize>,
 
     #[command(subcommand)]
     pub command: Option<Commands>,
@@ -100,8 +100,30 @@ pub enum Commands {
 }
 
 impl Cli {
-    pub fn resolve_mode(&self) -> crate::compress::Mode {
-        if self.map { crate::compress::Mode::Map } else if self.slim { crate::compress::Mode::Slim } else { crate::compress::Mode::Full }
+    pub fn resolve_depth(&self, config: &crate::config::Config) -> usize {
+        self.depth.unwrap_or(config.global.depth)
+    }
+
+    pub fn resolve_no_copy(&self, config: &crate::config::Config) -> bool {
+        self.no_copy || config.global.no_copy
+    }
+
+    pub fn resolve_no_color(&self, config: &crate::config::Config) -> bool {
+        self.no_color || config.global.no_color
+    }
+
+    pub fn resolve_mode(&self, config: &crate::config::Config) -> crate::compress::Mode {
+        if self.map {
+            crate::compress::Mode::Map
+        } else if self.slim {
+            crate::compress::Mode::Slim
+        } else {
+            match config.global.mode.as_str() {
+                "slim" => crate::compress::Mode::Slim,
+                "map" => crate::compress::Mode::Map,
+                _ => crate::compress::Mode::Full,
+            }
+        }
     }
 
     pub fn generate_completions(shell: clap_complete::Shell) {
@@ -151,14 +173,14 @@ mod tests {
     fn context_depth_flag() {
         let cli = parse(&["supp", "-d", "3", "src/"]).unwrap();
         assert!(cli.command.is_none());
-        assert_eq!(cli.depth, 3);
+        assert_eq!(cli.depth, Some(3));
         assert_eq!(cli.paths, vec!["src/"]);
     }
 
     #[test]
     fn context_default_depth() {
         let cli = parse(&["supp", "src/"]).unwrap();
-        assert_eq!(cli.depth, 2);
+        assert_eq!(cli.depth, None);
     }
 
     // ── Global flags ─────────────────────────────────────────────

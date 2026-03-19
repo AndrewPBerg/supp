@@ -13,8 +13,13 @@ supp [-n] <paths...> [OPTIONS]
 | Flag | Short | Description |
 |------|-------|-------------|
 | `--no-copy` | `-n` | Print context only, skip clipboard copy |
+| `--no-color` | | Disable colored output |
 | `--regex` | `-r` | Regex pattern to filter file paths |
-| `--depth` | `-d` | Tree depth in context header (default: 2) |
+| `--depth` | `-d` | Tree depth in context header (default: 2, configurable) |
+| `--slim` | `-S` | Strip comments and collapse blank lines |
+| `--map` | `-M` | Extract only signatures and definitions (codemap) |
+
+Defaults for `--no-copy`, `--depth`, and the output mode can be set in [`~/.supp/config.toml`](config.md).
 
 ## Examples
 

@@ -1,5 +1,6 @@
 mod cli;
 mod compress;
+mod config;
 mod context;
 mod git;
 mod pick;
@@ -10,13 +11,15 @@ use clap::Parser;
 
 use cli::Cli;
 use cli::Commands;
+use config::Config;
 use git::{DiffOptions, get_diff};
 
 fn main() -> anyhow::Result<()> {
     let start = std::time::Instant::now();
     let cli = Cli::parse();
+    let config = Config::load();
 
-    if cli.no_color {
+    if cli.resolve_no_color(&config) {
         colored::control::set_override(false);
     }
 
@@ -26,6 +29,9 @@ fn main() -> anyhow::Result<()> {
         let text: String = text_rx.recv().ok()?;
         Some(bpe.encode_with_special_tokens(&text).len())
     });
+
+    let no_copy = cli.resolve_no_copy(&config);
+    let max_untracked_size = config.limits.max_untracked_file_size_mb * 1024 * 1024;
 
     match cli.command {
         Some(Commands::Diff {
@@ -47,13 +53,13 @@ fn main() -> anyhow::Result<()> {
                 branch,
                 all,
                 self_branch,
-                context_lines,
+                context_lines: context_lines.or(Some(config.diff.context_lines)),
                 filter,
-                regex: cli.regex,
+                max_untracked_size,
             };
-            let result = get_diff(repo_path, opts)?;
+            let result = get_diff(repo_path, opts, cli.regex.as_deref())?;
             let _ = text_tx.send(result.text.clone());
-            styles::print_diff_result(result, cli.no_copy, start, token_handle);
+            styles::print_diff_result(result, no_copy, start, token_handle);
         }
         Some(Commands::Completions { shell }) => {
             Cli::generate_completions(shell);
@@ -61,15 +67,17 @@ fn main() -> anyhow::Result<()> {
         }
         Some(Commands::Pick { ref path, single }) => {
             let root = path.as_deref().unwrap_or(".");
-            let selected = pick::run_fzf(root, !single, cli.regex.as_deref())?;
+            let selected = pick::run_fzf(root, !single, cli.regex.as_deref(), config.pick.preview_lines)?;
             if selected.is_empty() {
                 return Ok(());
             }
             let pick_start = std::time::Instant::now();
-            let result = context::generate_context(&selected, cli.depth, cli.regex.as_deref(), cli.resolve_mode())?;
+            let depth = cli.resolve_depth(&config);
+            let mode = cli.resolve_mode(&config);
+            let result = context::generate_context(&selected, depth, cli.regex.as_deref(), mode)?;
             let _ = text_tx.send(result.plain.clone());
             println!("{}", selected.join(" "));
-            styles::print_pick_stats(result, cli.no_copy, pick_start, token_handle);
+            styles::print_pick_stats(result, no_copy, pick_start, token_handle);
             return Ok(());
         }
         Some(Commands::Tree { path, depth, no_git }) => {
@@ -84,15 +92,17 @@ fn main() -> anyhow::Result<()> {
             let status_ref = statuses.as_ref().map(|(map, prefix)| (map, prefix.as_str()));
             let result = tree::build_tree(root, depth, cli.regex.as_deref(), status_ref)?;
             let _ = text_tx.send(result.plain.clone());
-            styles::print_tree_result(result, root, cli.no_copy, start, token_handle);
+            styles::print_tree_result(result, root, no_copy, start, token_handle);
         }
         None => {
             if cli.paths.is_empty() {
                 anyhow::bail!("no paths provided. Usage: supp <paths...> or supp <subcommand>");
             }
-            let result = context::generate_context(&cli.paths, cli.depth, cli.regex.as_deref(), cli.resolve_mode())?;
+            let depth = cli.resolve_depth(&config);
+            let mode = cli.resolve_mode(&config);
+            let result = context::generate_context(&cli.paths, depth, cli.regex.as_deref(), mode)?;
             let _ = text_tx.send(result.plain.clone());
-            styles::print_context_result(result, cli.no_copy, start, token_handle);
+            styles::print_context_result(result, no_copy, start, token_handle);
         }
     }
     Ok(())

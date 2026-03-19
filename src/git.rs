@@ -33,7 +33,23 @@ pub struct DiffOptions {
     pub self_branch: bool,
     pub context_lines: Option<u32>,
     pub filter: Option<String>,
-    pub regex: Option<String>,
+    pub max_untracked_size: u64,
+}
+
+impl Default for DiffOptions {
+    fn default() -> Self {
+        Self {
+            cached: false,
+            untracked: false,
+            local: false,
+            branch: None,
+            all: false,
+            self_branch: false,
+            context_lines: None,
+            filter: None,
+            max_untracked_size: 10 * 1024 * 1024,
+        }
+    }
 }
 
 pub struct FileEntry {
@@ -55,7 +71,6 @@ pub struct DiffResult {
     pub stale_check: Option<mpsc::Receiver<bool>>,
 }
 
-const MAX_UNTRACKED_FILE_SIZE: u64 = 10 * 1024 * 1024; // 10 MB
 
 // ── Git CLI helpers ─────────────────────────────────────────────────
 
@@ -323,7 +338,7 @@ fn run_diff(repo_dir: &Path, args: &[&str]) -> Result<(Vec<FileEntry>, String)> 
 // ── Untracked files ─────────────────────────────────────────────────
 
 /// Collect untracked files from the working directory.
-pub(crate) fn collect_untracked_files(repo_dir: &Path) -> Result<(Vec<FileEntry>, String)> {
+pub(crate) fn collect_untracked_files(repo_dir: &Path, max_untracked_size: u64) -> Result<(Vec<FileEntry>, String)> {
     let repo = open_repo(repo_dir)?;
     let iter = repo
         .status(gix::progress::Discard)
@@ -352,9 +367,9 @@ pub(crate) fn collect_untracked_files(repo_dir: &Path) -> Result<(Vec<FileEntry>
         let mut additions = 0usize;
         let mut file_patch = String::new();
 
-        // OOM guard: skip files larger than 10 MB
+        // OOM guard: skip files larger than the configured limit
         let too_large = std::fs::metadata(&full_path)
-            .map(|m| m.len() > MAX_UNTRACKED_FILE_SIZE)
+            .map(|m| m.len() > max_untracked_size)
             .unwrap_or(false);
 
         if !too_large
@@ -414,19 +429,18 @@ pub(crate) fn apply_regex_filter(files: Vec<FileEntry>, pattern: &str) -> Result
 
 // ── Public diff entry point ─────────────────────────────────────────
 
-pub fn get_diff(repo_path: &str, opts: DiffOptions) -> Result<DiffResult> {
+pub fn get_diff(repo_path: &str, opts: DiffOptions, regex: Option<&str>) -> Result<DiffResult> {
     let (_, repo_dir) = discover_repo(repo_path)?
         .ok_or_else(|| anyhow!("not a git repository: {}", repo_path))?;
 
     let filter = opts.filter.clone();
-    let regex = opts.regex.clone();
 
     let mut result = get_diff_inner(&repo_dir, opts)?;
 
     if let Some(ref pattern) = filter {
         result.files = apply_filter(result.files, pattern);
     }
-    if let Some(ref pattern) = regex {
+    if let Some(pattern) = regex {
         result.files = apply_regex_filter(result.files, pattern)?;
     }
 
@@ -538,7 +552,7 @@ fn diff_branch_against_remote(
 
 fn get_diff_inner(repo_dir: &Path, opts: DiffOptions) -> Result<DiffResult> {
     if opts.untracked {
-        let (files, text) = collect_untracked_files(repo_dir)?;
+        let (files, text) = collect_untracked_files(repo_dir, opts.max_untracked_size)?;
         return Ok(DiffResult {
             label: "Untracked files".into(),
             files,
@@ -596,7 +610,7 @@ fn get_diff_inner(repo_dir: &Path, opts: DiffOptions) -> Result<DiffResult> {
     }
 
     if opts.all {
-        let (untracked_files, mut text) = collect_untracked_files(repo_dir)?;
+        let (untracked_files, mut text) = collect_untracked_files(repo_dir, opts.max_untracked_size)?;
 
         // Staged changes
         let mut cached_args = vec!["--cached"];
@@ -758,17 +772,7 @@ mod tests {
     }
 
     fn default_opts() -> DiffOptions {
-        DiffOptions {
-            cached: false,
-            untracked: false,
-            local: false,
-            branch: None,
-            all: false,
-            self_branch: false,
-            context_lines: None,
-            filter: None,
-            regex: None,
-        }
+        DiffOptions::default()
     }
 
     // ── get_status_map ───────────────────────────────────────────
@@ -954,7 +958,7 @@ mod tests {
     fn collect_untracked_single() {
         let dir = setup_test_repo();
         fs::write(dir.path().join("untracked.txt"), "hello").unwrap();
-        let (files, text) = collect_untracked_files(dir.path()).unwrap();
+        let (files, text) = collect_untracked_files(dir.path(), 10 * 1024 * 1024).unwrap();
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].path, "untracked.txt");
         assert_eq!(files[0].status, DeltaStatus::Untracked);
@@ -964,7 +968,7 @@ mod tests {
     #[test]
     fn collect_untracked_none() {
         let dir = setup_test_repo();
-        let (files, text) = collect_untracked_files(dir.path()).unwrap();
+        let (files, text) = collect_untracked_files(dir.path(), 10 * 1024 * 1024).unwrap();
         assert!(files.is_empty());
         assert!(text.is_empty());
     }
@@ -977,7 +981,7 @@ mod tests {
         write_and_stage(dir.path(), "staged.txt", "content");
         let mut opts = default_opts();
         opts.cached = true;
-        let result = get_diff(dir.path().to_str().unwrap(), opts).unwrap();
+        let result = get_diff(dir.path().to_str().unwrap(), opts, None).unwrap();
         assert!(result.label.contains("Staged"));
         assert_eq!(result.files.len(), 1);
     }
@@ -991,7 +995,7 @@ mod tests {
         fs::write(dir.path().join("file.txt"), "v2").unwrap();
         let mut opts = default_opts();
         opts.local = true;
-        let result = get_diff(dir.path().to_str().unwrap(), opts).unwrap();
+        let result = get_diff(dir.path().to_str().unwrap(), opts, None).unwrap();
         assert!(result.label.contains("Local") || result.label.contains("unstaged"));
         assert_eq!(result.files.len(), 1);
     }
@@ -1002,7 +1006,7 @@ mod tests {
         fs::write(dir.path().join("new.txt"), "hello").unwrap();
         let mut opts = default_opts();
         opts.untracked = true;
-        let result = get_diff(dir.path().to_str().unwrap(), opts).unwrap();
+        let result = get_diff(dir.path().to_str().unwrap(), opts, None).unwrap();
         assert!(result.label.contains("Untracked"));
         assert_eq!(result.files.len(), 1);
     }
@@ -1020,7 +1024,7 @@ mod tests {
 
         let mut opts = default_opts();
         opts.all = true;
-        let result = get_diff(dir.path().to_str().unwrap(), opts).unwrap();
+        let result = get_diff(dir.path().to_str().unwrap(), opts, None).unwrap();
         assert!(result.label.contains("All"));
         assert!(result.files.len() >= 2);
     }
@@ -1030,7 +1034,7 @@ mod tests {
         let dir = setup_test_repo();
         let mut opts = default_opts();
         opts.cached = true;
-        let result = get_diff(dir.path().to_str().unwrap(), opts).unwrap();
+        let result = get_diff(dir.path().to_str().unwrap(), opts, None).unwrap();
         assert!(result.files.is_empty());
     }
 
@@ -1042,7 +1046,7 @@ mod tests {
         let mut opts = default_opts();
         opts.cached = true;
         opts.filter = Some("*.rs".to_string());
-        let result = get_diff(dir.path().to_str().unwrap(), opts).unwrap();
+        let result = get_diff(dir.path().to_str().unwrap(), opts, None).unwrap();
         assert_eq!(result.files.len(), 1);
         assert_eq!(result.files[0].path, "keep.rs");
     }
@@ -1054,8 +1058,7 @@ mod tests {
         write_and_stage(dir.path(), "readme.md", "# readme");
         let mut opts = default_opts();
         opts.cached = true;
-        opts.regex = Some(r"\.rs$".to_string());
-        let result = get_diff(dir.path().to_str().unwrap(), opts).unwrap();
+        let result = get_diff(dir.path().to_str().unwrap(), opts, Some(r"\.rs$")).unwrap();
         assert_eq!(result.files.len(), 1);
         assert_eq!(result.files[0].path, "main.rs");
     }

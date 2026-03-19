@@ -30,7 +30,7 @@ pub fn collect_files(root: &str, regex: Option<&str>) -> Result<Vec<String>> {
 }
 
 /// Spawn fzf with the collected file list, return selected paths.
-pub fn run_fzf(root: &str, multi: bool, regex: Option<&str>) -> Result<Vec<String>> {
+pub fn run_fzf(root: &str, multi: bool, regex: Option<&str>, preview_lines: usize) -> Result<Vec<String>> {
     let files = collect_files(root, regex)?;
     if files.is_empty() {
         bail!("no files found under '{}'", root);
@@ -52,7 +52,8 @@ pub fn run_fzf(root: &str, multi: bool, regex: Option<&str>) -> Result<Vec<Strin
             "enter: toggle | tab: confirm | esc: clear selection",
         ]);
     }
-    args.extend_from_slice(&["--preview", "head -100 {}"]);
+    let preview_cmd = format!("head -{preview_lines} {{}}");
+    args.extend_from_slice(&["--preview", &preview_cmd]);
 
     let mut child = match Command::new("fzf")
         .args(&args)

@@ -48,6 +48,11 @@ pub fn build_tree(
             continue;
         }
 
+        // Always skip __pycache__ directories and their contents
+        if rel.components().any(|c| c.as_os_str() == "__pycache__") {
+            continue;
+        }
+
         let is_dir = path.is_dir();
         let rel_str = rel.to_string_lossy();
 

@@ -282,6 +282,14 @@ pub fn print_diff_result(result: DiffResult, no_copy: bool, start: std::time::In
     let meta = meta_parts.join("  ·  ");
 
     println!();
+    if result.files.is_empty() {
+        println!("  {}", "No changes found.".dimmed());
+    } else {
+        let (name_col, add_w, del_w) = print_file_tree(&result.files);
+        print_summary(&result.files, name_col, add_w, del_w);
+        println!();
+    }
+
     println!("  {}  {}  ·  {}", "supp diff".bold().cyan(), result.label.dimmed(), meta.dimmed());
     println!("  {}", "─".repeat(40).dimmed());
 
@@ -291,15 +299,6 @@ pub fn print_diff_result(result: DiffResult, no_copy: bool, start: std::time::In
         } else {
             println!("  {}", "✓ No merge conflicts".green());
         }
-    }
-
-    if result.files.is_empty() {
-        println!("  {}", "No changes found.".dimmed());
-    } else {
-        println!();
-        let (name_col, add_w, del_w) = print_file_tree(&result.files);
-        print_summary(&result.files, name_col, add_w, del_w);
-        println!();
     }
     if let Some(rx) = result.stale_check
         && let Ok(true) = rx.recv_timeout(std::time::Duration::from_millis(300))

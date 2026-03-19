@@ -65,6 +65,15 @@ supp pick src/
 supp -r '\.rs$' pick
 ```
 
+### Configuration
+
+The number of preview lines shown in fzf (default: 100) can be changed in [`~/.supp/config.toml`](config.md):
+
+```toml
+[pick]
+preview_lines = 50
+```
+
 ### Requirements
 
 `fzf` must be installed. If it is not found, `supp pick` will print install instructions.

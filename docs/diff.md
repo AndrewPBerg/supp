@@ -13,6 +13,10 @@ supp [-n] diff [PATH] [OPTIONS]
 | Flag | Short | Description |
 |------|-------|-------------|
 | `--no-copy` | `-n` | Show stats only, skip clipboard copy |
+| `--no-color` | | Disable colored output |
+| `--regex` | `-r` | Regex pattern to filter file paths |
+| `--slim` | `-S` | Strip comments and collapse blank lines |
+| `--map` | `-M` | Extract only signatures and definitions (codemap) |
 
 ## Options
 
@@ -23,7 +27,11 @@ supp [-n] diff [PATH] [OPTIONS]
 | `--local` | `-l` | Unstaged working directory changes |
 | `--branch <BRANCH>` | `-b` | Base branch to compare against |
 | `--all` | `-a` | All local changes (untracked + staged + unstaged) |
-| `--self` | `-s` | Unpushed commits vs `origin/<current-branch>` |
+| `--self-branch` | `-s` | Unpushed commits vs `origin/<current-branch>` |
+| `--unified` | `-U` | Number of context lines in unified diff output (default: 3, configurable) |
+| `--filter` | `-f` | Glob pattern to filter files (e.g. `*.rs`) |
+
+Defaults for `--no-copy`, `--unified`, and the max untracked file size can be set in [`~/.supp/config.toml`](config.md).
 
 ## Modes
 
