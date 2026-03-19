@@ -1,6 +1,7 @@
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
+#[command(args_conflicts_with_subcommands = true)]
 pub struct Cli {
     /// Skip copying to clipboard and just show the stats
     #[arg(short = 'n', long = "no-copy", aliases = &["no"], global = true)]
@@ -14,8 +15,15 @@ pub struct Cli {
     #[arg(short = 'r', long = "regex", global = true)]
     pub regex: Option<String>,
 
+    /// Paths for context generation (files and/or directories)
+    pub paths: Vec<String>,
+
+    /// Tree depth in context header (default: 2)
+    #[arg(short = 'd', long = "depth", default_value = "2")]
+    pub depth: usize,
+
     #[command(subcommand)]
-    pub command: Commands,
+    pub command: Option<Commands>,
 }
 
 #[derive(Subcommand)]
@@ -83,18 +91,41 @@ mod tests {
     #[test]
     fn diff_subcommand() {
         let cli = parse(&["supp", "diff"]).unwrap();
-        assert!(matches!(cli.command, Commands::Diff { .. }));
+        assert!(matches!(cli.command, Some(Commands::Diff { .. })));
     }
 
     #[test]
     fn tree_subcommand() {
         let cli = parse(&["supp", "tree"]).unwrap();
-        assert!(matches!(cli.command, Commands::Tree { .. }));
+        assert!(matches!(cli.command, Some(Commands::Tree { .. })));
     }
 
     #[test]
-    fn no_subcommand_fails() {
-        assert!(parse(&["supp"]).is_err());
+    fn no_subcommand_no_paths_succeeds_empty() {
+        let cli = parse(&["supp"]).unwrap();
+        assert!(cli.command.is_none());
+        assert!(cli.paths.is_empty());
+    }
+
+    #[test]
+    fn context_positional_paths() {
+        let cli = parse(&["supp", "src/main.rs", "src/cli.rs"]).unwrap();
+        assert!(cli.command.is_none());
+        assert_eq!(cli.paths, vec!["src/main.rs", "src/cli.rs"]);
+    }
+
+    #[test]
+    fn context_depth_flag() {
+        let cli = parse(&["supp", "-d", "3", "src/"]).unwrap();
+        assert!(cli.command.is_none());
+        assert_eq!(cli.depth, 3);
+        assert_eq!(cli.paths, vec!["src/"]);
+    }
+
+    #[test]
+    fn context_default_depth() {
+        let cli = parse(&["supp", "src/"]).unwrap();
+        assert_eq!(cli.depth, 2);
     }
 
     // ── Global flags ─────────────────────────────────────────────
@@ -129,7 +160,7 @@ mod tests {
     fn diff_cached() {
         let cli = parse(&["supp", "diff", "-c"]).unwrap();
         match cli.command {
-            Commands::Diff { cached, .. } => assert!(cached),
+            Some(Commands::Diff { cached, .. }) => assert!(cached),
             _ => panic!("expected diff"),
         }
     }
@@ -138,7 +169,7 @@ mod tests {
     fn diff_untracked() {
         let cli = parse(&["supp", "diff", "-u"]).unwrap();
         match cli.command {
-            Commands::Diff { untracked, .. } => assert!(untracked),
+            Some(Commands::Diff { untracked, .. }) => assert!(untracked),
             _ => panic!("expected diff"),
         }
     }
@@ -147,7 +178,7 @@ mod tests {
     fn diff_local() {
         let cli = parse(&["supp", "diff", "-l"]).unwrap();
         match cli.command {
-            Commands::Diff { local, .. } => assert!(local),
+            Some(Commands::Diff { local, .. }) => assert!(local),
             _ => panic!("expected diff"),
         }
     }
@@ -156,7 +187,7 @@ mod tests {
     fn diff_all() {
         let cli = parse(&["supp", "diff", "-a"]).unwrap();
         match cli.command {
-            Commands::Diff { all, .. } => assert!(all),
+            Some(Commands::Diff { all, .. }) => assert!(all),
             _ => panic!("expected diff"),
         }
     }
@@ -165,7 +196,7 @@ mod tests {
     fn diff_self_branch() {
         let cli = parse(&["supp", "diff", "-s"]).unwrap();
         match cli.command {
-            Commands::Diff { self_branch, .. } => assert!(self_branch),
+            Some(Commands::Diff { self_branch, .. }) => assert!(self_branch),
             _ => panic!("expected diff"),
         }
     }
@@ -174,7 +205,7 @@ mod tests {
     fn diff_branch() {
         let cli = parse(&["supp", "diff", "-b", "develop"]).unwrap();
         match cli.command {
-            Commands::Diff { branch, .. } => assert_eq!(branch.as_deref(), Some("develop")),
+            Some(Commands::Diff { branch, .. }) => assert_eq!(branch.as_deref(), Some("develop")),
             _ => panic!("expected diff"),
         }
     }
@@ -183,7 +214,7 @@ mod tests {
     fn diff_context_lines() {
         let cli = parse(&["supp", "diff", "-U", "5"]).unwrap();
         match cli.command {
-            Commands::Diff { context_lines, .. } => assert_eq!(context_lines, Some(5)),
+            Some(Commands::Diff { context_lines, .. }) => assert_eq!(context_lines, Some(5)),
             _ => panic!("expected diff"),
         }
     }
@@ -192,7 +223,7 @@ mod tests {
     fn diff_filter() {
         let cli = parse(&["supp", "diff", "-f", "*.rs"]).unwrap();
         match cli.command {
-            Commands::Diff { filter, .. } => assert_eq!(filter.as_deref(), Some("*.rs")),
+            Some(Commands::Diff { filter, .. }) => assert_eq!(filter.as_deref(), Some("*.rs")),
             _ => panic!("expected diff"),
         }
     }
@@ -201,7 +232,7 @@ mod tests {
     fn diff_positional_path() {
         let cli = parse(&["supp", "diff", "/tmp/repo"]).unwrap();
         match cli.command {
-            Commands::Diff { path, .. } => assert_eq!(path.as_deref(), Some("/tmp/repo")),
+            Some(Commands::Diff { path, .. }) => assert_eq!(path.as_deref(), Some("/tmp/repo")),
             _ => panic!("expected diff"),
         }
     }
@@ -212,7 +243,7 @@ mod tests {
     fn tree_depth() {
         let cli = parse(&["supp", "tree", "-d", "3"]).unwrap();
         match cli.command {
-            Commands::Tree { depth, .. } => assert_eq!(depth, Some(3)),
+            Some(Commands::Tree { depth, .. }) => assert_eq!(depth, Some(3)),
             _ => panic!("expected tree"),
         }
     }
@@ -221,7 +252,7 @@ mod tests {
     fn tree_no_git() {
         let cli = parse(&["supp", "tree", "--no-git"]).unwrap();
         match cli.command {
-            Commands::Tree { no_git, .. } => assert!(no_git),
+            Some(Commands::Tree { no_git, .. }) => assert!(no_git),
             _ => panic!("expected tree"),
         }
     }
@@ -230,7 +261,7 @@ mod tests {
     fn tree_positional_path() {
         let cli = parse(&["supp", "tree", "/tmp/dir"]).unwrap();
         match cli.command {
-            Commands::Tree { path, .. } => assert_eq!(path.as_deref(), Some("/tmp/dir")),
+            Some(Commands::Tree { path, .. }) => assert_eq!(path.as_deref(), Some("/tmp/dir")),
             _ => panic!("expected tree"),
         }
     }
@@ -239,11 +270,11 @@ mod tests {
 
     #[test]
     fn combined_global_and_diff_flags() {
-        let cli = parse(&["supp", "-n", "--no-color", "diff", "-c", "-f", "*.rs"]).unwrap();
+        let cli = parse(&["supp", "diff", "-n", "--no-color", "-c", "-f", "*.rs"]).unwrap();
         assert!(cli.no_copy);
         assert!(cli.no_color);
         match cli.command {
-            Commands::Diff { cached, filter, .. } => {
+            Some(Commands::Diff { cached, filter, .. }) => {
                 assert!(cached);
                 assert_eq!(filter.as_deref(), Some("*.rs"));
             }

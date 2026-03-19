@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 use colored::Colorize;
 use git2::Delta;
 
+use crate::context::ContextResult;
 use crate::git::{DiffResult, FileEntry, FileStatus};
 use crate::tree::TreeResult;
 
@@ -392,6 +393,50 @@ pub fn print_tree_result(result: TreeResult, root: &str, no_copy: bool, start: s
             status_parts.join(", "),
         );
     }
+    println!();
+
+    if no_copy {
+        println!(
+            "  {} {}",
+            "–".dimmed(),
+            format!("({}, not copied)", format_size(result.plain.len())).dimmed(),
+        );
+    } else {
+        match copy_to_clipboard(&result.plain) {
+            Ok(()) => {
+                println!(
+                    "  {} {} {}",
+                    "✓".green().bold(),
+                    "Copied to clipboard".green(),
+                    format!("({})", format_size(result.plain.len())).dimmed(),
+                );
+            }
+            Err(e) => {
+                println!(
+                    "  {} {}",
+                    "✗".red().bold(),
+                    format!("Clipboard error: {}", e).red(),
+                );
+            }
+        }
+    }
+    if let Some(count) = token_handle.join().ok().flatten() {
+        println!(
+            "  {} {}",
+            "≈".dimmed(),
+            format!("~{} tokens (cl100k est.)", format_number(count)).dimmed(),
+        );
+    }
+    println!("  {}", format!("Done in {}", format_elapsed(start.elapsed())).dimmed());
+    println!();
+}
+
+// ── Context display ─────────────────────────────────────────────
+
+pub fn print_context_result(result: ContextResult, no_copy: bool, start: std::time::Instant, token_handle: std::thread::JoinHandle<Option<usize>>) {
+    println!();
+    println!("  {}  {} file{}, {}", "supp".bold().cyan(), result.file_count, if result.file_count == 1 { "" } else { "s" }, format_size(result.total_bytes).dimmed());
+    println!("  {}", "─".repeat(40).dimmed());
     println!();
 
     if no_copy {
