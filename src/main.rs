@@ -155,13 +155,14 @@ fn print_file_tree(files: &[FileEntry]) -> (usize, usize, usize) {
             );
             let line_delta = format!("  {} {}", add_str.green(), del_str.red());
             println!(
-                "{}{}{}{}{}{}",
+                "{}{}{:<width$}{}{}{}",
                 file_prefix.dimmed(),
                 branch_char.dimmed(),
-                format!("{:<width$}", filename, width = global_max_name_col - file_prefix_w - 4),
+                filename,
                 status_label(entry.status),
                 line_delta,
                 rename_hint,
+                width = global_max_name_col - file_prefix_w - 4,
             );
         }
     }
@@ -328,14 +329,14 @@ fn main() -> anyhow::Result<()> {
                     );
                 }
             }
-            if let Some(rx) = result.stale_check {
-                if let Ok(true) = rx.recv_timeout(std::time::Duration::from_millis(300)) {
-                    println!(
-                        "  {} {}",
-                        "⚠".yellow().bold(),
-                        format!("{} has new commits — re-run for latest", result.label.split(" ... ").next().unwrap_or(&result.label)).yellow()
-                    );
-                }
+            if let Some(rx) = result.stale_check
+                && let Ok(true) = rx.recv_timeout(std::time::Duration::from_millis(300))
+            {
+                println!(
+                    "  {} {}",
+                    "⚠".yellow().bold(),
+                    format!("{} has new commits — re-run for latest", result.label.split(" ... ").next().unwrap_or(&result.label)).yellow()
+                );
             }
             println!("  {}", format!("Done in {}", format_elapsed(start.elapsed())).dimmed());
             println!();

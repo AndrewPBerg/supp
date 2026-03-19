@@ -71,34 +71,34 @@ fn collect_untracked_files(repo: &Repository) -> Result<(Vec<FileEntry>, String)
     let mut text = String::with_capacity(estimated_cap.max(4096));
 
     for entry in statuses.iter() {
-        if entry.status().contains(git2::Status::WT_NEW) {
-            if let Some(path) = entry.path() {
-                let full_path = workdir.join(path);
-                let mut additions = 0usize;
+        if entry.status().contains(git2::Status::WT_NEW)
+            && let Some(path) = entry.path()
+        {
+            let full_path = workdir.join(path);
+            let mut additions = 0usize;
 
-                // OOM guard: skip files larger than 10 MB
-                let too_large = std::fs::metadata(&full_path)
-                    .map(|m| m.len() > MAX_UNTRACKED_FILE_SIZE)
-                    .unwrap_or(false);
+            // OOM guard: skip files larger than 10 MB
+            let too_large = std::fs::metadata(&full_path)
+                .map(|m| m.len() > MAX_UNTRACKED_FILE_SIZE)
+                .unwrap_or(false);
 
-                if !too_large {
-                    if let Ok(content) = std::fs::read_to_string(&full_path) {
-                        text.push_str(&format!("--- /dev/null\n+++ b/{}\n", path));
-                        for line in content.lines() {
-                            text.push_str(&format!("+{}\n", line));
-                            additions += 1;
-                        }
-                    }
+            if !too_large
+                && let Ok(content) = std::fs::read_to_string(&full_path)
+            {
+                text.push_str(&format!("--- /dev/null\n+++ b/{}\n", path));
+                for line in content.lines() {
+                    text.push_str(&format!("+{}\n", line));
+                    additions += 1;
                 }
-
-                files.push(FileEntry {
-                    path: path.to_string(),
-                    old_path: None,
-                    status: Delta::Untracked,
-                    additions,
-                    deletions: 0,
-                });
             }
+
+            files.push(FileEntry {
+                path: path.to_string(),
+                old_path: None,
+                status: Delta::Untracked,
+                additions,
+                deletions: 0,
+            });
         }
     }
     Ok((files, text))
