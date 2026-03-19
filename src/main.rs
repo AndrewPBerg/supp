@@ -1,5 +1,8 @@
 mod cli;
+mod compress;
+mod context;
 mod git;
+mod pick;
 mod styles;
 mod tree;
 
@@ -25,7 +28,7 @@ fn main() -> anyhow::Result<()> {
     });
 
     match cli.command {
-        Commands::Diff {
+        Some(Commands::Diff {
             path,
             cached,
             untracked,
@@ -35,7 +38,7 @@ fn main() -> anyhow::Result<()> {
             self_branch,
             context_lines,
             filter,
-        } => {
+        }) => {
             let repo_path = path.as_deref().unwrap_or(".");
             let opts = DiffOptions {
                 cached,
@@ -52,7 +55,24 @@ fn main() -> anyhow::Result<()> {
             let _ = text_tx.send(result.text.clone());
             styles::print_diff_result(result, cli.no_copy, start, token_handle);
         }
-        Commands::Tree { path, depth, no_git } => {
+        Some(Commands::Completions { shell }) => {
+            Cli::generate_completions(shell);
+            return Ok(());
+        }
+        Some(Commands::Pick { ref path, single }) => {
+            let root = path.as_deref().unwrap_or(".");
+            let selected = pick::run_fzf(root, !single, cli.regex.as_deref())?;
+            if selected.is_empty() {
+                return Ok(());
+            }
+            let pick_start = std::time::Instant::now();
+            let result = context::generate_context(&selected, cli.depth, cli.regex.as_deref(), cli.resolve_mode())?;
+            let _ = text_tx.send(result.plain.clone());
+            println!("{}", selected.join(" "));
+            styles::print_pick_stats(result, cli.no_copy, pick_start, token_handle);
+            return Ok(());
+        }
+        Some(Commands::Tree { path, depth, no_git }) => {
             let root = path.as_deref().unwrap_or(".");
 
             let statuses = if no_git {
@@ -65,6 +85,14 @@ fn main() -> anyhow::Result<()> {
             let result = tree::build_tree(root, depth, cli.regex.as_deref(), status_ref)?;
             let _ = text_tx.send(result.plain.clone());
             styles::print_tree_result(result, root, cli.no_copy, start, token_handle);
+        }
+        None => {
+            if cli.paths.is_empty() {
+                anyhow::bail!("no paths provided. Usage: supp <paths...> or supp <subcommand>");
+            }
+            let result = context::generate_context(&cli.paths, cli.depth, cli.regex.as_deref(), cli.resolve_mode())?;
+            let _ = text_tx.send(result.plain.clone());
+            styles::print_context_result(result, cli.no_copy, start, token_handle);
         }
     }
     Ok(())

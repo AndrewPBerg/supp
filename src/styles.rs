@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 use colored::Colorize;
 use git2::Delta;
 
+use crate::context::ContextResult;
 use crate::git::{DiffResult, FileEntry, FileStatus};
 use crate::tree::TreeResult;
 
@@ -260,7 +261,7 @@ fn print_summary(files: &[FileEntry], global_max_name_col: usize, max_add_w: usi
     );
 }
 
-fn format_number(n: usize) -> String {
+pub(crate) fn format_number(n: usize) -> String {
     let s = n.to_string();
     let mut result = String::new();
     for (i, c) in s.chars().rev().enumerate() {
@@ -273,8 +274,18 @@ fn format_number(n: usize) -> String {
 }
 
 pub fn print_diff_result(result: DiffResult, no_copy: bool, start: std::time::Instant, token_handle: std::thread::JoinHandle<Option<usize>>) {
+    let now = chrono::Local::now().format("%Y-%m-%d %H:%M").to_string();
+
+    let mut meta_parts: Vec<String> = Vec::new();
+    if let Some(count) = result.commit_count {
+        let suffix = if count == 1 { "commit" } else { "commits" };
+        meta_parts.push(format!("{} {}", count, suffix));
+    }
+    meta_parts.push(now.clone());
+    let meta = meta_parts.join("  ·  ");
+
     println!();
-    println!("  {}  {}", "supp diff".bold().cyan(), result.label.dimmed());
+    println!("  {}  {}  ·  {}", "supp diff".bold().cyan(), result.label.dimmed(), meta.dimmed());
     println!("  {}", "─".repeat(40).dimmed());
 
     if result.is_branch_comparison {
@@ -292,32 +303,6 @@ pub fn print_diff_result(result: DiffResult, no_copy: bool, start: std::time::In
         let (name_col, add_w, del_w) = print_file_tree(&result.files);
         print_summary(&result.files, name_col, add_w, del_w);
         println!();
-
-        if no_copy {
-            println!(
-                "  {} {}",
-                "–".dimmed(),
-                format!("({}, not copied)", format_size(result.text.len())).dimmed(),
-            );
-        } else {
-            match copy_to_clipboard(&result.text) {
-                Ok(()) => {
-                    println!(
-                        "  {} {} {}",
-                        "✓".green().bold(),
-                        "Copied to clipboard".green(),
-                        format!("({})", format_size(result.text.len())).dimmed(),
-                    );
-                }
-                Err(e) => {
-                    println!(
-                        "  {} {}",
-                        "✗".red().bold(),
-                        format!("Clipboard error: {}", e).red(),
-                    );
-                }
-            }
-        }
     }
     if let Some(rx) = result.stale_check
         && let Ok(true) = rx.recv_timeout(std::time::Duration::from_millis(300))
@@ -328,15 +313,12 @@ pub fn print_diff_result(result: DiffResult, no_copy: bool, start: std::time::In
             format!("{} has new commits — re-run for latest", result.label.split(" ... ").next().unwrap_or(&result.label)).yellow()
         );
     }
-    if let Some(count) = token_handle.join().ok().flatten() {
-        println!(
-            "  {} {}",
-            "≈".dimmed(),
-            format!("~{} tokens (cl100k est.)", format_number(count)).dimmed(),
-        );
-    }
-    println!("  {}", format!("Done in {}", format_elapsed(start.elapsed())).dimmed());
-    println!();
+    let mut clipboard_header = format!("supp diff  {}\n", result.label);
+    clipboard_header.push_str(&meta);
+    clipboard_header.push_str("\n---\n\n");
+    let clipboard_text = format!("{}{}", clipboard_header, result.text);
+
+    print_footer(&clipboard_text, no_copy, start, token_handle, None, false);
 }
 
 // ── Tree display ───────────────────────────────────────────────────
@@ -394,24 +376,43 @@ pub fn print_tree_result(result: TreeResult, root: &str, no_copy: bool, start: s
     }
     println!();
 
+    print_footer(&result.plain, no_copy, start, token_handle, None, false);
+}
+
+// ── Shared footer (clipboard, compression, tokens, timing) ──────
+
+fn print_footer(
+    text: &str,
+    no_copy: bool,
+    start: std::time::Instant,
+    token_handle: std::thread::JoinHandle<Option<usize>>,
+    original_bytes: Option<(usize, usize)>,
+    use_stderr: bool,
+) {
+    macro_rules! out {
+        ($($arg:tt)*) => {
+            if use_stderr { eprintln!($($arg)*); } else { println!($($arg)*); }
+        };
+    }
+
     if no_copy {
-        println!(
+        out!(
             "  {} {}",
             "–".dimmed(),
-            format!("({}, not copied)", format_size(result.plain.len())).dimmed(),
+            format!("({}, not copied)", format_size(text.len())).dimmed(),
         );
     } else {
-        match copy_to_clipboard(&result.plain) {
+        match copy_to_clipboard(text) {
             Ok(()) => {
-                println!(
+                out!(
                     "  {} {} {}",
                     "✓".green().bold(),
                     "Copied to clipboard".green(),
-                    format!("({})", format_size(result.plain.len())).dimmed(),
+                    format!("({})", format_size(text.len())).dimmed(),
                 );
             }
             Err(e) => {
-                println!(
+                out!(
                     "  {} {}",
                     "✗".red().bold(),
                     format!("Clipboard error: {}", e).red(),
@@ -419,13 +420,191 @@ pub fn print_tree_result(result: TreeResult, root: &str, no_copy: bool, start: s
             }
         }
     }
+    if let Some((original, total)) = original_bytes
+        && original > total
+    {
+        let pct = 100.0 * (1.0 - total as f64 / original as f64);
+        out!(
+            "  {} {}",
+            "↓".dimmed(),
+            format!(
+                "{} → {} ({:.0}% reduction)",
+                format_size(original),
+                format_size(total),
+                pct,
+            ).dimmed(),
+        );
+    }
     if let Some(count) = token_handle.join().ok().flatten() {
-        println!(
+        out!(
             "  {} {}",
             "≈".dimmed(),
             format!("~{} tokens (cl100k est.)", format_number(count)).dimmed(),
         );
     }
-    println!("  {}", format!("Done in {}", format_elapsed(start.elapsed())).dimmed());
+    out!("  {}", format!("Done in {}", format_elapsed(start.elapsed())).dimmed());
+    out!();
+}
+
+// ── Context display ─────────────────────────────────────────────
+
+pub fn print_context_result(result: ContextResult, no_copy: bool, start: std::time::Instant, token_handle: std::thread::JoinHandle<Option<usize>>) {
     println!();
+    println!("  {}  {} file{}, {} line{}, {}", "supp".bold().cyan(), result.file_count, if result.file_count == 1 { "" } else { "s" }, result.total_lines, if result.total_lines == 1 { "" } else { "s" }, format_size(result.total_bytes).dimmed());
+    println!("  {}", "─".repeat(40).dimmed());
+    println!();
+
+    let compression = Some((result.original_bytes, result.total_bytes));
+    print_footer(&result.plain, no_copy, start, token_handle, compression, false);
+}
+
+// ── Pick display ────────────────────────────────────────────────
+
+pub fn print_pick_stats(result: ContextResult, no_copy: bool, start: std::time::Instant, token_handle: std::thread::JoinHandle<Option<usize>>) {
+    eprintln!();
+    eprintln!("  {}  {} file{}, {} line{}, {}", "pick".bold().cyan(), result.file_count, if result.file_count == 1 { "" } else { "s" }, result.total_lines, if result.total_lines == 1 { "" } else { "s" }, format_size(result.total_bytes).dimmed());
+    eprintln!("  {}", "─".repeat(40).dimmed());
+    eprintln!();
+
+    let compression = Some((result.original_bytes, result.total_bytes));
+    print_footer(&result.plain, no_copy, start, token_handle, compression, true);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    // ── format_size ──────────────────────────────────────────────
+
+    #[test]
+    fn format_size_zero_bytes() {
+        assert_eq!(format_size(0), "0 B");
+    }
+
+    #[test]
+    fn format_size_one_byte() {
+        assert_eq!(format_size(1), "1 B");
+    }
+
+    #[test]
+    fn format_size_just_below_kb() {
+        assert_eq!(format_size(1023), "1023 B");
+    }
+
+    #[test]
+    fn format_size_exact_kb() {
+        assert_eq!(format_size(1024), "1.0 KB");
+    }
+
+    #[test]
+    fn format_size_1_5_kb() {
+        assert_eq!(format_size(1536), "1.5 KB");
+    }
+
+    #[test]
+    fn format_size_just_below_mb() {
+        assert_eq!(format_size(1_048_575), "1024.0 KB");
+    }
+
+    #[test]
+    fn format_size_exact_mb() {
+        assert_eq!(format_size(1_048_576), "1.0 MB");
+    }
+
+    #[test]
+    fn format_size_exact_gb() {
+        assert_eq!(format_size(1_073_741_824), "1.0 GB");
+    }
+
+    // ── format_elapsed ───────────────────────────────────────────
+
+    #[test]
+    fn format_elapsed_zero() {
+        assert_eq!(format_elapsed(Duration::from_millis(0)), "0ms");
+    }
+
+    #[test]
+    fn format_elapsed_150ms() {
+        assert_eq!(format_elapsed(Duration::from_millis(150)), "150ms");
+    }
+
+    #[test]
+    fn format_elapsed_999ms() {
+        assert_eq!(format_elapsed(Duration::from_millis(999)), "999ms");
+    }
+
+    #[test]
+    fn format_elapsed_1000ms_switches_to_seconds() {
+        assert_eq!(format_elapsed(Duration::from_millis(1000)), "1.00s");
+    }
+
+    #[test]
+    fn format_elapsed_2500ms() {
+        assert_eq!(format_elapsed(Duration::from_millis(2500)), "2.50s");
+    }
+
+    // ── format_number ────────────────────────────────────────────
+
+    #[test]
+    fn format_number_zero() {
+        assert_eq!(format_number(0), "0");
+    }
+
+    #[test]
+    fn format_number_small() {
+        assert_eq!(format_number(42), "42");
+    }
+
+    #[test]
+    fn format_number_999() {
+        assert_eq!(format_number(999), "999");
+    }
+
+    #[test]
+    fn format_number_1000() {
+        assert_eq!(format_number(1000), "1,000");
+    }
+
+    #[test]
+    fn format_number_12345() {
+        assert_eq!(format_number(12345), "12,345");
+    }
+
+    #[test]
+    fn format_number_millions() {
+        assert_eq!(format_number(1_234_567), "1,234,567");
+    }
+
+    // ── file_status_indicator ────────────────────────────────────
+
+    #[test]
+    fn file_status_indicator_modified() {
+        let (plain, _) = file_status_indicator(FileStatus::Modified);
+        assert_eq!(plain, "[M]");
+    }
+
+    #[test]
+    fn file_status_indicator_added() {
+        let (plain, _) = file_status_indicator(FileStatus::Added);
+        assert_eq!(plain, "[A]");
+    }
+
+    #[test]
+    fn file_status_indicator_deleted() {
+        let (plain, _) = file_status_indicator(FileStatus::Deleted);
+        assert_eq!(plain, "[D]");
+    }
+
+    #[test]
+    fn file_status_indicator_renamed() {
+        let (plain, _) = file_status_indicator(FileStatus::Renamed);
+        assert_eq!(plain, "[R]");
+    }
+
+    #[test]
+    fn file_status_indicator_untracked() {
+        let (plain, _) = file_status_indicator(FileStatus::Untracked);
+        assert_eq!(plain, "[?]");
+    }
 }

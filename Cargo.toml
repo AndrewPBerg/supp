@@ -5,10 +5,24 @@ edition = "2024"
 
 [dependencies]
 anyhow = "1.0.102"
+chrono = "0.4"
 arboard = "3"
 clap = { version = "4.6.0", features = ["derive"] }
+clap_complete = "4"
 colored = "2"
 git2 = "0.20.4"
 ignore = "0.4.25"
 regex = "1"
 tiktoken-rs = "0.9"
+tree-sitter = "0.24"
+tree-sitter-rust = "0.23"
+tree-sitter-python = "0.23"
+tree-sitter-javascript = "0.23"
+tree-sitter-typescript = "0.23"
+tree-sitter-go = "0.23"
+tree-sitter-c = "0.23"
+tree-sitter-cpp = "0.23"
+tree-sitter-java = "0.23"
+
+[dev-dependencies]
+tempfile = "3"

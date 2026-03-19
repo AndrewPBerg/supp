@@ -90,6 +90,7 @@ pub struct DiffResult {
     pub text: String,
     pub has_conflicts: bool,
     pub is_branch_comparison: bool,
+    pub commit_count: Option<usize>,
     pub stale_check: Option<mpsc::Receiver<bool>>,
 }
 
@@ -121,7 +122,7 @@ fn make_fetch_options(repo: &Repository) -> Result<git2::FetchOptions<'_>> {
 }
 
 /// Collect untracked files from the working directory.
-fn collect_untracked_files(repo: &Repository) -> Result<(Vec<FileEntry>, String)> {
+pub(crate) fn collect_untracked_files(repo: &Repository) -> Result<(Vec<FileEntry>, String)> {
     let statuses = repo.statuses(None)?;
     let workdir = repo.workdir().ok_or_else(|| anyhow!("bare repository"))?;
     let estimated_cap = statuses.len() * 256;
@@ -170,7 +171,7 @@ fn collect_untracked_files(repo: &Repository) -> Result<(Vec<FileEntry>, String)
 
 /// Collects the patch text and per-file line counts in a single pass, then
 /// merges them with the delta metadata to produce `FileEntry` list.
-fn collect_diff_data(diff: &git2::Diff) -> (Vec<FileEntry>, String) {
+pub(crate) fn collect_diff_data(diff: &git2::Diff) -> (Vec<FileEntry>, String) {
     let capacity = diff
         .stats()
         .map(|s| (s.insertions() + s.deletions()) * 80)
@@ -239,7 +240,7 @@ fn collect_diff_data(diff: &git2::Diff) -> (Vec<FileEntry>, String) {
 }
 
 /// Apply glob filter to file entries, removing non-matching paths.
-fn apply_filter(files: Vec<FileEntry>, filter: &str) -> Vec<FileEntry> {
+pub(crate) fn apply_filter(files: Vec<FileEntry>, filter: &str) -> Vec<FileEntry> {
     let glob = ignore::gitignore::GitignoreBuilder::new("")
         .add_line(None, filter)
         .ok()
@@ -259,7 +260,7 @@ fn apply_filter(files: Vec<FileEntry>, filter: &str) -> Vec<FileEntry> {
 }
 
 /// Apply regex filter to file entries, keeping paths that match.
-fn apply_regex_filter(files: Vec<FileEntry>, pattern: &str) -> Result<Vec<FileEntry>> {
+pub(crate) fn apply_regex_filter(files: Vec<FileEntry>, pattern: &str) -> Result<Vec<FileEntry>> {
     let re = regex::Regex::new(pattern)
         .map_err(|e| anyhow!("invalid regex '{}': {}", pattern, e))?;
     Ok(files.into_iter().filter(|f| re.is_match(&f.path)).collect())
@@ -288,6 +289,66 @@ pub fn get_diff(repo_path: &str, opts: DiffOptions) -> Result<DiffResult> {
     Ok(result)
 }
 
+fn diff_branch_against_remote(
+    repo: &Repository,
+    _local_branch: &str,
+    remote_branch: &str,
+    diff_opts: &mut git2::DiffOptions,
+    label: String,
+) -> Result<DiffResult> {
+    let refname = format!("refs/remotes/origin/{}", remote_branch);
+    let pre_oid = repo.find_reference(&refname).ok().and_then(|r| r.target());
+
+    let (tx, rx) = mpsc::channel();
+    let repo_path_owned = repo.path().to_path_buf();
+    let branch_for_fetch = remote_branch.to_string();
+    std::thread::spawn(move || {
+        let result = (|| -> Option<bool> {
+            let repo = Repository::open(&repo_path_owned).ok()?;
+            let mut fetch_opts = make_fetch_options(&repo).ok()?;
+            let mut remote = repo.find_remote("origin").ok()?;
+            remote.fetch(&[&branch_for_fetch], Some(&mut fetch_opts), None).ok()?;
+            let post_oid = repo.find_reference(&format!("refs/remotes/origin/{}", branch_for_fetch))
+                .ok()?.target();
+            Some(pre_oid != post_oid)
+        })();
+        let _ = tx.send(result.unwrap_or(false));
+    });
+
+    let base_ref = repo.find_reference(&refname)?;
+    let base_commit = base_ref.peel_to_commit()?;
+    let base_tree = base_commit.tree()?;
+
+    let head = repo.head()?;
+    let local_commit = head.peel_to_commit()?;
+    let local_tree = local_commit.tree()?;
+
+    let commit_count = (|| -> Option<usize> {
+        let mut revwalk = repo.revwalk().ok()?;
+        revwalk.push(local_commit.id()).ok()?;
+        revwalk.hide(base_commit.id()).ok()?;
+        Some(revwalk.count())
+    })();
+
+    let diff = repo.diff_tree_to_tree(Some(&base_tree), Some(&local_tree), Some(diff_opts))?;
+    let (files, text) = collect_diff_data(&diff);
+
+    let has_conflicts = repo
+        .merge_commits(&base_commit, &local_commit, None)
+        .map(|idx| idx.has_conflicts())
+        .unwrap_or(false);
+
+    Ok(DiffResult {
+        label,
+        files,
+        text,
+        has_conflicts,
+        is_branch_comparison: true,
+        commit_count,
+        stale_check: Some(rx),
+    })
+}
+
 fn get_diff_inner(
     repo: &Repository,
     _repo_path: &str,
@@ -302,6 +363,7 @@ fn get_diff_inner(
             text,
             has_conflicts: false,
             is_branch_comparison: false,
+            commit_count: None,
             stale_check: None,
         });
     }
@@ -323,6 +385,7 @@ fn get_diff_inner(
             text,
             has_conflicts: false,
             is_branch_comparison: false,
+            commit_count: None,
             stale_check: None,
         });
     }
@@ -336,6 +399,7 @@ fn get_diff_inner(
             text,
             has_conflicts: false,
             is_branch_comparison: false,
+            commit_count: None,
             stale_check: None,
         });
     }
@@ -399,64 +463,11 @@ fn get_diff_inner(
             text,
             has_conflicts: false,
             is_branch_comparison: false,
+            commit_count: None,
             stale_check: None,
         });
     }
 
-    if opts.self_branch {
-        let current_branch = {
-            let head = repo.head()?;
-            head.shorthand()
-                .ok_or_else(|| anyhow!("Detached HEAD — use -b <branch> to specify a target"))?
-                .to_string()
-        };
-
-        let refname = format!("refs/remotes/origin/{}", current_branch);
-        let pre_oid = repo.find_reference(&refname).ok().and_then(|r| r.target());
-
-        let (tx, rx) = mpsc::channel();
-        let repo_path_owned = repo.path().to_path_buf();
-        let branch_for_fetch = current_branch.clone();
-        std::thread::spawn(move || {
-            let result = (|| -> Option<bool> {
-                let repo = Repository::open(&repo_path_owned).ok()?;
-                let mut fetch_opts = make_fetch_options(&repo).ok()?;
-                let mut remote = repo.find_remote("origin").ok()?;
-                remote.fetch(&[&branch_for_fetch], Some(&mut fetch_opts), None).ok()?;
-                let post_oid = repo.find_reference(&format!("refs/remotes/origin/{}", branch_for_fetch))
-                    .ok()?.target();
-                Some(pre_oid != post_oid)
-            })();
-            let _ = tx.send(result.unwrap_or(false));
-        });
-
-        let base_ref = repo.find_reference(&refname)?;
-        let base_commit = base_ref.peel_to_commit()?;
-        let base_tree = base_commit.tree()?;
-
-        let head = repo.head()?;
-        let local_commit = head.peel_to_commit()?;
-        let local_tree = local_commit.tree()?;
-
-        let diff = repo.diff_tree_to_tree(Some(&base_tree), Some(&local_tree), Some(diff_opts))?;
-        let (files, text) = collect_diff_data(&diff);
-
-        let has_conflicts = repo
-            .merge_commits(&base_commit, &local_commit, None)
-            .map(|idx| idx.has_conflicts())
-            .unwrap_or(false);
-
-        return Ok(DiffResult {
-            label: format!("origin/{} ... {}", current_branch, current_branch),
-            files,
-            text,
-            has_conflicts,
-            is_branch_comparison: true,
-            stale_check: Some(rx),
-        });
-    }
-
-    // Remote diff (default): compare current branch against the default branch
     let current_branch = {
         let head = repo.head()?;
         head.shorthand()
@@ -464,6 +475,17 @@ fn get_diff_inner(
             .to_string()
     };
 
+    if opts.self_branch {
+        return diff_branch_against_remote(
+            repo,
+            &current_branch,
+            &current_branch,
+            diff_opts,
+            format!("origin/{} ... {}", current_branch, current_branch),
+        );
+    }
+
+    // Remote diff (default): compare current branch against the default branch
     let base_branch = match opts.branch {
         Some(b) => b,
         None => {
@@ -486,47 +508,379 @@ fn get_diff_inner(
         }
     };
 
-    let refname = format!("refs/remotes/origin/{}", base_branch);
-    let pre_oid = repo.find_reference(&refname).ok().and_then(|r| r.target());
+    diff_branch_against_remote(
+        repo,
+        &current_branch,
+        &base_branch,
+        diff_opts,
+        format!("origin/{} ... {}", base_branch, current_branch),
+    )
+}
 
-    let (tx, rx) = mpsc::channel();
-    let repo_path_owned = repo.path().to_path_buf();
-    let branch_for_fetch = base_branch.clone();
-    std::thread::spawn(move || {
-        let result = (|| -> Option<bool> {
-            let repo = Repository::open(&repo_path_owned).ok()?;
-            let mut fetch_opts = make_fetch_options(&repo).ok()?;
-            let mut remote = repo.find_remote("origin").ok()?;
-            remote.fetch(&[&branch_for_fetch], Some(&mut fetch_opts), None).ok()?;
-            let post_oid = repo.find_reference(&format!("refs/remotes/origin/{}", branch_for_fetch))
-                .ok()?.target();
-            Some(pre_oid != post_oid)
-        })();
-        let _ = tx.send(result.unwrap_or(false));
-    });
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use git2::{Repository, Signature};
+    use tempfile::TempDir;
+    use std::fs;
 
-    let base_ref = repo.find_reference(&refname)?;
-    let base_commit = base_ref.peel_to_commit()?;
-    let base_tree = base_commit.tree()?;
+    fn setup_test_repo() -> (TempDir, Repository) {
+        let dir = TempDir::new().unwrap();
+        let repo = Repository::init(dir.path()).unwrap();
 
-    let head = repo.head()?;
-    let local_commit = head.peel_to_commit()?;
-    let local_tree = local_commit.tree()?;
+        // Configure user for commits
+        let mut config = repo.config().unwrap();
+        config.set_str("user.name", "Test").unwrap();
+        config.set_str("user.email", "test@test.com").unwrap();
 
-    let diff = repo.diff_tree_to_tree(Some(&base_tree), Some(&local_tree), Some(diff_opts))?;
-    let (files, text) = collect_diff_data(&diff);
+        // Create initial commit so HEAD exists
+        {
+            let sig = Signature::now("Test", "test@test.com").unwrap();
+            let tree_id = repo.index().unwrap().write_tree().unwrap();
+            let tree = repo.find_tree(tree_id).unwrap();
+            repo.commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[]).unwrap();
+        }
 
-    let has_conflicts = repo
-        .merge_commits(&base_commit, &local_commit, None)
-        .map(|idx| idx.has_conflicts())
-        .unwrap_or(false);
+        (dir, repo)
+    }
 
-    Ok(DiffResult {
-        label: format!("origin/{} ... {}", base_branch, current_branch),
-        files,
-        text,
-        has_conflicts,
-        is_branch_comparison: true,
-        stale_check: Some(rx),
-    })
+    fn write_and_stage(repo: &Repository, dir: &std::path::Path, name: &str, content: &str) {
+        let path = dir.join(name);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        fs::write(&path, content).unwrap();
+        let mut index = repo.index().unwrap();
+        index.add_path(std::path::Path::new(name)).unwrap();
+        index.write().unwrap();
+    }
+
+    fn default_opts() -> DiffOptions {
+        DiffOptions {
+            cached: false,
+            untracked: false,
+            local: false,
+            branch: None,
+            all: false,
+            self_branch: false,
+            context_lines: None,
+            filter: None,
+            regex: None,
+        }
+    }
+
+    // ── get_status_map ───────────────────────────────────────────
+
+    #[test]
+    fn status_map_non_git_dir() {
+        let dir = TempDir::new().unwrap();
+        let result = get_status_map(dir.path().to_str().unwrap()).unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn status_map_clean_repo() {
+        let (dir, _repo) = setup_test_repo();
+        let result = get_status_map(dir.path().to_str().unwrap()).unwrap().unwrap();
+        assert!(result.0.is_empty());
+    }
+
+    #[test]
+    fn status_map_untracked() {
+        let (dir, _repo) = setup_test_repo();
+        fs::write(dir.path().join("new.txt"), "hello").unwrap();
+        let (map, _) = get_status_map(dir.path().to_str().unwrap()).unwrap().unwrap();
+        assert_eq!(map.get("new.txt"), Some(&FileStatus::Untracked));
+    }
+
+    #[test]
+    fn status_map_staged_new() {
+        let (dir, repo) = setup_test_repo();
+        write_and_stage(&repo, dir.path(), "added.txt", "content");
+        let (map, _) = get_status_map(dir.path().to_str().unwrap()).unwrap().unwrap();
+        assert_eq!(map.get("added.txt"), Some(&FileStatus::Added));
+    }
+
+    #[test]
+    fn status_map_modified() {
+        let (dir, repo) = setup_test_repo();
+        write_and_stage(&repo, dir.path(), "file.txt", "v1");
+        // Commit it
+        let sig = Signature::now("Test", "test@test.com").unwrap();
+        let tree_id = repo.index().unwrap().write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        let head = repo.head().unwrap().peel_to_commit().unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "add file", &tree, &[&head]).unwrap();
+        // Modify it
+        fs::write(dir.path().join("file.txt"), "v2").unwrap();
+        let (map, _) = get_status_map(dir.path().to_str().unwrap()).unwrap().unwrap();
+        assert_eq!(map.get("file.txt"), Some(&FileStatus::Modified));
+    }
+
+    #[test]
+    fn status_map_deleted() {
+        let (dir, repo) = setup_test_repo();
+        write_and_stage(&repo, dir.path(), "file.txt", "content");
+        let sig = Signature::now("Test", "test@test.com").unwrap();
+        let tree_id = repo.index().unwrap().write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        let head = repo.head().unwrap().peel_to_commit().unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "add file", &tree, &[&head]).unwrap();
+        // Delete it
+        fs::remove_file(dir.path().join("file.txt")).unwrap();
+        let (map, _) = get_status_map(dir.path().to_str().unwrap()).unwrap().unwrap();
+        assert_eq!(map.get("file.txt"), Some(&FileStatus::Deleted));
+    }
+
+    #[test]
+    fn status_map_subdirectory_prefix() {
+        let (dir, repo) = setup_test_repo();
+        write_and_stage(&repo, dir.path(), "sub/file.txt", "content");
+        let (map, _) = get_status_map(dir.path().to_str().unwrap()).unwrap().unwrap();
+        assert!(map.contains_key("sub/file.txt"));
+    }
+
+    // ── apply_filter ─────────────────────────────────────────────
+
+    fn make_entry(path: &str) -> FileEntry {
+        FileEntry {
+            path: path.to_string(),
+            old_path: None,
+            status: Delta::Modified,
+            additions: 1,
+            deletions: 0,
+            patch: String::new(),
+        }
+    }
+
+    #[test]
+    fn filter_keeps_matching() {
+        let files = vec![make_entry("src/main.rs"), make_entry("readme.md")];
+        let result = apply_filter(files, "*.rs");
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].path, "src/main.rs");
+    }
+
+    #[test]
+    fn filter_no_match_empty() {
+        let files = vec![make_entry("main.rs")];
+        let result = apply_filter(files, "*.xyz");
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn filter_star_keeps_all() {
+        let files = vec![make_entry("a.rs"), make_entry("b.txt")];
+        let result = apply_filter(files, "*");
+        assert_eq!(result.len(), 2);
+    }
+
+    #[test]
+    fn filter_invalid_glob_graceful() {
+        let files = vec![make_entry("a.rs")];
+        // Invalid glob should return all files (no matcher built)
+        let result = apply_filter(files, "[invalid");
+        // Either returns all or none — just shouldn't panic
+        let _ = result;
+    }
+
+    // ── apply_regex_filter ───────────────────────────────────────
+
+    #[test]
+    fn regex_filter_keeps_matching() {
+        let files = vec![make_entry("src/main.rs"), make_entry("readme.md")];
+        let result = apply_regex_filter(files, r"\.rs$").unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].path, "src/main.rs");
+    }
+
+    #[test]
+    fn regex_filter_no_match() {
+        let files = vec![make_entry("main.rs")];
+        let result = apply_regex_filter(files, r"\.py$").unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn regex_filter_invalid_returns_err() {
+        let files = vec![make_entry("a.rs")];
+        assert!(apply_regex_filter(files, r"[invalid").is_err());
+    }
+
+    // ── collect_diff_data ────────────────────────────────────────
+
+    #[test]
+    fn collect_diff_single_modified_file() {
+        let (dir, repo) = setup_test_repo();
+        write_and_stage(&repo, dir.path(), "file.txt", "line1\n");
+        let sig = Signature::now("Test", "test@test.com").unwrap();
+        let tree_id = repo.index().unwrap().write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        let head = repo.head().unwrap().peel_to_commit().unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "add", &tree, &[&head]).unwrap();
+
+        // Modify and stage
+        write_and_stage(&repo, dir.path(), "file.txt", "line1\nline2\n");
+        let head2 = repo.head().unwrap().peel_to_commit().unwrap();
+        let head_tree = head2.tree().unwrap();
+        let diff = repo.diff_tree_to_index(Some(&head_tree), None, None).unwrap();
+
+        let (files, text) = collect_diff_data(&diff);
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path, "file.txt");
+        assert!(files[0].additions > 0);
+        assert!(!text.is_empty());
+    }
+
+    #[test]
+    fn collect_diff_empty() {
+        let (_dir, repo) = setup_test_repo();
+        let head = repo.head().unwrap().peel_to_commit().unwrap();
+        let tree = head.tree().unwrap();
+        let diff = repo.diff_tree_to_index(Some(&tree), None, None).unwrap();
+        let (files, text) = collect_diff_data(&diff);
+        assert!(files.is_empty());
+        assert!(text.is_empty());
+    }
+
+    #[test]
+    fn collect_diff_multiple_files() {
+        let (dir, repo) = setup_test_repo();
+        write_and_stage(&repo, dir.path(), "a.txt", "a");
+        write_and_stage(&repo, dir.path(), "b.txt", "b");
+        let sig = Signature::now("Test", "test@test.com").unwrap();
+        let tree_id = repo.index().unwrap().write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        let head = repo.head().unwrap().peel_to_commit().unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "add files", &tree, &[&head]).unwrap();
+
+        write_and_stage(&repo, dir.path(), "a.txt", "a modified");
+        write_and_stage(&repo, dir.path(), "b.txt", "b modified");
+        let head2 = repo.head().unwrap().peel_to_commit().unwrap();
+        let head_tree = head2.tree().unwrap();
+        let diff = repo.diff_tree_to_index(Some(&head_tree), None, None).unwrap();
+
+        let (files, _) = collect_diff_data(&diff);
+        assert_eq!(files.len(), 2);
+    }
+
+    // ── collect_untracked_files ──────────────────────────────────
+
+    #[test]
+    fn collect_untracked_single() {
+        let (dir, repo) = setup_test_repo();
+        fs::write(dir.path().join("untracked.txt"), "hello").unwrap();
+        let (files, text) = collect_untracked_files(&repo).unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path, "untracked.txt");
+        assert_eq!(files[0].status, Delta::Untracked);
+        assert!(!text.is_empty());
+    }
+
+    #[test]
+    fn collect_untracked_none() {
+        let (_dir, repo) = setup_test_repo();
+        let (files, text) = collect_untracked_files(&repo).unwrap();
+        assert!(files.is_empty());
+        assert!(text.is_empty());
+    }
+
+    // ── get_diff (public) ────────────────────────────────────────
+
+    #[test]
+    fn get_diff_cached_mode() {
+        let (dir, repo) = setup_test_repo();
+        write_and_stage(&repo, dir.path(), "staged.txt", "content");
+        let mut opts = default_opts();
+        opts.cached = true;
+        let result = get_diff(dir.path().to_str().unwrap(), opts).unwrap();
+        assert!(result.label.contains("Staged"));
+        assert_eq!(result.files.len(), 1);
+    }
+
+    #[test]
+    fn get_diff_local_mode() {
+        let (dir, repo) = setup_test_repo();
+        write_and_stage(&repo, dir.path(), "file.txt", "v1");
+        let sig = Signature::now("Test", "test@test.com").unwrap();
+        let tree_id = repo.index().unwrap().write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        let head = repo.head().unwrap().peel_to_commit().unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "add", &tree, &[&head]).unwrap();
+        // Now modify without staging
+        fs::write(dir.path().join("file.txt"), "v2").unwrap();
+        let mut opts = default_opts();
+        opts.local = true;
+        let result = get_diff(dir.path().to_str().unwrap(), opts).unwrap();
+        assert!(result.label.contains("Local") || result.label.contains("unstaged"));
+        assert_eq!(result.files.len(), 1);
+    }
+
+    #[test]
+    fn get_diff_untracked_mode() {
+        let (dir, _repo) = setup_test_repo();
+        fs::write(dir.path().join("new.txt"), "hello").unwrap();
+        let mut opts = default_opts();
+        opts.untracked = true;
+        let result = get_diff(dir.path().to_str().unwrap(), opts).unwrap();
+        assert!(result.label.contains("Untracked"));
+        assert_eq!(result.files.len(), 1);
+    }
+
+    #[test]
+    fn get_diff_all_mode() {
+        let (dir, repo) = setup_test_repo();
+        // Create a committed file, then modify it (unstaged)
+        write_and_stage(&repo, dir.path(), "committed.txt", "v1");
+        let sig = Signature::now("Test", "test@test.com").unwrap();
+        let tree_id = repo.index().unwrap().write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        let head = repo.head().unwrap().peel_to_commit().unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "add", &tree, &[&head]).unwrap();
+        // Stage a new file
+        write_and_stage(&repo, dir.path(), "staged.txt", "new");
+        // Create an untracked file
+        fs::write(dir.path().join("untracked.txt"), "ut").unwrap();
+
+        let mut opts = default_opts();
+        opts.all = true;
+        let result = get_diff(dir.path().to_str().unwrap(), opts).unwrap();
+        assert!(result.label.contains("All"));
+        assert!(result.files.len() >= 2);
+    }
+
+    #[test]
+    fn get_diff_empty_cached() {
+        let (dir, _repo) = setup_test_repo();
+        let mut opts = default_opts();
+        opts.cached = true;
+        let result = get_diff(dir.path().to_str().unwrap(), opts).unwrap();
+        assert!(result.files.is_empty());
+    }
+
+    #[test]
+    fn get_diff_with_glob_filter() {
+        let (dir, repo) = setup_test_repo();
+        write_and_stage(&repo, dir.path(), "keep.rs", "fn main() {}");
+        write_and_stage(&repo, dir.path(), "skip.txt", "hello");
+        let mut opts = default_opts();
+        opts.cached = true;
+        opts.filter = Some("*.rs".to_string());
+        let result = get_diff(dir.path().to_str().unwrap(), opts).unwrap();
+        assert_eq!(result.files.len(), 1);
+        assert_eq!(result.files[0].path, "keep.rs");
+    }
+
+    #[test]
+    fn get_diff_with_regex_filter() {
+        let (dir, repo) = setup_test_repo();
+        write_and_stage(&repo, dir.path(), "main.rs", "fn main() {}");
+        write_and_stage(&repo, dir.path(), "readme.md", "# readme");
+        let mut opts = default_opts();
+        opts.cached = true;
+        opts.regex = Some(r"\.rs$".to_string());
+        let result = get_diff(dir.path().to_str().unwrap(), opts).unwrap();
+        assert_eq!(result.files.len(), 1);
+        assert_eq!(result.files[0].path, "main.rs");
+    }
 }
