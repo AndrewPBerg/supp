@@ -2,6 +2,10 @@ use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
 pub struct Cli {
+    /// Skip copying to clipboard and just show the stats
+    #[arg(short = 'n', long = "no-copy", aliases = &["no"], global = true)]
+    pub no_copy: bool,
+
     #[command(subcommand)]
     pub command: Commands,
 }
