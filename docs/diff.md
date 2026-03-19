@@ -22,6 +22,8 @@ supp [-n] diff [PATH] [OPTIONS]
 | `--untracked` | `-u` | Untracked (new) files |
 | `--local` | `-l` | Unstaged working directory changes |
 | `--branch <BRANCH>` | `-b` | Base branch to compare against |
+| `--all` | `-a` | All local changes (untracked + staged + unstaged) |
+| `--self` | `-s` | Unpushed commits vs `origin/<current-branch>` |
 
 ## Modes
 
@@ -32,6 +34,8 @@ supp [-n] diff [PATH] [OPTIONS]
 | `supp diff -l` | index ... working directory |
 | `supp diff -u` | untracked files |
 | `supp diff -b develop` | develop ... current branch |
+| `supp diff -a` | all local changes combined |
+| `supp diff -s` | origin/branch ... branch (unpushed commits) |
 
 ## Example output
 

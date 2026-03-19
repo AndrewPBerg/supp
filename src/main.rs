@@ -215,6 +215,8 @@ fn main() -> anyhow::Result<()> {
             untracked,
             local,
             branch,
+            all,
+            self_branch,
         } => {
             let no_copy = cli.no_copy;
             let repo_path = path.as_deref().unwrap_or(".");
@@ -223,6 +225,8 @@ fn main() -> anyhow::Result<()> {
                 untracked,
                 local,
                 branch,
+                all,
+                self_branch,
             };
             let result = get_diff(repo_path, opts)?;
 

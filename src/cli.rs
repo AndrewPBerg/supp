@@ -31,6 +31,14 @@ pub enum Commands {
         /// Branch to target for remote comparison (default: current branch)
         #[arg(short = 'b', long)]
         branch: Option<String>,
+
+        /// Combine all local changes (untracked + staged + unstaged)
+        #[arg(short = 'a', long)]
+        all: bool,
+
+        /// Compare current branch against its own remote (origin/<branch>)
+        #[arg(short = 's', long)]
+        self_branch: bool,
     },
     Tree {
         #[arg(long)]

@@ -8,6 +8,8 @@ pub struct DiffOptions {
     pub untracked: bool,
     pub local: bool,
     pub branch: Option<String>,
+    pub all: bool,
+    pub self_branch: bool,
 }
 
 pub struct FileEntry {
@@ -81,16 +83,17 @@ fn collect_diff_data(diff: &git2::Diff) -> (Vec<FileEntry>, String) {
 }
 
 pub fn get_diff(repo_path: &str, opts: DiffOptions) -> Result<DiffResult> {
-    let repo = Repository::open(repo_path)?;
+    let repo = Repository::discover(repo_path)?;
 
     if opts.untracked {
         let statuses = repo.statuses(None)?;
+        let workdir = repo.workdir().ok_or_else(|| anyhow!("bare repository"))?;
         let mut files = Vec::new();
         let mut text = String::new();
         for entry in statuses.iter() {
             if entry.status().contains(git2::Status::WT_NEW) {
                 if let Some(path) = entry.path() {
-                    let full_path = std::path::Path::new(repo_path).join(path);
+                    let full_path = workdir.join(path);
                     let mut additions = 0usize;
                     if let Ok(content) = std::fs::read_to_string(&full_path) {
                         text.push_str(&format!("--- /dev/null\n+++ b/{}\n", path));
@@ -139,6 +142,131 @@ pub fn get_diff(repo_path: &str, opts: DiffOptions) -> Result<DiffResult> {
         let (files, text) = collect_diff_data(&diff);
         return Ok(DiffResult {
             label: "Local changes (unstaged)".into(),
+            files,
+            text,
+        });
+    }
+
+    if opts.all {
+        // Collect untracked files
+        let statuses = repo.statuses(None)?;
+        let mut files: Vec<FileEntry> = Vec::new();
+        let mut text = String::new();
+        for entry in statuses.iter() {
+            if entry.status().contains(git2::Status::WT_NEW) {
+                if let Some(path) = entry.path() {
+                    let full_path = std::path::Path::new(repo_path).join(path);
+                    let mut additions = 0usize;
+                    if let Ok(content) = std::fs::read_to_string(&full_path) {
+                        text.push_str(&format!("--- /dev/null\n+++ b/{}\n", path));
+                        for line in content.lines() {
+                            text.push_str(&format!("+{}\n", line));
+                            additions += 1;
+                        }
+                    }
+                    files.push(FileEntry {
+                        path: path.to_string(),
+                        old_path: None,
+                        status: Delta::Untracked,
+                        additions,
+                        deletions: 0,
+                    });
+                }
+            }
+        }
+
+        // Collect staged (cached) changes
+        let head = repo.head()?;
+        let head_commit = head.peel_to_commit()?;
+        let head_tree = head_commit.tree()?;
+        let staged_diff = repo.diff_tree_to_index(Some(&head_tree), None, None)?;
+        let (staged_files, staged_text) = collect_diff_data(&staged_diff);
+
+        // Collect unstaged changes
+        let local_diff = repo.diff_index_to_workdir(None, None)?;
+        let (local_files, local_text) = collect_diff_data(&local_diff);
+
+        // Merge staged and unstaged: combine by path, summing line counts
+        let mut merged: HashMap<String, FileEntry> = HashMap::new();
+        for f in staged_files.into_iter().chain(local_files.into_iter()) {
+            let entry = merged.entry(f.path.clone()).or_insert(FileEntry {
+                path: f.path.clone(),
+                old_path: f.old_path.clone(),
+                status: f.status,
+                additions: 0,
+                deletions: 0,
+            });
+            entry.additions += f.additions;
+            entry.deletions += f.deletions;
+            // Prefer more specific status: Modified > Added > Untracked
+            if matches!(f.status, Delta::Modified | Delta::Deleted | Delta::Renamed) {
+                entry.status = f.status;
+            }
+        }
+        // Append untracked paths not already covered
+        for f in &files {
+            merged.entry(f.path.clone()).or_insert(FileEntry {
+                path: f.path.clone(),
+                old_path: None,
+                status: Delta::Untracked,
+                additions: f.additions,
+                deletions: 0,
+            });
+        }
+
+        text.push_str(&staged_text);
+        text.push_str(&local_text);
+
+        let mut all_files: Vec<FileEntry> = merged.into_values().collect();
+        all_files.sort_by(|a, b| a.path.cmp(&b.path));
+
+        return Ok(DiffResult {
+            label: "All local changes".into(),
+            files: all_files,
+            text,
+        });
+    }
+
+    if opts.self_branch {
+        let current_branch = {
+            let head = repo.head()?;
+            head.shorthand()
+                .ok_or_else(|| anyhow!("Could not determine current branch"))?
+                .to_string()
+        };
+
+        {
+            let config = repo.config()?;
+            let mut callbacks = git2::RemoteCallbacks::new();
+            callbacks.credentials(|url, username, allowed| {
+                if allowed.contains(git2::CredentialType::SSH_KEY) {
+                    git2::Cred::ssh_key_from_agent(username.unwrap_or("git"))
+                } else if allowed.contains(git2::CredentialType::USER_PASS_PLAINTEXT) {
+                    git2::Cred::credential_helper(&config, url, username)
+                } else {
+                    git2::Cred::default()
+                }
+            });
+            let mut fetch_opts = git2::FetchOptions::new();
+            fetch_opts.remote_callbacks(callbacks);
+            let mut remote = repo.find_remote("origin")?;
+            remote.fetch(&[current_branch.as_str()], Some(&mut fetch_opts), None)?;
+        }
+
+        let base_ref =
+            repo.find_reference(&format!("refs/remotes/origin/{}", current_branch))?;
+        let base_commit = base_ref.peel_to_commit()?;
+        let base_tree = base_commit.tree()?;
+
+        let head = repo.head()?;
+        let local_commit = head.peel_to_commit()?;
+        let local_tree = local_commit.tree()?;
+
+        let diff = repo.diff_tree_to_tree(Some(&base_tree), Some(&local_tree), None)?;
+        let (files, text) = collect_diff_data(&diff);
+
+        return Ok(DiffResult {
+            label: format!("origin/{} ... {}", current_branch, current_branch),
             files,
             text,
         });
