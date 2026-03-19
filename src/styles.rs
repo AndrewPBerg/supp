@@ -435,7 +435,7 @@ pub fn print_tree_result(result: TreeResult, root: &str, no_copy: bool, start: s
 
 pub fn print_context_result(result: ContextResult, no_copy: bool, start: std::time::Instant, token_handle: std::thread::JoinHandle<Option<usize>>) {
     println!();
-    println!("  {}  {} file{}, {}", "supp".bold().cyan(), result.file_count, if result.file_count == 1 { "" } else { "s" }, format_size(result.total_bytes).dimmed());
+    println!("  {}  {} file{}, {} line{}, {}", "supp".bold().cyan(), result.file_count, if result.file_count == 1 { "" } else { "s" }, result.total_lines, if result.total_lines == 1 { "" } else { "s" }, format_size(result.total_bytes).dimmed());
     println!("  {}", "─".repeat(40).dimmed());
     println!();
 

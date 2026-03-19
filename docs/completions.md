@@ -31,12 +31,12 @@ supp completions fish > ~/.config/fish/completions/supp.fish
 
 ## fzf Integration
 
-The `pick` subcommand launches [fzf](https://github.com/junegunn/fzf) for interactive file selection, then generates context from the selected files.
+The `pick` subcommand launches [fzf](https://github.com/junegunn/fzf) for interactive file selection and prints the selected paths to stdout. This makes it composable with other commands.
 
 ### Usage
 
 ```
-supp [-n] pick [PATH] [OPTIONS]
+supp pick [PATH] [OPTIONS]
 ```
 
 ### Options
@@ -44,29 +44,25 @@ supp [-n] pick [PATH] [OPTIONS]
 | Flag | Short | Description |
 |------|-------|-------------|
 | `--single` | `-s` | Select only one file (disables multi-select) |
-
-### Global Flags
-
-| Flag | Short | Description |
-|------|-------|-------------|
-| `--no-copy` | `-n` | Show context only, skip clipboard copy |
 | `--regex` | `-r` | Regex pattern to pre-filter the file list |
-| `--depth` | `-d` | Tree depth in context header (default: 2) |
 
 ### Examples
 
 ```bash
-# Pick files from current directory
-supp pick
+# Pick files, then generate context
+supp $(supp pick)
 
-# Pick a single file from a specific directory
-supp pick src/ --single
+# Pick files, print context without clipboard
+supp $(supp pick) -n
+
+# Pick a single file, prints its path
+supp pick --single
+
+# Pick from a specific directory
+supp pick src/
 
 # Pre-filter to only Rust files
 supp -r '\.rs$' pick
-
-# Pick without copying to clipboard
-supp -n pick
 ```
 
 ### Requirements

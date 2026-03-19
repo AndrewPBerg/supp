@@ -61,13 +61,10 @@ fn main() -> anyhow::Result<()> {
         Some(Commands::Pick { path, single }) => {
             let root = path.as_deref().unwrap_or(".");
             let selected = pick::run_fzf(root, !single, cli.regex.as_deref())?;
-            if selected.is_empty() {
-                // User cancelled — clean exit
-                return Ok(());
+            if !selected.is_empty() {
+                println!("{}", selected.join(" "));
             }
-            let result = context::generate_context(&selected, cli.depth, cli.regex.as_deref())?;
-            let _ = text_tx.send(result.plain.clone());
-            styles::print_context_result(result, cli.no_copy, start, token_handle);
+            return Ok(());
         }
         Some(Commands::Tree { path, depth, no_git }) => {
             let root = path.as_deref().unwrap_or(".");

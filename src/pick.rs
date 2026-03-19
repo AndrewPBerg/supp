@@ -38,7 +38,19 @@ pub fn run_fzf(root: &str, multi: bool, regex: Option<&str>) -> Result<Vec<Strin
 
     let mut args: Vec<&str> = Vec::new();
     if multi {
-        args.push("--multi");
+        args.extend_from_slice(&[
+            "--multi",
+            "--bind",
+            "enter:toggle",
+            "--bind",
+            "double-click:toggle",
+            "--bind",
+            "tab:accept",
+            "--bind",
+            "esc:deselect-all",
+            "--header",
+            "enter: toggle | tab: confirm | esc: clear selection",
+        ]);
     }
     args.extend_from_slice(&["--preview", "head -100 {}"]);
 

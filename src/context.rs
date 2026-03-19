@@ -11,6 +11,7 @@ pub struct ContextResult {
     pub plain: String,
     pub file_count: usize,
     pub total_bytes: usize,
+    pub total_lines: usize,
 }
 
 pub fn generate_context(paths: &[String], depth: usize, regex: Option<&str>) -> Result<ContextResult> {
@@ -82,6 +83,7 @@ pub fn generate_context(paths: &[String], depth: usize, regex: Option<&str>) -> 
 
     let file_count = read_files.len();
     let total_bytes: usize = read_files.iter().map(|(_, c)| c.len()).sum();
+    let total_lines: usize = read_files.iter().map(|(_, c)| c.lines().count()).sum();
 
     // Assemble plain output
     let mut plain = String::new();
@@ -129,6 +131,7 @@ pub fn generate_context(paths: &[String], depth: usize, regex: Option<&str>) -> 
         plain,
         file_count,
         total_bytes,
+        total_lines,
     })
 }
 
