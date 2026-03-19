@@ -1,0 +1,4 @@
+- [ ] fzf integration
+- [ ] completions for repositories in file scope
+- [ ] Escalator "context-compression" w/ tree sitter symbols and something that is in between tree and ripgrep as far as context goes
+- [ ]
