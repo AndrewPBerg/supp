@@ -1,10 +1,8 @@
 use std::collections::BTreeMap;
 
 use colored::Colorize;
-use git2::Delta;
-
 use crate::context::ContextResult;
-use crate::git::{DiffResult, FileEntry, FileStatus};
+use crate::git::{DeltaStatus, DiffResult, FileEntry, FileStatus};
 use crate::tree::TreeResult;
 
 // ── Shared utilities ───────────────────────────────────────────────
@@ -69,14 +67,13 @@ pub fn file_status_indicator(status: FileStatus) -> (&'static str, String) {
 
 // ── Diff display ───────────────────────────────────────────────────
 
-fn status_label(delta: Delta) -> colored::ColoredString {
+fn status_label(delta: DeltaStatus) -> colored::ColoredString {
     match delta {
-        Delta::Added | Delta::Untracked => " added   ".green(),
-        Delta::Deleted => " deleted ".red(),
-        Delta::Modified => " modified".yellow(),
-        Delta::Renamed => " renamed ".cyan(),
-        Delta::Copied => " copied  ".cyan(),
-        _ => " changed ".white(),
+        DeltaStatus::Added | DeltaStatus::Untracked => " added   ".green(),
+        DeltaStatus::Deleted => " deleted ".red(),
+        DeltaStatus::Modified => " modified".yellow(),
+        DeltaStatus::Renamed => " renamed ".cyan(),
+        DeltaStatus::Copied => " copied  ".cyan(),
     }
 }
 
@@ -190,11 +187,11 @@ fn print_file_tree(files: &[FileEntry]) -> (usize, usize, usize) {
 fn print_summary(files: &[FileEntry], global_max_name_col: usize, max_add_w: usize, max_del_w: usize) {
     let added = files
         .iter()
-        .filter(|f| matches!(f.status, Delta::Added | Delta::Untracked))
+        .filter(|f| matches!(f.status, DeltaStatus::Added | DeltaStatus::Untracked))
         .count();
-    let modified = files.iter().filter(|f| f.status == Delta::Modified).count();
-    let deleted = files.iter().filter(|f| f.status == Delta::Deleted).count();
-    let renamed = files.iter().filter(|f| f.status == Delta::Renamed).count();
+    let modified = files.iter().filter(|f| f.status == DeltaStatus::Modified).count();
+    let deleted = files.iter().filter(|f| f.status == DeltaStatus::Deleted).count();
+    let renamed = files.iter().filter(|f| f.status == DeltaStatus::Renamed).count();
 
     let total = files.len();
     let mut parts: Vec<String> = Vec::new();

@@ -10,7 +10,6 @@ arboard = "3"
 clap = { version = "4.6.0", features = ["derive"] }
 clap_complete = "4"
 colored = "2"
-git2 = "0.20.4"
 ignore = "0.4.25"
 regex = "1"
 tiktoken-rs = "0.9"
@@ -23,6 +22,8 @@ tree-sitter-go = "0.23"
 tree-sitter-c = "0.23"
 tree-sitter-cpp = "0.23"
 tree-sitter-java = "0.23"
+gix = { version = "0.80", default-features = false, features = ["status", "revision"] }
+gix-status = "0.27" # must match version used by gix; needed for EntryStatus/Change types
 
 [dev-dependencies]
 tempfile = "3"
