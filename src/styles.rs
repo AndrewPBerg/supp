@@ -475,6 +475,49 @@ pub fn print_context_result(result: ContextResult, no_copy: bool, start: std::ti
     println!();
 }
 
+// ── Pick display ────────────────────────────────────────────────
+
+pub fn print_pick_stats(result: ContextResult, no_copy: bool, start: std::time::Instant, token_handle: std::thread::JoinHandle<Option<usize>>) {
+    eprintln!();
+    eprintln!("  {}  {} file{}, {} line{}, {}", "pick".bold().cyan(), result.file_count, if result.file_count == 1 { "" } else { "s" }, result.total_lines, if result.total_lines == 1 { "" } else { "s" }, format_size(result.total_bytes).dimmed());
+    eprintln!("  {}", "─".repeat(40).dimmed());
+    eprintln!();
+    if no_copy {
+        eprintln!(
+            "  {} {}",
+            "–".dimmed(),
+            format!("({}, not copied)", format_size(result.plain.len())).dimmed(),
+        );
+    } else {
+        match copy_to_clipboard(&result.plain) {
+            Ok(()) => {
+                eprintln!(
+                    "  {} {} {}",
+                    "✓".green().bold(),
+                    "Copied to clipboard".green(),
+                    format!("({})", format_size(result.plain.len())).dimmed(),
+                );
+            }
+            Err(e) => {
+                eprintln!(
+                    "  {} {}",
+                    "✗".red().bold(),
+                    format!("Clipboard error: {}", e).red(),
+                );
+            }
+        }
+    }
+    if let Some(count) = token_handle.join().ok().flatten() {
+        eprintln!(
+            "  {} {}",
+            "≈".dimmed(),
+            format!("~{} tokens (cl100k est.)", format_number(count)).dimmed(),
+        );
+    }
+    eprintln!("  {}", format!("Done in {}", format_elapsed(start.elapsed())).dimmed());
+    eprintln!();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
