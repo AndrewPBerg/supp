@@ -3,6 +3,8 @@ use std::collections::HashMap;
 use anyhow::{anyhow, Result};
 use git2::{Delta, DiffFormat, Repository};
 
+const MAX_UNTRACKED_FILE_SIZE: u64 = 10 * 1024 * 1024; // 10 MB
+
 pub struct DiffOptions {
     pub cached: bool,
     pub untracked: bool,
@@ -10,6 +12,9 @@ pub struct DiffOptions {
     pub branch: Option<String>,
     pub all: bool,
     pub self_branch: bool,
+    pub context_lines: Option<u32>,
+    pub filter: Option<String>,
+    pub regex: Option<String>,
 }
 
 pub struct FileEntry {
@@ -28,10 +33,83 @@ pub struct DiffResult {
     pub is_branch_comparison: bool,
 }
 
+/// Build a `git2::DiffOptions` with the given context lines setting.
+fn make_diff_options(context_lines: Option<u32>) -> git2::DiffOptions {
+    let mut opts = git2::DiffOptions::new();
+    if let Some(lines) = context_lines {
+        opts.context_lines(lines);
+    }
+    opts
+}
+
+/// Build `FetchOptions` with SSH / credential-helper callbacks.
+fn make_fetch_options(repo: &Repository) -> Result<git2::FetchOptions<'_>> {
+    let config = repo.config()?;
+    let mut callbacks = git2::RemoteCallbacks::new();
+    callbacks.credentials(move |url, username, allowed| {
+        if allowed.contains(git2::CredentialType::SSH_KEY) {
+            git2::Cred::ssh_key_from_agent(username.unwrap_or("git"))
+        } else if allowed.contains(git2::CredentialType::USER_PASS_PLAINTEXT) {
+            git2::Cred::credential_helper(&config, url, username)
+        } else {
+            git2::Cred::default()
+        }
+    });
+    let mut fetch_opts = git2::FetchOptions::new();
+    fetch_opts.remote_callbacks(callbacks);
+    Ok(fetch_opts)
+}
+
+/// Collect untracked files from the working directory.
+fn collect_untracked_files(repo: &Repository) -> Result<(Vec<FileEntry>, String)> {
+    let statuses = repo.statuses(None)?;
+    let workdir = repo.workdir().ok_or_else(|| anyhow!("bare repository"))?;
+    let estimated_cap = statuses.len() * 256;
+    let mut files = Vec::new();
+    let mut text = String::with_capacity(estimated_cap.max(4096));
+
+    for entry in statuses.iter() {
+        if entry.status().contains(git2::Status::WT_NEW) {
+            if let Some(path) = entry.path() {
+                let full_path = workdir.join(path);
+                let mut additions = 0usize;
+
+                // OOM guard: skip files larger than 10 MB
+                let too_large = std::fs::metadata(&full_path)
+                    .map(|m| m.len() > MAX_UNTRACKED_FILE_SIZE)
+                    .unwrap_or(false);
+
+                if !too_large {
+                    if let Ok(content) = std::fs::read_to_string(&full_path) {
+                        text.push_str(&format!("--- /dev/null\n+++ b/{}\n", path));
+                        for line in content.lines() {
+                            text.push_str(&format!("+{}\n", line));
+                            additions += 1;
+                        }
+                    }
+                }
+
+                files.push(FileEntry {
+                    path: path.to_string(),
+                    old_path: None,
+                    status: Delta::Untracked,
+                    additions,
+                    deletions: 0,
+                });
+            }
+        }
+    }
+    Ok((files, text))
+}
+
 /// Collects the patch text and per-file line counts in a single pass, then
 /// merges them with the delta metadata to produce `FileEntry` list.
 fn collect_diff_data(diff: &git2::Diff) -> (Vec<FileEntry>, String) {
-    let mut text = String::new();
+    let capacity = diff
+        .stats()
+        .map(|s| (s.insertions() + s.deletions()) * 80)
+        .unwrap_or(4096);
+    let mut text = String::with_capacity(capacity);
     let mut line_counts: HashMap<String, (usize, usize)> = HashMap::new();
 
     let _ = diff.print(DiffFormat::Patch, |delta, _hunk, line| {
@@ -84,36 +162,59 @@ fn collect_diff_data(diff: &git2::Diff) -> (Vec<FileEntry>, String) {
     (files, text)
 }
 
+/// Apply glob filter to file entries, removing non-matching paths.
+fn apply_filter(files: Vec<FileEntry>, filter: &str) -> Vec<FileEntry> {
+    let glob = ignore::gitignore::GitignoreBuilder::new("")
+        .add_line(None, filter)
+        .ok()
+        .and_then(|b| b.build().ok());
+
+    match glob {
+        Some(matcher) => files
+            .into_iter()
+            .filter(|f| {
+                matcher
+                    .matched_path_or_any_parents(&f.path, false)
+                    .is_ignore()
+            })
+            .collect(),
+        None => files,
+    }
+}
+
+/// Apply regex filter to file entries, keeping paths that match.
+fn apply_regex_filter(files: Vec<FileEntry>, pattern: &str) -> Result<Vec<FileEntry>> {
+    let re = regex::Regex::new(pattern)
+        .map_err(|e| anyhow!("invalid regex '{}': {}", pattern, e))?;
+    Ok(files.into_iter().filter(|f| re.is_match(&f.path)).collect())
+}
+
 pub fn get_diff(repo_path: &str, opts: DiffOptions) -> Result<DiffResult> {
     let repo = Repository::discover(repo_path)?;
+    let mut diff_opts = make_diff_options(opts.context_lines);
+    let filter = opts.filter.clone();
+    let regex = opts.regex.clone();
 
+    let mut result = get_diff_inner(&repo, repo_path, opts, &mut diff_opts)?;
+
+    if let Some(ref pattern) = filter {
+        result.files = apply_filter(result.files, pattern);
+    }
+    if let Some(ref pattern) = regex {
+        result.files = apply_regex_filter(result.files, pattern)?;
+    }
+
+    Ok(result)
+}
+
+fn get_diff_inner(
+    repo: &Repository,
+    _repo_path: &str,
+    opts: DiffOptions,
+    diff_opts: &mut git2::DiffOptions,
+) -> Result<DiffResult> {
     if opts.untracked {
-        let statuses = repo.statuses(None)?;
-        let workdir = repo.workdir().ok_or_else(|| anyhow!("bare repository"))?;
-        let mut files = Vec::new();
-        let mut text = String::new();
-        for entry in statuses.iter() {
-            if entry.status().contains(git2::Status::WT_NEW) {
-                if let Some(path) = entry.path() {
-                    let full_path = workdir.join(path);
-                    let mut additions = 0usize;
-                    if let Ok(content) = std::fs::read_to_string(&full_path) {
-                        text.push_str(&format!("--- /dev/null\n+++ b/{}\n", path));
-                        for line in content.lines() {
-                            text.push_str(&format!("+{}\n", line));
-                            additions += 1;
-                        }
-                    }
-                    files.push(FileEntry {
-                        path: path.to_string(),
-                        old_path: None,
-                        status: Delta::Untracked,
-                        additions,
-                        deletions: 0,
-                    });
-                }
-            }
-        }
+        let (files, text) = collect_untracked_files(repo)?;
         return Ok(DiffResult {
             label: "Untracked files".into(),
             files,
@@ -127,7 +228,7 @@ pub fn get_diff(repo_path: &str, opts: DiffOptions) -> Result<DiffResult> {
         let head = repo.head()?;
         let head_commit = head.peel_to_commit()?;
         let head_tree = head_commit.tree()?;
-        let diff = repo.diff_tree_to_index(Some(&head_tree), None, None)?;
+        let diff = repo.diff_tree_to_index(Some(&head_tree), None, Some(diff_opts))?;
         let (files, text) = collect_diff_data(&diff);
         let branch = repo
             .head()
@@ -144,7 +245,7 @@ pub fn get_diff(repo_path: &str, opts: DiffOptions) -> Result<DiffResult> {
     }
 
     if opts.local {
-        let diff = repo.diff_index_to_workdir(None, None)?;
+        let diff = repo.diff_index_to_workdir(None, Some(diff_opts))?;
         let (files, text) = collect_diff_data(&diff);
         return Ok(DiffResult {
             label: "Local changes (unstaged)".into(),
@@ -156,42 +257,17 @@ pub fn get_diff(repo_path: &str, opts: DiffOptions) -> Result<DiffResult> {
     }
 
     if opts.all {
-        // Collect untracked files
-        let statuses = repo.statuses(None)?;
-        let mut files: Vec<FileEntry> = Vec::new();
-        let mut text = String::new();
-        for entry in statuses.iter() {
-            if entry.status().contains(git2::Status::WT_NEW) {
-                if let Some(path) = entry.path() {
-                    let full_path = std::path::Path::new(repo_path).join(path);
-                    let mut additions = 0usize;
-                    if let Ok(content) = std::fs::read_to_string(&full_path) {
-                        text.push_str(&format!("--- /dev/null\n+++ b/{}\n", path));
-                        for line in content.lines() {
-                            text.push_str(&format!("+{}\n", line));
-                            additions += 1;
-                        }
-                    }
-                    files.push(FileEntry {
-                        path: path.to_string(),
-                        old_path: None,
-                        status: Delta::Untracked,
-                        additions,
-                        deletions: 0,
-                    });
-                }
-            }
-        }
+        let (untracked_files, mut text) = collect_untracked_files(repo)?;
 
         // Collect staged (cached) changes
         let head = repo.head()?;
         let head_commit = head.peel_to_commit()?;
         let head_tree = head_commit.tree()?;
-        let staged_diff = repo.diff_tree_to_index(Some(&head_tree), None, None)?;
+        let staged_diff = repo.diff_tree_to_index(Some(&head_tree), None, Some(diff_opts))?;
         let (staged_files, staged_text) = collect_diff_data(&staged_diff);
 
         // Collect unstaged changes
-        let local_diff = repo.diff_index_to_workdir(None, None)?;
+        let local_diff = repo.diff_index_to_workdir(None, Some(diff_opts))?;
         let (local_files, local_text) = collect_diff_data(&local_diff);
 
         // Merge staged and unstaged: combine by path, summing line counts
@@ -206,13 +282,12 @@ pub fn get_diff(repo_path: &str, opts: DiffOptions) -> Result<DiffResult> {
             });
             entry.additions += f.additions;
             entry.deletions += f.deletions;
-            // Prefer more specific status: Modified > Added > Untracked
             if matches!(f.status, Delta::Modified | Delta::Deleted | Delta::Renamed) {
                 entry.status = f.status;
             }
         }
         // Append untracked paths not already covered
-        for f in &files {
+        for f in &untracked_files {
             merged.entry(f.path.clone()).or_insert(FileEntry {
                 path: f.path.clone(),
                 old_path: None,
@@ -241,24 +316,12 @@ pub fn get_diff(repo_path: &str, opts: DiffOptions) -> Result<DiffResult> {
         let current_branch = {
             let head = repo.head()?;
             head.shorthand()
-                .ok_or_else(|| anyhow!("Could not determine current branch"))?
+                .ok_or_else(|| anyhow!("Detached HEAD — use -b <branch> to specify a target"))?
                 .to_string()
         };
 
         {
-            let config = repo.config()?;
-            let mut callbacks = git2::RemoteCallbacks::new();
-            callbacks.credentials(|url, username, allowed| {
-                if allowed.contains(git2::CredentialType::SSH_KEY) {
-                    git2::Cred::ssh_key_from_agent(username.unwrap_or("git"))
-                } else if allowed.contains(git2::CredentialType::USER_PASS_PLAINTEXT) {
-                    git2::Cred::credential_helper(&config, url, username)
-                } else {
-                    git2::Cred::default()
-                }
-            });
-            let mut fetch_opts = git2::FetchOptions::new();
-            fetch_opts.remote_callbacks(callbacks);
+            let mut fetch_opts = make_fetch_options(repo)?;
             let mut remote = repo.find_remote("origin")?;
             remote.fetch(&[current_branch.as_str()], Some(&mut fetch_opts), None)?;
         }
@@ -272,7 +335,7 @@ pub fn get_diff(repo_path: &str, opts: DiffOptions) -> Result<DiffResult> {
         let local_commit = head.peel_to_commit()?;
         let local_tree = local_commit.tree()?;
 
-        let diff = repo.diff_tree_to_tree(Some(&base_tree), Some(&local_tree), None)?;
+        let diff = repo.diff_tree_to_tree(Some(&base_tree), Some(&local_tree), Some(diff_opts))?;
         let (files, text) = collect_diff_data(&diff);
 
         let has_conflicts = repo
@@ -289,11 +352,11 @@ pub fn get_diff(repo_path: &str, opts: DiffOptions) -> Result<DiffResult> {
         });
     }
 
-    // Remote diff (default): compare current branch against the default branch (main/master)
+    // Remote diff (default): compare current branch against the default branch
     let current_branch = {
         let head = repo.head()?;
         head.shorthand()
-            .ok_or_else(|| anyhow!("Could not determine current branch"))?
+            .ok_or_else(|| anyhow!("Detached HEAD — use -b <branch> to specify a target"))?
             .to_string()
     };
 
@@ -307,7 +370,7 @@ pub fn get_diff(repo_path: &str, opts: DiffOptions) -> Result<DiffResult> {
                     target.strip_prefix("refs/remotes/origin/").map(|s| s.to_string())
                 })
                 .or_else(|| {
-                    for candidate in &["main", "master"] {
+                    for candidate in &["main", "master", "develop", "trunk", "dev"] {
                         let refname = format!("refs/remotes/origin/{}", candidate);
                         if repo.find_reference(&refname).is_ok() {
                             return Some(candidate.to_string());
@@ -320,19 +383,7 @@ pub fn get_diff(repo_path: &str, opts: DiffOptions) -> Result<DiffResult> {
     };
 
     {
-        let config = repo.config()?;
-        let mut callbacks = git2::RemoteCallbacks::new();
-        callbacks.credentials(|url, username, allowed| {
-            if allowed.contains(git2::CredentialType::SSH_KEY) {
-                git2::Cred::ssh_key_from_agent(username.unwrap_or("git"))
-            } else if allowed.contains(git2::CredentialType::USER_PASS_PLAINTEXT) {
-                git2::Cred::credential_helper(&config, url, username)
-            } else {
-                git2::Cred::default()
-            }
-        });
-        let mut fetch_opts = git2::FetchOptions::new();
-        fetch_opts.remote_callbacks(callbacks);
+        let mut fetch_opts = make_fetch_options(repo)?;
         let mut remote = repo.find_remote("origin")?;
         remote.fetch(&[base_branch.as_str()], Some(&mut fetch_opts), None)?;
     }
@@ -345,7 +396,7 @@ pub fn get_diff(repo_path: &str, opts: DiffOptions) -> Result<DiffResult> {
     let local_commit = head.peel_to_commit()?;
     let local_tree = local_commit.tree()?;
 
-    let diff = repo.diff_tree_to_tree(Some(&base_tree), Some(&local_tree), None)?;
+    let diff = repo.diff_tree_to_tree(Some(&base_tree), Some(&local_tree), Some(diff_opts))?;
     let (files, text) = collect_diff_data(&diff);
 
     let has_conflicts = repo

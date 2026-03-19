@@ -260,6 +260,10 @@ fn main() -> anyhow::Result<()> {
     let start = std::time::Instant::now();
     let cli = Cli::parse();
 
+    if cli.no_color {
+        colored::control::set_override(false);
+    }
+
     match cli.command {
         Commands::Diff {
             path,
@@ -269,6 +273,9 @@ fn main() -> anyhow::Result<()> {
             branch,
             all,
             self_branch,
+            context_lines,
+            filter,
+            regex,
         } => {
             let no_copy = cli.no_copy;
             let repo_path = path.as_deref().unwrap_or(".");
@@ -279,6 +286,9 @@ fn main() -> anyhow::Result<()> {
                 branch,
                 all,
                 self_branch,
+                context_lines,
+                filter,
+                regex,
             };
             let result = get_diff(repo_path, opts)?;
 

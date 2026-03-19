@@ -6,6 +6,14 @@ pub struct Cli {
     #[arg(short = 'n', long = "no-copy", aliases = &["no"], global = true)]
     pub no_copy: bool,
 
+    /// Disable colored output
+    #[arg(long = "no-color", global = true)]
+    pub no_color: bool,
+
+    /// Regex pattern to filter file paths (e.g. "src/.*\.rs$")
+    #[arg(short = 'r', long = "regex", global = true)]
+    pub regex: Option<String>,
+
     #[command(subcommand)]
     pub command: Commands,
 }
@@ -39,6 +47,15 @@ pub enum Commands {
         /// Compare current branch against its own remote (origin/<branch>)
         #[arg(short = 's', long)]
         self_branch: bool,
+
+        /// Number of context lines in unified diff output
+        #[arg(short = 'U', long = "unified")]
+        context_lines: Option<u32>,
+
+        /// Glob pattern to filter files (e.g. "*.rs")
+        #[arg(short = 'f', long = "filter")]
+        filter: Option<String>,
+
     },
     Tree {
         #[arg(long)]
