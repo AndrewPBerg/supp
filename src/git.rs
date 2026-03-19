@@ -24,6 +24,8 @@ pub struct DiffResult {
     pub label: String,
     pub files: Vec<FileEntry>,
     pub text: String,
+    pub has_conflicts: bool,
+    pub is_branch_comparison: bool,
 }
 
 /// Collects the patch text and per-file line counts in a single pass, then
@@ -116,6 +118,8 @@ pub fn get_diff(repo_path: &str, opts: DiffOptions) -> Result<DiffResult> {
             label: "Untracked files".into(),
             files,
             text,
+            has_conflicts: false,
+            is_branch_comparison: false,
         });
     }
 
@@ -134,6 +138,8 @@ pub fn get_diff(repo_path: &str, opts: DiffOptions) -> Result<DiffResult> {
             label: format!("Staged  HEAD ... index  ({})", branch),
             files,
             text,
+            has_conflicts: false,
+            is_branch_comparison: false,
         });
     }
 
@@ -144,6 +150,8 @@ pub fn get_diff(repo_path: &str, opts: DiffOptions) -> Result<DiffResult> {
             label: "Local changes (unstaged)".into(),
             files,
             text,
+            has_conflicts: false,
+            is_branch_comparison: false,
         });
     }
 
@@ -224,6 +232,8 @@ pub fn get_diff(repo_path: &str, opts: DiffOptions) -> Result<DiffResult> {
             label: "All local changes".into(),
             files: all_files,
             text,
+            has_conflicts: false,
+            is_branch_comparison: false,
         });
     }
 
@@ -265,10 +275,17 @@ pub fn get_diff(repo_path: &str, opts: DiffOptions) -> Result<DiffResult> {
         let diff = repo.diff_tree_to_tree(Some(&base_tree), Some(&local_tree), None)?;
         let (files, text) = collect_diff_data(&diff);
 
+        let has_conflicts = repo
+            .merge_commits(&base_commit, &local_commit, None)
+            .map(|idx| idx.has_conflicts())
+            .unwrap_or(false);
+
         return Ok(DiffResult {
             label: format!("origin/{} ... {}", current_branch, current_branch),
             files,
             text,
+            has_conflicts,
+            is_branch_comparison: true,
         });
     }
 
@@ -331,9 +348,16 @@ pub fn get_diff(repo_path: &str, opts: DiffOptions) -> Result<DiffResult> {
     let diff = repo.diff_tree_to_tree(Some(&base_tree), Some(&local_tree), None)?;
     let (files, text) = collect_diff_data(&diff);
 
+    let has_conflicts = repo
+        .merge_commits(&base_commit, &local_commit, None)
+        .map(|idx| idx.has_conflicts())
+        .unwrap_or(false);
+
     Ok(DiffResult {
         label: format!("{} ... {}", base_branch, current_branch),
         files,
         text,
+        has_conflicts,
+        is_branch_comparison: true,
     })
 }

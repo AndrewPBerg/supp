@@ -58,7 +58,7 @@ fn status_label(delta: Delta) -> colored::ColoredString {
 }
 
 // Build and print a tree of file paths with their statuses.
-fn print_file_tree(files: &[FileEntry]) {
+fn print_file_tree(files: &[FileEntry]) -> (usize, usize, usize) {
     // Group into: dir_path -> Vec<(filename, entry)>
     // Top-level files go under the "" key.
     let mut tree: BTreeMap<String, Vec<&FileEntry>> = BTreeMap::new();
@@ -85,6 +85,22 @@ fn print_file_tree(files: &[FileEntry]) {
         .max()
         .unwrap_or(2);
 
+    let global_max_name_col: usize = tree
+        .iter()
+        .flat_map(|(dir, entries)| {
+            let prefix_w: usize = if dir.is_empty() { 0 } else { 4 };
+            entries.iter().map(move |e| {
+                let fname_len = std::path::Path::new(&e.path)
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or(&e.path)
+                    .len();
+                prefix_w + 4 + fname_len
+            })
+        })
+        .max()
+        .unwrap_or(0);
+
     let dirs: Vec<&String> = tree.keys().collect();
     let dir_count = dirs.len();
 
@@ -101,26 +117,13 @@ fn print_file_tree(files: &[FileEntry]) {
             println!("{}{}", dir_prefix.dimmed(), format!("{}/", dir).bold());
         }
 
-        let file_prefix = if dir.is_empty() {
-            ""
+        let (file_prefix, file_prefix_w) = if dir.is_empty() {
+            ("", 0)
         } else if is_last_dir {
-            "    "
+            ("    ", 4)
         } else {
-            "│   "
+            ("│   ", 4)
         };
-
-        // Align filenames within this group to the longest name.
-        let max_name_w = entries
-            .iter()
-            .map(|e| {
-                std::path::Path::new(&e.path)
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or(&e.path)
-                    .len()
-            })
-            .max()
-            .unwrap_or(0);
 
         let entry_count = entries.len();
         for (fi, entry) in entries.iter().enumerate() {
@@ -155,16 +158,17 @@ fn print_file_tree(files: &[FileEntry]) {
                 "{}{}{}{}{}{}",
                 file_prefix.dimmed(),
                 branch_char.dimmed(),
-                format!("{:<width$}", filename, width = max_name_w),
+                format!("{:<width$}", filename, width = global_max_name_col - file_prefix_w - 4),
                 status_label(entry.status),
                 line_delta,
                 rename_hint,
             );
         }
     }
+    (global_max_name_col, max_add_w, max_del_w)
 }
 
-fn print_summary(files: &[FileEntry]) {
+fn print_summary(files: &[FileEntry], global_max_name_col: usize, max_add_w: usize, max_del_w: usize) {
     let added = files
         .iter()
         .filter(|f| matches!(f.status, Delta::Added | Delta::Untracked))
@@ -175,37 +179,85 @@ fn print_summary(files: &[FileEntry]) {
 
     let total = files.len();
     let mut parts: Vec<String> = Vec::new();
+    let mut parts_plain: Vec<String> = Vec::new();
     if added > 0 {
-        parts.push(format!("{} added", added).green().to_string());
+        let s = format!("{}+", added);
+        parts.push(s.green().to_string());
+        parts_plain.push(s);
     }
     if modified > 0 {
-        parts.push(format!("{} modified", modified).yellow().to_string());
+        let s = format!("{}~", modified);
+        parts.push(s.yellow().to_string());
+        parts_plain.push(s);
     }
     if deleted > 0 {
-        parts.push(format!("{} deleted", deleted).red().to_string());
+        let s = format!("{}-", deleted);
+        parts.push(s.red().to_string());
+        parts_plain.push(s);
     }
     if renamed > 0 {
-        parts.push(format!("{} renamed", renamed).cyan().to_string());
+        let s = format!("{}~", renamed);
+        parts.push(s.cyan().to_string());
+        parts_plain.push(s);
     }
 
     let total_adds: usize = files.iter().map(|f| f.additions).sum();
     let total_dels: usize = files.iter().map(|f| f.deletions).sum();
-    let detail = if parts.is_empty() {
-        String::new()
+
+    let total_str = total.to_string();
+    let suffix = if total == 1 { "" } else { "s" };
+
+    let detail = parts.join(" ");
+    let detail_plain = parts_plain.join(" ");
+
+    // "  {total} file{s}" left portion
+    let left_visible_w = 2 + total_str.len() + 5 + suffix.len();
+    // Status label column starts at global_max_name_col, label is 9 chars wide
+    // Right-align the detail within the 9-char status column
+    let status_col = global_max_name_col;
+    let pad_to_status = if status_col > left_visible_w {
+        status_col - left_visible_w
     } else {
-        format!("  ({})", parts.join(", "))
+        1
     };
+    // Right-align detail within the status label width (9 chars)
+    let detail_pad = if 9 > detail_plain.len() { 9 - detail_plain.len() } else { 0 };
+    let detail_aligned = format!("{}{}", " ".repeat(detail_pad), detail);
+
+    // +/- columns follow after status + 2 char gap
+    let add_str = format!(
+        "{:>width$}",
+        format!("+{}", total_adds),
+        width = max_add_w
+    );
+    let del_str = format!(
+        "{:>width$}",
+        format!("-{}", total_dels),
+        width = max_del_w
+    );
+
     println!(
-        "\n  {} file{}{}   {} {}",
-        total.to_string().bold(),
-        if total == 1 { "" } else { "s" },
-        detail,
-        format!("+{}", total_adds).green().bold(),
-        format!("-{}", total_dels).red().bold(),
+        "\n  {} file{}{}{}  {}  {}",
+        total_str.bold(),
+        suffix,
+        " ".repeat(pad_to_status),
+        detail_aligned,
+        add_str.green().bold(),
+        del_str.red().bold(),
     );
 }
 
+fn format_elapsed(elapsed: std::time::Duration) -> String {
+    let ms = elapsed.as_secs_f64() * 1000.0;
+    if ms < 1000.0 {
+        format!("{:.0}ms", ms)
+    } else {
+        format!("{:.2}s", elapsed.as_secs_f64())
+    }
+}
+
 fn main() -> anyhow::Result<()> {
+    let start = std::time::Instant::now();
     let cli = Cli::parse();
 
     match cli.command {
@@ -235,12 +287,20 @@ fn main() -> anyhow::Result<()> {
             println!("  {}  {}", "supp diff".bold().cyan(), result.label.dimmed());
             println!("  {}", "─".repeat(40).dimmed());
 
+            if result.is_branch_comparison {
+                if result.has_conflicts {
+                    println!("  {}", "✗ Merge conflicts detected".red().bold());
+                } else {
+                    println!("  {}", "✓ No merge conflicts".green());
+                }
+            }
+
             if result.files.is_empty() {
                 println!("  {}", "No changes found.".dimmed());
             } else {
                 println!();
-                print_file_tree(&result.files);
-                print_summary(&result.files);
+                let (name_col, add_w, del_w) = print_file_tree(&result.files);
+                print_summary(&result.files, name_col, add_w, del_w);
                 println!();
 
                 if no_copy {
@@ -259,9 +319,13 @@ fn main() -> anyhow::Result<()> {
                     );
                 }
             }
+            println!("  {}", format!("Done in {}", format_elapsed(start.elapsed())).dimmed());
             println!();
         }
-        Commands::Tree { size, .. } => println!("tree! size: {:?}", size),
+        Commands::Tree { size, .. } => {
+            println!("tree! size: {:?}", size);
+            println!("  {}", format!("Done in {}", format_elapsed(start.elapsed())).dimmed());
+        }
     }
     Ok(())
 }
