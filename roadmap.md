@@ -1,6 +1,6 @@
 - [ ] Configurable ~/.supp/config.toml with defaults that override, needs fleshing out ofc asdfasdf. can wwe configure here????
+- [ ] make a global supp.toml and a local supp.toml. also rename it to supp.toml please!
 - [ ] Include more shortcuts in pick, and cleaner UX around closing and opening around w/ hybrid flows between fzf and typed paths. Selecting Directories from pick is non-existent functionality
-- [ ] never show __pycache__ in supp tree
 - [ ] I don't love my supp diff arg arms
 - [ ] When I go to replay supp context (with terminal up arrow) it should use the picked file paths already there!
 - [ ] Pyo3 binding
