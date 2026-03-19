@@ -1,17 +1,26 @@
 # Configuration
 
-supp reads an optional config file at `~/.supp/config.toml`. Every key is optional — missing keys use hardcoded defaults. CLI flags always override config values.
+supp supports two optional config files named `supp.toml`:
+
+| Level | Path |
+|-------|------|
+| Global | `~/.config/supp/supp.toml` (via `dirs::config_dir()`) |
+| Local | `<git-repo-root>/supp.toml` |
+
+Every key is optional — missing keys use hardcoded defaults. Local config overrides global config at the field level, and CLI flags always win.
 
 ## Precedence
 
 ```
-CLI flag  >  config.toml  >  hardcoded default
+CLI flag  >  local supp.toml  >  global supp.toml  >  hardcoded default
 ```
+
+Fields are merged individually, not by file. If the global config sets `depth = 4` and the local config sets `no_copy = true`, the result has both `depth = 4` and `no_copy = true`.
 
 ## File Format
 
 ```toml
-# All keys optional. Missing = hardcoded default.
+# All keys optional. Missing = inherited from lower-priority source.
 
 [global]
 no_copy = false        # skip clipboard by default
@@ -66,13 +75,14 @@ Untracked files larger than this limit are skipped in `supp diff -u` and `supp d
 
 ## Behavior
 
-- If `~/.supp/config.toml` does not exist, supp works exactly as before (all hardcoded defaults).
-- If the file exists but contains invalid TOML, a warning is printed to stderr and defaults are used.
+- If neither config file exists, supp works exactly as before (all hardcoded defaults).
+- If a file exists but contains invalid TOML, a warning is printed to stderr and that file is skipped.
 - Boolean config values (`no_copy`, `no_color`) are OR'd with CLI flags — setting either one enables the behavior.
+- Local config is only discovered when running inside a git repository. Outside a repo, only the global config is used.
 
 ## Examples
 
-Always skip clipboard copy and use depth 4:
+Global config — user-level defaults (`~/.config/supp/supp.toml`):
 
 ```toml
 [global]
@@ -80,7 +90,7 @@ no_copy = true
 depth = 4
 ```
 
-Use slim mode by default with 5 context lines in diffs:
+Local config — per-repo overrides (`<repo-root>/supp.toml`):
 
 ```toml
 [global]
@@ -89,3 +99,5 @@ mode = "slim"
 [diff]
 context_lines = 5
 ```
+
+With both files, supp merges them: `no_copy = true`, `depth = 4`, `mode = "slim"`, `context_lines = 5`. CLI flags like `-d 1` override the merged result.
