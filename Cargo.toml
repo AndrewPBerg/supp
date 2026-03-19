@@ -7,6 +7,7 @@ edition = "2024"
 anyhow = "1.0.102"
 arboard = "3"
 clap = { version = "4.6.0", features = ["derive"] }
+clap_complete = "4"
 colored = "2"
 git2 = "0.20.4"
 ignore = "0.4.25"

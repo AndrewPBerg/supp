@@ -1,4 +1,4 @@
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
 
 #[derive(Parser)]
 #[command(args_conflicts_with_subcommands = true)]
@@ -75,6 +75,27 @@ pub enum Commands {
         #[arg(long = "no-git")]
         no_git: bool,
     },
+    /// Generate shell completion scripts
+    Completions {
+        /// Shell to generate completions for
+        shell: clap_complete::Shell,
+    },
+    /// Interactively pick files with fzf for context generation
+    #[command(alias = "p")]
+    Pick {
+        /// Root directory to search (defaults to ".")
+        path: Option<String>,
+        /// Select only a single file (no --multi)
+        #[arg(short = 's', long)]
+        single: bool,
+    },
+}
+
+impl Cli {
+    pub fn generate_completions(shell: clap_complete::Shell) {
+        let mut cmd = Cli::command();
+        clap_complete::generate(shell, &mut cmd, "supp", &mut std::io::stdout());
+    }
 }
 
 #[cfg(test)]
@@ -263,6 +284,46 @@ mod tests {
         match cli.command {
             Some(Commands::Tree { path, .. }) => assert_eq!(path.as_deref(), Some("/tmp/dir")),
             _ => panic!("expected tree"),
+        }
+    }
+
+    // ── Completions ─────────────────────────────────────────────
+
+    #[test]
+    fn completions_subcommand() {
+        let cli = parse(&["supp", "completions", "bash"]).unwrap();
+        assert!(matches!(cli.command, Some(Commands::Completions { .. })));
+    }
+
+    // ── Pick flags ──────────────────────────────────────────────
+
+    #[test]
+    fn pick_subcommand() {
+        let cli = parse(&["supp", "pick"]).unwrap();
+        match cli.command {
+            Some(Commands::Pick { path, single }) => {
+                assert!(path.is_none());
+                assert!(!single);
+            }
+            _ => panic!("expected pick"),
+        }
+    }
+
+    #[test]
+    fn pick_single() {
+        let cli = parse(&["supp", "pick", "--single"]).unwrap();
+        match cli.command {
+            Some(Commands::Pick { single, .. }) => assert!(single),
+            _ => panic!("expected pick"),
+        }
+    }
+
+    #[test]
+    fn pick_with_path() {
+        let cli = parse(&["supp", "pick", "/tmp/dir"]).unwrap();
+        match cli.command {
+            Some(Commands::Pick { path, .. }) => assert_eq!(path.as_deref(), Some("/tmp/dir")),
+            _ => panic!("expected pick"),
         }
     }
 

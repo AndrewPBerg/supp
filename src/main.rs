@@ -1,6 +1,7 @@
 mod cli;
 mod context;
 mod git;
+mod pick;
 mod styles;
 mod tree;
 
@@ -52,6 +53,21 @@ fn main() -> anyhow::Result<()> {
             let result = get_diff(repo_path, opts)?;
             let _ = text_tx.send(result.text.clone());
             styles::print_diff_result(result, cli.no_copy, start, token_handle);
+        }
+        Some(Commands::Completions { shell }) => {
+            Cli::generate_completions(shell);
+            return Ok(());
+        }
+        Some(Commands::Pick { path, single }) => {
+            let root = path.as_deref().unwrap_or(".");
+            let selected = pick::run_fzf(root, !single, cli.regex.as_deref())?;
+            if selected.is_empty() {
+                // User cancelled — clean exit
+                return Ok(());
+            }
+            let result = context::generate_context(&selected, cli.depth, cli.regex.as_deref())?;
+            let _ = text_tx.send(result.plain.clone());
+            styles::print_context_result(result, cli.no_copy, start, token_handle);
         }
         Some(Commands::Tree { path, depth, no_git }) => {
             let root = path.as_deref().unwrap_or(".");
