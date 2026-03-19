@@ -1,2 +1,5 @@
 - [ ] Get supp context working 90% w/ l
 - [ ] Configurable ~/.supp/config.toml with defaults that override, needs fleshing out ofc asdfasdf
+- [ ] fzf integration
+- [ ] completions for repositories in file scope
+- [ ] Escalator "context-compression" w/ tree sitter symbols and something that is in between tree and ripgrep as far as context goes
