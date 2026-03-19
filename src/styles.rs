@@ -442,6 +442,119 @@ fn print_footer(
     out!();
 }
 
+// ── Sym display ─────────────────────────────────────────────────
+
+pub fn print_sym_results(result: &crate::symbol::SearchResult, no_copy: bool, start: std::time::Instant) {
+    println!();
+    let mut plain = String::new();
+
+    if result.matches.is_empty() {
+        println!("  {}", "No matching symbols found.".dimmed());
+    } else {
+        // Compute column widths based on display name (with parent prefix)
+        let display_names: Vec<String> = result
+            .matches
+            .iter()
+            .map(|(sym, _)| {
+                if let Some(ref parent) = sym.parent {
+                    format!("{}::{}", parent, sym.name)
+                } else {
+                    sym.name.clone()
+                }
+            })
+            .collect();
+        let max_name: usize = display_names.iter().map(|n| n.len()).max().unwrap_or(0);
+        let max_file: usize = result
+            .matches
+            .iter()
+            .map(|(s, _)| format!("{}:{}", s.file, s.line).len())
+            .max()
+            .unwrap_or(0);
+
+        for (idx, (sym, _score)) in result.matches.iter().enumerate() {
+            let tag = sym.kind.tag();
+            let tag_colored = match sym.kind {
+                crate::symbol::SymbolKind::Function => tag.cyan().bold().to_string(),
+                crate::symbol::SymbolKind::Struct => tag.yellow().bold().to_string(),
+                crate::symbol::SymbolKind::Enum => tag.green().bold().to_string(),
+                crate::symbol::SymbolKind::Trait => tag.magenta().bold().to_string(),
+                crate::symbol::SymbolKind::Class => tag.yellow().bold().to_string(),
+                crate::symbol::SymbolKind::Interface => tag.magenta().bold().to_string(),
+                crate::symbol::SymbolKind::Method => tag.cyan().to_string(),
+                crate::symbol::SymbolKind::Type => tag.blue().to_string(),
+                crate::symbol::SymbolKind::Const => tag.red().to_string(),
+                crate::symbol::SymbolKind::Macro => tag.red().bold().to_string(),
+                crate::symbol::SymbolKind::File => tag.dimmed().to_string(),
+            };
+
+            let location = format!("{}:{}", sym.file, sym.line);
+            let name_display = if let Some(ref parent) = sym.parent {
+                format!("{}::{}", parent.dimmed(), sym.name.bold())
+            } else {
+                sym.name.bold().to_string()
+            };
+
+            println!(
+                " {} {:<width_name$}  {:<width_file$}  {}",
+                tag_colored,
+                name_display,
+                location.dimmed(),
+                sym.signature.dimmed(),
+                width_name = max_name,
+                width_file = max_file,
+            );
+
+            // Build plain text line for clipboard
+            use std::fmt::Write;
+            let _ = writeln!(
+                plain,
+                " {} {:<width_name$}  {:<width_file$}  {}",
+                tag,
+                &display_names[idx],
+                location,
+                sym.signature,
+                width_name = max_name,
+                width_file = max_file,
+            );
+        }
+    }
+
+    println!(
+        "\n{} symbols · {} indexed · {}",
+        result.matches.len().to_string().bold(),
+        format_number(result.total_symbols),
+        format_elapsed(start.elapsed()).dimmed(),
+    );
+
+    if !plain.is_empty() {
+        if no_copy {
+            println!(
+                "  {} {}",
+                "–".dimmed(),
+                "(not copied)".dimmed(),
+            );
+        } else {
+            match copy_to_clipboard(&plain) {
+                Ok(()) => {
+                    println!(
+                        "  {} {}",
+                        "✓".green().bold(),
+                        "Copied to clipboard".green(),
+                    );
+                }
+                Err(e) => {
+                    println!(
+                        "  {} {}",
+                        "✗".red().bold(),
+                        format!("Clipboard error: {}", e).red(),
+                    );
+                }
+            }
+        }
+    }
+    println!();
+}
+
 // ── Context display ─────────────────────────────────────────────
 
 pub fn print_context_result(result: ContextResult, no_copy: bool, start: std::time::Instant, token_handle: std::thread::JoinHandle<Option<usize>>) {

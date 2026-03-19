@@ -88,6 +88,12 @@ pub enum Commands {
         /// Shell to generate completions for
         shell: clap_complete::Shell,
     },
+    /// Search symbols by name with PageRank-powered ranking
+    #[command(alias = "s")]
+    Sym {
+        /// Search query (free-form text, split into tokens)
+        query: Vec<String>,
+    },
     /// Interactively pick files with fzf for context generation
     #[command(alias = "p")]
     Pick {

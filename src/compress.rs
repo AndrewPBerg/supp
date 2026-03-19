@@ -9,7 +9,7 @@ pub enum Mode {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Lang {
+pub enum Lang {
     Rust,
     Python,
     JavaScript,
@@ -21,7 +21,7 @@ enum Lang {
     Java,
 }
 
-fn detect_lang(file_path: &str) -> Option<Lang> {
+pub fn detect_lang(file_path: &str) -> Option<Lang> {
     let ext = file_path.rsplit('.').next()?;
     match ext {
         "rs" => Some(Lang::Rust),
@@ -37,7 +37,7 @@ fn detect_lang(file_path: &str) -> Option<Lang> {
     }
 }
 
-fn get_language(lang: Lang) -> Language {
+pub fn get_language(lang: Lang) -> Language {
     match lang {
         Lang::Rust => tree_sitter_rust::LANGUAGE.into(),
         Lang::Python => tree_sitter_python::LANGUAGE.into(),
@@ -51,7 +51,7 @@ fn get_language(lang: Lang) -> Language {
     }
 }
 
-fn parse_source(content: &str, lang: Lang) -> Option<Tree> {
+pub fn parse_source(content: &str, lang: Lang) -> Option<Tree> {
     let mut parser = Parser::new();
     parser.set_language(&get_language(lang)).ok()?;
     parser.parse(content, None)
@@ -219,7 +219,7 @@ fn emit_node(
     }
 }
 
-fn node_text<'a>(source: &'a str, node: tree_sitter::Node) -> &'a str {
+pub fn node_text<'a>(source: &'a str, node: tree_sitter::Node) -> &'a str {
     &source[node.start_byte()..node.end_byte()]
 }
 

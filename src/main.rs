@@ -5,6 +5,7 @@ mod context;
 mod git;
 mod pick;
 mod styles;
+mod symbol;
 mod tree;
 
 use clap::Parser;
@@ -63,6 +64,11 @@ fn main() -> anyhow::Result<()> {
         }
         Some(Commands::Completions { shell }) => {
             Cli::generate_completions(shell);
+            return Ok(());
+        }
+        Some(Commands::Sym { ref query }) => {
+            let result = symbol::search(".", query)?;
+            styles::print_sym_results(&result, no_copy, start);
             return Ok(());
         }
         Some(Commands::Pick { ref path, single }) => {

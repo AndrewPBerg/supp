@@ -1,4 +1,0 @@
-- [ ] Include more shortcuts in pick, and cleaner UX around closing and opening around w/ hybrid flows between fzf and typed paths. Selecting Directories from pick is non-existent functionality
-- [ ] I don't love my supp diff arg arms
-- [ ] When I go to replay supp context (with terminal up arrow) it should use the picked file paths already there!
-- [ ] Pyo3 binding
