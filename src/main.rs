@@ -275,7 +275,6 @@ fn main() -> anyhow::Result<()> {
             self_branch,
             context_lines,
             filter,
-            regex,
         } => {
             let no_copy = cli.no_copy;
             let repo_path = path.as_deref().unwrap_or(".");
@@ -288,7 +287,7 @@ fn main() -> anyhow::Result<()> {
                 self_branch,
                 context_lines,
                 filter,
-                regex,
+                regex: cli.regex,
             };
             let result = get_diff(repo_path, opts)?;
 
@@ -326,6 +325,15 @@ fn main() -> anyhow::Result<()> {
                         "✓".green().bold(),
                         "Copied to clipboard".green(),
                         format!("({})", format_size(result.text.len())).dimmed(),
+                    );
+                }
+            }
+            if let Some(rx) = result.stale_check {
+                if let Ok(true) = rx.recv_timeout(std::time::Duration::from_millis(300)) {
+                    println!(
+                        "  {} {}",
+                        "⚠".yellow().bold(),
+                        format!("{} has new commits — re-run for latest", result.label.split(" ... ").next().unwrap_or(&result.label)).yellow()
                     );
                 }
             }

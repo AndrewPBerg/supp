@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::mpsc;
 
 use anyhow::{anyhow, Result};
 use git2::{Delta, DiffFormat, Repository};
@@ -31,6 +32,7 @@ pub struct DiffResult {
     pub text: String,
     pub has_conflicts: bool,
     pub is_branch_comparison: bool,
+    pub stale_check: Option<mpsc::Receiver<bool>>,
 }
 
 /// Build a `git2::DiffOptions` with the given context lines setting.
@@ -221,6 +223,7 @@ fn get_diff_inner(
             text,
             has_conflicts: false,
             is_branch_comparison: false,
+            stale_check: None,
         });
     }
 
@@ -241,6 +244,7 @@ fn get_diff_inner(
             text,
             has_conflicts: false,
             is_branch_comparison: false,
+            stale_check: None,
         });
     }
 
@@ -253,6 +257,7 @@ fn get_diff_inner(
             text,
             has_conflicts: false,
             is_branch_comparison: false,
+            stale_check: None,
         });
     }
 
@@ -309,6 +314,7 @@ fn get_diff_inner(
             text,
             has_conflicts: false,
             is_branch_comparison: false,
+            stale_check: None,
         });
     }
 
@@ -320,14 +326,26 @@ fn get_diff_inner(
                 .to_string()
         };
 
-        {
-            let mut fetch_opts = make_fetch_options(repo)?;
-            let mut remote = repo.find_remote("origin")?;
-            remote.fetch(&[current_branch.as_str()], Some(&mut fetch_opts), None)?;
-        }
+        let refname = format!("refs/remotes/origin/{}", current_branch);
+        let pre_oid = repo.find_reference(&refname).ok().and_then(|r| r.target());
 
-        let base_ref =
-            repo.find_reference(&format!("refs/remotes/origin/{}", current_branch))?;
+        let (tx, rx) = mpsc::channel();
+        let repo_path_owned = repo.path().to_path_buf();
+        let branch_for_fetch = current_branch.clone();
+        std::thread::spawn(move || {
+            let result = (|| -> Option<bool> {
+                let repo = Repository::open(&repo_path_owned).ok()?;
+                let mut fetch_opts = make_fetch_options(&repo).ok()?;
+                let mut remote = repo.find_remote("origin").ok()?;
+                remote.fetch(&[&branch_for_fetch], Some(&mut fetch_opts), None).ok()?;
+                let post_oid = repo.find_reference(&format!("refs/remotes/origin/{}", branch_for_fetch))
+                    .ok()?.target();
+                Some(pre_oid != post_oid)
+            })();
+            let _ = tx.send(result.unwrap_or(false));
+        });
+
+        let base_ref = repo.find_reference(&refname)?;
         let base_commit = base_ref.peel_to_commit()?;
         let base_tree = base_commit.tree()?;
 
@@ -349,6 +367,7 @@ fn get_diff_inner(
             text,
             has_conflicts,
             is_branch_comparison: true,
+            stale_check: Some(rx),
         });
     }
 
@@ -382,13 +401,26 @@ fn get_diff_inner(
         }
     };
 
-    {
-        let mut fetch_opts = make_fetch_options(repo)?;
-        let mut remote = repo.find_remote("origin")?;
-        remote.fetch(&[base_branch.as_str()], Some(&mut fetch_opts), None)?;
-    }
+    let refname = format!("refs/remotes/origin/{}", base_branch);
+    let pre_oid = repo.find_reference(&refname).ok().and_then(|r| r.target());
 
-    let base_ref = repo.find_reference(&format!("refs/remotes/origin/{}", base_branch))?;
+    let (tx, rx) = mpsc::channel();
+    let repo_path_owned = repo.path().to_path_buf();
+    let branch_for_fetch = base_branch.clone();
+    std::thread::spawn(move || {
+        let result = (|| -> Option<bool> {
+            let repo = Repository::open(&repo_path_owned).ok()?;
+            let mut fetch_opts = make_fetch_options(&repo).ok()?;
+            let mut remote = repo.find_remote("origin").ok()?;
+            remote.fetch(&[&branch_for_fetch], Some(&mut fetch_opts), None).ok()?;
+            let post_oid = repo.find_reference(&format!("refs/remotes/origin/{}", branch_for_fetch))
+                .ok()?.target();
+            Some(pre_oid != post_oid)
+        })();
+        let _ = tx.send(result.unwrap_or(false));
+    });
+
+    let base_ref = repo.find_reference(&refname)?;
     let base_commit = base_ref.peel_to_commit()?;
     let base_tree = base_commit.tree()?;
 
@@ -410,5 +442,6 @@ fn get_diff_inner(
         text,
         has_conflicts,
         is_branch_comparison: true,
+        stale_check: Some(rx),
     })
 }
