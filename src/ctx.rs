@@ -76,9 +76,10 @@ pub fn analyze(
         }
         if path.is_file() {
             if let Some(ref re) = re
-                && !re.is_match(p) {
-                    continue;
-                }
+                && !re.is_match(p)
+            {
+                continue;
+            }
             file_paths.push(p.clone());
             individual_files.push(p.clone());
         } else if path.is_dir() {
@@ -90,9 +91,10 @@ pub fn analyze(
                 if entry.path().is_file() {
                     let rel = entry.path().to_string_lossy().to_string();
                     if let Some(ref re) = re
-                        && !re.is_match(&rel) {
-                            continue;
-                        }
+                        && !re.is_match(&rel)
+                    {
+                        continue;
+                    }
                     file_paths.push(rel);
                 }
             }
@@ -133,7 +135,10 @@ pub fn analyze(
     let file_count = read_files.len();
     let original_bytes: usize = read_files.iter().map(|f| f.original.len()).sum();
     let total_bytes: usize = read_files.iter().map(|f| f.compressed.len()).sum();
-    let total_lines: usize = read_files.iter().map(|f| f.compressed.lines().count()).sum();
+    let total_lines: usize = read_files
+        .iter()
+        .map(|f| f.compressed.lines().count())
+        .sum();
 
     // 3. Load project symbol index once
     let root_path = if let Some(dir) = dir_paths.first() {
@@ -159,9 +164,7 @@ pub fn analyze(
             .iter()
             .filter(|s| {
                 s.kind != SymbolKind::File
-                    && (s.file == rel
-                        || rel.ends_with(&s.file)
-                        || s.file.ends_with(rel))
+                    && (s.file == rel || rel.ends_with(&s.file) || s.file.ends_with(rel))
             })
             .cloned()
             .collect();
@@ -172,7 +175,10 @@ pub fn analyze(
         let mut dep_file_set: std::collections::HashSet<String> = std::collections::HashSet::new();
 
         for (name, module) in &imports {
-            if let Some(sym) = all_symbols.iter().find(|s| s.name == *name && s.file != rel) {
+            if let Some(sym) = all_symbols
+                .iter()
+                .find(|s| s.name == *name && s.file != rel)
+            {
                 dep_file_set.insert(sym.file.clone());
                 resolved.push(ResolvedImport {
                     name: name.clone(),
@@ -332,7 +338,10 @@ fn find_file_references(
         }
 
         // Skip files already in the analysis set (they have their own context)
-        if skip_files.iter().any(|f| f.ends_with(&rel) || rel.ends_with(*f)) {
+        if skip_files
+            .iter()
+            .any(|f| f.ends_with(&rel) || rel.ends_with(*f))
+        {
             continue;
         }
 
@@ -547,7 +556,11 @@ fn render(
                     .as_ref()
                     .map(|c| format!(" (in {})", c))
                     .unwrap_or_default();
-                let _ = writeln!(out, "  {}:{} → {}{}", r.file, r.line, r.symbol_name, caller_str);
+                let _ = writeln!(
+                    out,
+                    "  {}:{} → {}{}",
+                    r.file, r.line, r.symbol_name, caller_str
+                );
             }
         }
     }
@@ -596,7 +609,7 @@ mod tests {
         assert_eq!(result.file_count, 1);
         assert_eq!(result.dep_file_count, 0);
         assert_eq!(result.used_by_count, 0);
-        assert!(result.plain.contains("<source>main.rs</source>"));
+        assert!(result.plain.contains("main.rs</source>"));
         assert!(result.plain.contains("println"));
     }
 
@@ -615,7 +628,10 @@ mod tests {
     #[test]
     fn resolves_rust_imports() {
         let dir = setup(&[
-            ("config.rs", "pub struct Config {\n    pub debug: bool,\n}\n"),
+            (
+                "config.rs",
+                "pub struct Config {\n    pub debug: bool,\n}\n",
+            ),
             (
                 "main.rs",
                 "use crate::config::Config;\n\nfn main() {\n    let _c = Config { debug: true };\n}\n",
@@ -673,7 +689,10 @@ mod tests {
     fn python_imports_resolved() {
         let dir = setup(&[
             ("config.py", "class Config:\n    debug = True\n"),
-            ("main.py", "from config import Config\n\ndef run():\n    c = Config()\n"),
+            (
+                "main.py",
+                "from config import Config\n\ndef run():\n    c = Config()\n",
+            ),
         ]);
         let result = analyze_one(dir.path().to_str().unwrap(), "main.py", Mode::Full).unwrap();
         assert!(result.plain.contains("Config"));
@@ -683,8 +702,14 @@ mod tests {
     #[test]
     fn short_symbol_names_skipped_in_used_by() {
         let dir = setup(&[
-            ("lib.rs", "pub fn ab() -> i32 { 1 }\npub fn abc() -> i32 { 2 }\n"),
-            ("main.rs", "fn main() {\n    let _ = ab();\n    let _ = abc();\n}\n"),
+            (
+                "lib.rs",
+                "pub fn ab() -> i32 { 1 }\npub fn abc() -> i32 { 2 }\n",
+            ),
+            (
+                "main.rs",
+                "fn main() {\n    let _ = ab();\n    let _ = abc();\n}\n",
+            ),
         ]);
         let result = analyze_one(dir.path().to_str().unwrap(), "lib.rs", Mode::Full).unwrap();
         let used_by_section = result.plain.split("USED BY").nth(1).unwrap_or("");

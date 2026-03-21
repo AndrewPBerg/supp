@@ -153,12 +153,13 @@ fn build_index(root: &Path) -> (Vec<Symbol>, Vec<f64>) {
                 };
 
                 if let Some(lang) = compress::detect_lang(&rel)
-                    && let Some(tree) = compress::parse_source(&content, lang) {
-                        let symbols = extract_symbols(&rel, &content, lang, &tree);
-                        let refs = extract_references(&content, lang, &tree);
-                        results.lock().unwrap().push((rel, symbols, refs));
-                        return;
-                    }
+                    && let Some(tree) = compress::parse_source(&content, lang)
+                {
+                    let symbols = extract_symbols(&rel, &content, lang, &tree);
+                    let refs = extract_references(&content, lang, &tree);
+                    results.lock().unwrap().push((rel, symbols, refs));
+                    return;
+                }
 
                 // Non-code file: create a file-level symbol and extract plain-text refs
                 let filename = Path::new(&rel)
@@ -585,27 +586,28 @@ fn extract_python_assignment(
         let child = cursor.node();
         if child.kind() == "assignment"
             && let Some(left) = child.child_by_field_name("left")
-                && left.kind() == "identifier" {
-                    let name = compress::node_text(content, left).to_string();
-                    // Skip dunder names and _private (but keep __all__)
-                    if name.starts_with("__") && name.ends_with("__") && name != "__all__" {
-                        return;
-                    }
-                    if name.starts_with('_') {
-                        return;
-                    }
-                    // Build signature from the full assignment text
-                    let sig = signature_line(compress::node_text(content, child));
-                    symbols.push(Symbol {
-                        name,
-                        kind: SymbolKind::Const,
-                        file: file.to_string(),
-                        line: node.start_position().row + 1,
-                        signature: sig,
-                        parent: None,
-                        keywords: Vec::new(),
-                    });
-                }
+            && left.kind() == "identifier"
+        {
+            let name = compress::node_text(content, left).to_string();
+            // Skip dunder names and _private (but keep __all__)
+            if name.starts_with("__") && name.ends_with("__") && name != "__all__" {
+                return;
+            }
+            if name.starts_with('_') {
+                return;
+            }
+            // Build signature from the full assignment text
+            let sig = signature_line(compress::node_text(content, child));
+            symbols.push(Symbol {
+                name,
+                kind: SymbolKind::Const,
+                file: file.to_string(),
+                line: node.start_position().row + 1,
+                signature: sig,
+                parent: None,
+                keywords: Vec::new(),
+            });
+        }
         if !cursor.goto_next_sibling() {
             break;
         }
@@ -716,23 +718,27 @@ fn extract_js_symbols(
                 loop {
                     let child = cursor.node();
                     if child.kind() == "variable_declarator"
-                        && let Some(name) = name_from_field(child, content) {
-                            let value = child.child_by_field_name("value");
-                            let is_fn = value.is_some_and(|v| {
-                                matches!(v.kind(), "arrow_function" | "function" | "function_expression")
+                        && let Some(name) = name_from_field(child, content)
+                    {
+                        let value = child.child_by_field_name("value");
+                        let is_fn = value.is_some_and(|v| {
+                            matches!(
+                                v.kind(),
+                                "arrow_function" | "function" | "function_expression"
+                            )
+                        });
+                        if is_fn {
+                            symbols.push(Symbol {
+                                name,
+                                kind: SymbolKind::Function,
+                                file: file.to_string(),
+                                line: node.start_position().row + 1,
+                                signature: signature_line(text),
+                                parent: parent.map(String::from),
+                                keywords: Vec::new(),
                             });
-                            if is_fn {
-                                symbols.push(Symbol {
-                                    name,
-                                    kind: SymbolKind::Function,
-                                    file: file.to_string(),
-                                    line: node.start_position().row + 1,
-                                    signature: signature_line(text),
-                                    parent: parent.map(String::from),
-                                    keywords: Vec::new(),
-                                });
-                            }
                         }
+                    }
                     if !cursor.goto_next_sibling() {
                         break;
                     }
@@ -894,25 +900,26 @@ fn extract_c_symbols(
     match kind {
         "function_definition" => {
             if let Some(declarator) = node.child_by_field_name("declarator")
-                && let Some(name) = find_declarator_name(declarator, content) {
-                    // C++: detect Foo::bar() scope qualifier for method resolution
-                    let scope = find_scope_qualifier(declarator, content);
-                    let effective_parent = scope.as_deref().or(parent);
-                    let sk = if effective_parent.is_some() {
-                        SymbolKind::Method
-                    } else {
-                        SymbolKind::Function
-                    };
-                    symbols.push(Symbol {
-                        name,
-                        kind: sk,
-                        file: file.to_string(),
-                        line: node.start_position().row + 1,
-                        signature: signature_line(text),
-                        parent: effective_parent.map(String::from),
-                        keywords: Vec::new(),
-                    });
-                }
+                && let Some(name) = find_declarator_name(declarator, content)
+            {
+                // C++: detect Foo::bar() scope qualifier for method resolution
+                let scope = find_scope_qualifier(declarator, content);
+                let effective_parent = scope.as_deref().or(parent);
+                let sk = if effective_parent.is_some() {
+                    SymbolKind::Method
+                } else {
+                    SymbolKind::Function
+                };
+                symbols.push(Symbol {
+                    name,
+                    kind: sk,
+                    file: file.to_string(),
+                    line: node.start_position().row + 1,
+                    signature: signature_line(text),
+                    parent: effective_parent.map(String::from),
+                    keywords: Vec::new(),
+                });
+            }
         }
         "struct_specifier" | "enum_specifier" => {
             if let Some(name) = name_from_field(node, content) {

@@ -207,13 +207,7 @@ fn map(content: &str, lang: Lang) -> String {
     out
 }
 
-fn emit_node(
-    source: &str,
-    node: tree_sitter::Node,
-    lang: Lang,
-    out: &mut String,
-    depth: usize,
-) {
+fn emit_node(source: &str, node: tree_sitter::Node, lang: Lang, out: &mut String, depth: usize) {
     let kind = node.kind();
 
     // Skip comments in map mode
@@ -305,7 +299,9 @@ fn emit_rust(source: &str, node: tree_sitter::Node, out: &mut String, depth: usi
                 if cursor.goto_first_child() {
                     loop {
                         let child = cursor.node();
-                        if child.kind() == "function_item" || child.kind() == "function_signature_item" {
+                        if child.kind() == "function_item"
+                            || child.kind() == "function_signature_item"
+                        {
                             emit_rust_fn_sig(source, child, out, depth + 1);
                         }
                         if !cursor.goto_next_sibling() {
@@ -358,7 +354,10 @@ fn emit_rust(source: &str, node: tree_sitter::Node, out: &mut String, depth: usi
             // Just show name
             if let Some(name) = node.child_by_field_name("name") {
                 out.push_str(&indent(depth));
-                out.push_str(&format!("macro_rules! {} {{ ... }}\n", node_text(source, name)));
+                out.push_str(&format!(
+                    "macro_rules! {} {{ ... }}\n",
+                    node_text(source, name)
+                ));
             }
         }
         _ => {}
@@ -479,13 +478,7 @@ fn emit_python_decorated(source: &str, node: tree_sitter::Node, out: &mut String
 
 // ── JavaScript / TypeScript ────────────────────────────────────────
 
-fn emit_js(
-    source: &str,
-    node: tree_sitter::Node,
-    out: &mut String,
-    depth: usize,
-    is_ts: bool,
-) {
+fn emit_js(source: &str, node: tree_sitter::Node, out: &mut String, depth: usize, is_ts: bool) {
     let kind = node.kind();
     match kind {
         "import_statement" => {
@@ -507,8 +500,10 @@ fn emit_js(
                 loop {
                     let child = cursor.node();
                     match child.kind() {
-                        "function_declaration" | "class_declaration"
-                        | "lexical_declaration" | "variable_declaration" => {
+                        "function_declaration"
+                        | "class_declaration"
+                        | "lexical_declaration"
+                        | "variable_declaration" => {
                             // Prefix with "export "
                             let prefix = if node_text(source, node).starts_with("export default") {
                                 "export default "
@@ -526,8 +521,7 @@ fn emit_js(
                                 found_decl = true;
                             }
                         }
-                        "interface_declaration" | "type_alias_declaration"
-                        | "enum_declaration" => {
+                        "interface_declaration" | "type_alias_declaration" | "enum_declaration" => {
                             let prefix = "export ";
                             let mut sub_out = String::new();
                             emit_js(source, child, &mut sub_out, depth, true);
@@ -617,12 +611,7 @@ fn emit_js_method(source: &str, node: tree_sitter::Node, out: &mut String, depth
     }
 }
 
-fn emit_js_class(
-    source: &str,
-    node: tree_sitter::Node,
-    out: &mut String,
-    depth: usize,
-) {
+fn emit_js_class(source: &str, node: tree_sitter::Node, out: &mut String, depth: usize) {
     if let Some(body) = node.child_by_field_name("body") {
         let before = &source[node.start_byte()..body.start_byte()];
         out.push_str(&indent(depth));
@@ -714,20 +703,23 @@ fn emit_go_type_spec(source: &str, node: tree_sitter::Node, out: &mut String, de
             let child = cursor.node();
             if child.kind() == "struct_type" || child.kind() == "interface_type" {
                 // Get the name part before the body
-                if let Some(_body) = child.child_by_field_name("body")
-                    .or_else(|| {
-                        let mut c2 = child.walk();
-                        if c2.goto_first_child() {
-                            loop {
-                                if matches!(c2.node().kind(), "field_declaration_list" | "method_spec_list" | "{") {
-                                    return Some(c2.node());
-                                }
-                                if !c2.goto_next_sibling() { break; }
+                if let Some(_body) = child.child_by_field_name("body").or_else(|| {
+                    let mut c2 = child.walk();
+                    if c2.goto_first_child() {
+                        loop {
+                            if matches!(
+                                c2.node().kind(),
+                                "field_declaration_list" | "method_spec_list" | "{"
+                            ) {
+                                return Some(c2.node());
+                            }
+                            if !c2.goto_next_sibling() {
+                                break;
                             }
                         }
-                        None
-                    })
-                {
+                    }
+                    None
+                }) {
                     let before = &source[node.start_byte()..child.start_byte()];
                     let keyword = match child.kind() {
                         "struct_type" => "struct",
@@ -752,13 +744,7 @@ fn emit_go_type_spec(source: &str, node: tree_sitter::Node, out: &mut String, de
 
 // ── C / C++ ────────────────────────────────────────────────────────
 
-fn emit_c(
-    source: &str,
-    node: tree_sitter::Node,
-    out: &mut String,
-    depth: usize,
-    is_cpp: bool,
-) {
+fn emit_c(source: &str, node: tree_sitter::Node, out: &mut String, depth: usize, is_cpp: bool) {
     let kind = node.kind();
     match kind {
         "preproc_include" | "preproc_def" | "preproc_ifdef" | "preproc_ifndef" => {
@@ -858,8 +844,7 @@ fn emit_java(source: &str, node: tree_sitter::Node, out: &mut String, depth: usi
                                 out.push_str(node_text(source, child));
                                 out.push('\n');
                             }
-                            "class_declaration" | "interface_declaration"
-                            | "enum_declaration" => {
+                            "class_declaration" | "interface_declaration" | "enum_declaration" => {
                                 emit_java(source, child, out, depth + 1);
                             }
                             _ => {}

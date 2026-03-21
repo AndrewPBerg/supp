@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::mpsc;
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum FileStatus {
@@ -69,7 +69,6 @@ pub struct DiffResult {
     pub stale_check: Option<mpsc::Receiver<bool>>,
 }
 
-
 // ── Git CLI helpers ─────────────────────────────────────────────────
 
 fn run_git(dir: &Path, args: &[&str]) -> Result<String> {
@@ -80,7 +79,11 @@ fn run_git(dir: &Path, args: &[&str]) -> Result<String> {
         .map_err(|e| anyhow!("failed to run git: {}", e))?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(anyhow!("git {} failed: {}", args.first().unwrap_or(&""), stderr.trim()));
+        return Err(anyhow!(
+            "git {} failed: {}",
+            args.first().unwrap_or(&""),
+            stderr.trim()
+        ));
     }
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
@@ -150,10 +153,9 @@ pub fn get_status_map(path: &str) -> Result<Option<(HashMap<String, FileStatus>,
                     gix::diff::index::Change::Modification { location, .. } => {
                         (location.to_string(), FileStatus::Modified)
                     }
-                    gix::diff::index::Change::Rewrite {
-                        location,
-                        ..
-                    } => (location.to_string(), FileStatus::Renamed),
+                    gix::diff::index::Change::Rewrite { location, .. } => {
+                        (location.to_string(), FileStatus::Renamed)
+                    }
                 };
                 // Staged takes priority: TreeIndex items are emitted before IndexWorktree
                 map.insert(path_str, fs);
@@ -171,8 +173,9 @@ pub fn get_status_map(path: &str) -> Result<Option<(HashMap<String, FileStatus>,
                             let fs = match status {
                                 EntryStatus::Change(change) => match change {
                                     Change::Removed => FileStatus::Deleted,
-                                    Change::Modification { .. }
-                                    | Change::Type { .. } => FileStatus::Modified,
+                                    Change::Modification { .. } | Change::Type { .. } => {
+                                        FileStatus::Modified
+                                    }
                                     Change::SubmoduleModification(_) => FileStatus::Modified,
                                 },
                                 EntryStatus::IntentToAdd => FileStatus::Added,
@@ -189,10 +192,7 @@ pub fn get_status_map(path: &str) -> Result<Option<(HashMap<String, FileStatus>,
                             map.entry(path_str).or_insert(FileStatus::Untracked);
                         }
                     }
-                    IW::Rewrite {
-                        dirwalk_entry,
-                        ..
-                    } => {
+                    IW::Rewrite { dirwalk_entry, .. } => {
                         let path_str = dirwalk_entry.rela_path.to_string();
                         map.entry(path_str).or_insert(FileStatus::Renamed);
                     }
@@ -225,10 +225,18 @@ fn parse_name_status(output: &str) -> Vec<(DeltaStatus, String, Option<String>)>
 
             if status_str.starts_with('R') {
                 let new_path = parts.next()?;
-                Some((DeltaStatus::Renamed, new_path.to_string(), Some(first_path.to_string())))
+                Some((
+                    DeltaStatus::Renamed,
+                    new_path.to_string(),
+                    Some(first_path.to_string()),
+                ))
             } else if status_str.starts_with('C') {
                 let new_path = parts.next()?;
-                Some((DeltaStatus::Copied, new_path.to_string(), Some(first_path.to_string())))
+                Some((
+                    DeltaStatus::Copied,
+                    new_path.to_string(),
+                    Some(first_path.to_string()),
+                ))
             } else {
                 let status = match status_str {
                     "A" => DeltaStatus::Added,
@@ -313,8 +321,7 @@ fn run_diff(repo_dir: &Path, args: &[&str]) -> Result<(Vec<FileEntry>, String)> 
     let files: Vec<FileEntry> = statuses
         .into_iter()
         .map(|(status, path, old_path)| {
-            let (patch, additions, deletions) =
-                patch_map.remove(&path).unwrap_or_default();
+            let (patch, additions, deletions) = patch_map.remove(&path).unwrap_or_default();
             FileEntry {
                 path,
                 old_path,
@@ -332,7 +339,10 @@ fn run_diff(repo_dir: &Path, args: &[&str]) -> Result<(Vec<FileEntry>, String)> 
 // ── Untracked files ─────────────────────────────────────────────────
 
 /// Collect untracked files from the working directory.
-pub(crate) fn collect_untracked_files(repo_dir: &Path, max_untracked_size: u64) -> Result<(Vec<FileEntry>, String)> {
+pub(crate) fn collect_untracked_files(
+    repo_dir: &Path,
+    max_untracked_size: u64,
+) -> Result<(Vec<FileEntry>, String)> {
     let repo = open_repo(repo_dir)?;
     let iter = repo
         .status(gix::progress::Discard)
@@ -346,9 +356,10 @@ pub(crate) fn collect_untracked_files(repo_dir: &Path, max_untracked_size: u64) 
         if let gix::status::Item::IndexWorktree(
             gix::status::index_worktree::Item::DirectoryContents { entry, .. },
         ) = item
-            && matches!(entry.status, gix::dir::entry::Status::Untracked) {
-                untracked_paths.push(entry.rela_path.to_string());
-            }
+            && matches!(entry.status, gix::dir::entry::Status::Untracked)
+        {
+            untracked_paths.push(entry.rela_path.to_string());
+        }
     }
 
     let mut files = Vec::new();
@@ -364,9 +375,7 @@ pub(crate) fn collect_untracked_files(repo_dir: &Path, max_untracked_size: u64) 
             .map(|m| m.len() > max_untracked_size)
             .unwrap_or(false);
 
-        if !too_large
-            && let Ok(content) = std::fs::read_to_string(&full_path)
-        {
+        if !too_large && let Ok(content) = std::fs::read_to_string(&full_path) {
             let header = format!("--- /dev/null\n+++ b/{}\n", rel_path);
             text.push_str(&header);
             file_patch.push_str(&header);
@@ -394,16 +403,16 @@ pub(crate) fn collect_untracked_files(repo_dir: &Path, max_untracked_size: u64) 
 
 /// Apply regex filter to file entries, keeping paths that match.
 pub(crate) fn apply_regex_filter(files: Vec<FileEntry>, pattern: &str) -> Result<Vec<FileEntry>> {
-    let re = regex::Regex::new(pattern)
-        .map_err(|e| anyhow!("invalid regex '{}': {}", pattern, e))?;
+    let re =
+        regex::Regex::new(pattern).map_err(|e| anyhow!("invalid regex '{}': {}", pattern, e))?;
     Ok(files.into_iter().filter(|f| re.is_match(&f.path)).collect())
 }
 
 // ── Public diff entry point ─────────────────────────────────────────
 
 pub fn get_diff(repo_path: &str, opts: DiffOptions, regex: Option<&str>) -> Result<DiffResult> {
-    let (_, repo_dir) = discover_repo(repo_path)?
-        .ok_or_else(|| anyhow!("not a git repository: {}", repo_path))?;
+    let (_, repo_dir) =
+        discover_repo(repo_path)?.ok_or_else(|| anyhow!("not a git repository: {}", repo_path))?;
 
     let mut result = get_diff_inner(&repo_dir, opts)?;
 
@@ -452,7 +461,10 @@ fn diff_branch_against_remote(
             }
             let post_oid = try_run_git(
                 &repo_dir_owned,
-                &["rev-parse", &format!("refs/remotes/origin/{}", branch_for_fetch)],
+                &[
+                    "rev-parse",
+                    &format!("refs/remotes/origin/{}", branch_for_fetch),
+                ],
             );
             Some(pre_oid != post_oid)
         })();
@@ -477,7 +489,11 @@ fn diff_branch_against_remote(
     // Count commits between base and local
     let commit_count = try_run_git(
         repo_dir,
-        &["rev-list", "--count", &format!("{}..{}", base_oid, local_oid)],
+        &[
+            "rev-list",
+            "--count",
+            &format!("{}..{}", base_oid, local_oid),
+        ],
     )
     .and_then(|s| s.parse::<usize>().ok());
 
@@ -594,7 +610,8 @@ fn get_diff_inner(repo_dir: &Path, opts: DiffOptions) -> Result<DiffResult> {
     }
 
     if opts.all {
-        let (untracked_files, mut text) = collect_untracked_files(repo_dir, opts.max_untracked_size)?;
+        let (untracked_files, mut text) =
+            collect_untracked_files(repo_dir, opts.max_untracked_size)?;
 
         // Staged changes
         let mut cached_args = vec!["--cached"];
@@ -724,11 +741,7 @@ mod tests {
         run_git(dir.path(), &["config", "user.name", "Test"]).unwrap();
         run_git(dir.path(), &["config", "user.email", "test@test.com"]).unwrap();
         // Create initial empty commit so HEAD exists
-        run_git(
-            dir.path(),
-            &["commit", "--allow-empty", "-m", "initial"],
-        )
-        .unwrap();
+        run_git(dir.path(), &["commit", "--allow-empty", "-m", "initial"]).unwrap();
         dir
     }
 

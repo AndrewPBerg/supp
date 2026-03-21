@@ -10,6 +10,8 @@ use crossterm::terminal;
 use ignore::WalkBuilder;
 use regex::Regex;
 
+use crate::compress::Mode;
+
 const MAX_HISTORY: usize = 20;
 
 /// Collect all files under `root`, respecting .gitignore, with optional regex filter.
@@ -121,7 +123,12 @@ fn parse_history_line(line: &str) -> Option<Vec<String>> {
 }
 
 /// Spawn fzf with the collected file list, return selected paths.
-pub fn run_fzf(root: &str, multi: bool, regex: Option<&str>, preview_lines: usize) -> Result<Vec<String>> {
+pub fn run_fzf(
+    root: &str,
+    multi: bool,
+    regex: Option<&str>,
+    preview_lines: usize,
+) -> Result<Vec<String>> {
     run_fzf_with_history(root, multi, regex, preview_lines, &[])
 }
 
@@ -178,9 +185,10 @@ fn read_single_key() -> Result<KeyCode> {
     let result = (|| {
         loop {
             if event::poll(Duration::from_secs(60))?
-                && let Event::Key(KeyEvent { code, .. }) = event::read()? {
-                    return Ok(code);
-                }
+                && let Event::Key(KeyEvent { code, .. }) = event::read()?
+            {
+                return Ok(code);
+            }
         }
     })();
     terminal::disable_raw_mode()?;
@@ -255,29 +263,55 @@ pub fn interactive_pick_loop(
     root: &str,
     regex: Option<&str>,
     preview_lines: usize,
-) -> Result<Vec<String>> {
+) -> Result<(Vec<String>, Option<Mode>)> {
     let hist_path = history_path(Path::new("."));
     let mut history = load_history(&hist_path);
 
     // First fzf session — includes history
     let mut accumulated = run_fzf_with_history(root, true, regex, preview_lines, &history)?;
     if accumulated.is_empty() {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), None));
     }
 
-    let mut need_redraw = true;
+    let mut redraw_all = true;
+    let mut redraw_prompt = false;
+    let mut selected_mode: Option<Mode> = None;
 
     loop {
-        if need_redraw {
+        if redraw_all {
             eprintln!();
             eprintln!("{}", "  Accumulated files:".bold());
             for (i, f) in accumulated.iter().enumerate() {
                 eprintln!("    {} {}", format!("{}.", i + 1).dimmed(), f.cyan());
             }
             eprintln!();
-            eprint!("{}", "  p: pick more | enter: execute | esc: cancel ".dimmed());
+            redraw_all = false;
+            redraw_prompt = true;
+        }
+
+        if redraw_prompt {
+            // Clear current line and rewrite prompt
+            eprint!("\r\x1b[2K");
+
+            let mode_f = if selected_mode == Some(Mode::Full) {
+                "full".bold().underline().to_string()
+            } else {
+                "full".to_string()
+            };
+            let mode_s = if selected_mode == Some(Mode::Slim) {
+                "slim".bold().underline().to_string()
+            } else {
+                "slim".to_string()
+            };
+            let mode_m = if selected_mode == Some(Mode::Map) {
+                "map".bold().underline().to_string()
+            } else {
+                "map".to_string()
+            };
+
+            eprint!("{}", format!("  p: pick more | f: {mode_f}  s: {mode_s}  m: {mode_m} | enter: execute | esc: cancel ").dimmed());
             io::stderr().flush()?;
-            need_redraw = false;
+            redraw_prompt = false;
         }
 
         let key = read_single_key()?;
@@ -289,16 +323,28 @@ pub fn interactive_pick_loop(
                 if !more.is_empty() {
                     merge_unique(&mut accumulated, more);
                 }
-                need_redraw = true;
+                redraw_all = true;
+            }
+            KeyCode::Char('f' | 'F') => {
+                selected_mode = Some(Mode::Full);
+                redraw_prompt = true;
+            }
+            KeyCode::Char('s' | 'S') => {
+                selected_mode = Some(Mode::Slim);
+                redraw_prompt = true;
+            }
+            KeyCode::Char('m' | 'M') => {
+                selected_mode = Some(Mode::Map);
+                redraw_prompt = true;
             }
             KeyCode::Enter => {
                 eprintln!();
                 save_history(&hist_path, &mut history, &accumulated);
-                return Ok(accumulated);
+                return Ok((accumulated, selected_mode));
             }
             KeyCode::Esc => {
                 eprintln!();
-                return Ok(Vec::new());
+                return Ok((Vec::new(), None));
             }
             _ => {}
         }

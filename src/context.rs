@@ -175,11 +175,9 @@ pub fn generate_context(
             read_files.iter().map(|(p, _, _)| p.as_str()).collect();
 
         // Try to find a project root for symbol loading
-        let root = dir_paths
-            .first()
-            .map(|d| d.as_str())
-            .unwrap_or(".");
-        let root_path = std::fs::canonicalize(root).unwrap_or_else(|_| Path::new(root).to_path_buf());
+        let root = dir_paths.first().map(|d| d.as_str()).unwrap_or(".");
+        let root_path =
+            std::fs::canonicalize(root).unwrap_or_else(|_| Path::new(root).to_path_buf());
         let all_symbols = symbol::load_symbols(&root_path);
 
         // Symbols defined in the included files
@@ -187,9 +185,9 @@ pub fn generate_context(
             .iter()
             .filter(|s| {
                 s.kind != SymbolKind::File
-                    && included.iter().any(|inc| {
-                        inc.ends_with(&s.file) || s.file.ends_with(inc)
-                    })
+                    && included
+                        .iter()
+                        .any(|inc| inc.ends_with(&s.file) || s.file.ends_with(inc))
             })
             .collect();
 
@@ -247,13 +245,9 @@ pub fn generate_context(
                 .collect();
 
             for sym in &file_syms {
-                if let Some(h) = why::extract_hierarchy(
-                    &root_path,
-                    sym,
-                    original,
-                    &all_symbols,
-                    &imports,
-                ) {
+                if let Some(h) =
+                    why::extract_hierarchy(&root_path, sym, original, &all_symbols, &imports)
+                {
                     let mut lines = Vec::new();
                     for p in &h.parents {
                         let loc = if let Some((ref file, line)) = p.location {
@@ -314,7 +308,10 @@ pub fn generate_context(
 
             let mut resolved: Vec<(String, String, Option<String>)> = Vec::new();
             for (name, module) in &imports {
-                if let Some(sym) = all_symbols.iter().find(|s| s.name == *name && s.file != rel) {
+                if let Some(sym) = all_symbols
+                    .iter()
+                    .find(|s| s.name == *name && s.file != rel)
+                {
                     resolved.push((
                         name.clone(),
                         format!("{}:{}", sym.file, sym.line),

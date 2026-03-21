@@ -147,7 +147,9 @@ impl SuppServer {
         .map_err(|e| err(e.to_string()))?
     }
 
-    #[tool(description = "Analyze a single file: dependencies, usage, and full content with context.")]
+    #[tool(
+        description = "Analyze a single file: dependencies, usage, and full content with context."
+    )]
     async fn supp_ctx(
         &self,
         Parameters(params): Parameters<CtxParams>,
@@ -155,23 +157,24 @@ impl SuppServer {
         tokio::task::spawn_blocking(move || {
             let mode = parse_mode(params.mode.as_deref());
             let files = vec![params.file];
-            let result = crate::ctx::analyze(".", &files, 2, None, mode)
-                .map_err(|e| err(e.to_string()))?;
+            let result =
+                crate::ctx::analyze(".", &files, 2, None, mode).map_err(|e| err(e.to_string()))?;
             Ok(CallToolResult::success(vec![Content::text(result.plain)]))
         })
         .await
         .map_err(|e| err(e.to_string()))?
     }
 
-    #[tool(description = "Deep-dive a symbol: full definition, doc comments, call sites, and dependencies.")]
+    #[tool(
+        description = "Deep-dive a symbol: full definition, doc comments, call sites, and dependencies."
+    )]
     async fn supp_why(
         &self,
         Parameters(params): Parameters<WhyParams>,
     ) -> Result<CallToolResult, McpError> {
         tokio::task::spawn_blocking(move || {
             let query: Vec<String> = params.query.split_whitespace().map(String::from).collect();
-            let result = crate::why::explain(".", &query)
-                .map_err(|e| err(e.to_string()))?;
+            let result = crate::why::explain(".", &query).map_err(|e| err(e.to_string()))?;
             Ok(CallToolResult::success(vec![Content::text(result.plain)]))
         })
         .await
@@ -185,8 +188,7 @@ impl SuppServer {
     ) -> Result<CallToolResult, McpError> {
         tokio::task::spawn_blocking(move || {
             let query: Vec<String> = params.query.split_whitespace().map(String::from).collect();
-            let result = crate::symbol::search(".", &query)
-                .map_err(|e| err(e.to_string()))?;
+            let result = crate::symbol::search(".", &query).map_err(|e| err(e.to_string()))?;
 
             let mut output = String::new();
             for (sym, score) in &result.matches {
@@ -197,13 +199,23 @@ impl SuppServer {
                     .unwrap_or_default();
                 output.push_str(&format!(
                     "{:.1}  {:>12}  {}{}  {}:{}\n       {}\n\n",
-                    score, format!("{:?}", sym.kind), sym.name, parent, sym.file, sym.line, sym.signature,
+                    score,
+                    format!("{:?}", sym.kind),
+                    sym.name,
+                    parent,
+                    sym.file,
+                    sym.line,
+                    sym.signature,
                 ));
             }
             if output.is_empty() {
                 output.push_str("No matching symbols found.\n");
             } else {
-                output.push_str(&format!("({} of {} symbols)\n", result.matches.len(), result.total_symbols));
+                output.push_str(&format!(
+                    "({} of {} symbols)\n",
+                    result.matches.len(),
+                    result.total_symbols
+                ));
             }
             Ok(CallToolResult::success(vec![Content::text(output)]))
         })
@@ -226,16 +238,17 @@ impl SuppServer {
             let status_ref = statuses
                 .as_ref()
                 .map(|(map, prefix)| (map, prefix.as_str()));
-            let result =
-                crate::tree::build_tree(root, params.depth, None, status_ref)
-                    .map_err(|e| err(e.to_string()))?;
+            let result = crate::tree::build_tree(root, params.depth, None, status_ref)
+                .map_err(|e| err(e.to_string()))?;
             Ok(CallToolResult::success(vec![Content::text(result.plain)]))
         })
         .await
         .map_err(|e| err(e.to_string()))?
     }
 
-    #[tool(description = "Generate structured context for one or more files/directories with tree headers and content.")]
+    #[tool(
+        description = "Generate structured context for one or more files/directories with tree headers and content."
+    )]
     async fn supp_context(
         &self,
         Parameters(params): Parameters<ContextParams>,
@@ -271,9 +284,7 @@ impl ServerHandler for SuppServer {
 
 pub async fn run() -> anyhow::Result<()> {
     use rmcp::ServiceExt;
-    let server = SuppServer::new()
-        .serve(rmcp::transport::stdio())
-        .await?;
+    let server = SuppServer::new().serve(rmcp::transport::stdio()).await?;
     server.waiting().await?;
     Ok(())
 }

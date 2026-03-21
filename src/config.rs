@@ -1,7 +1,6 @@
 // ── Public config types ──────────────────────────────────────────────
 
-#[derive(Debug)]
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct Config {
     pub global: GlobalConfig,
     pub diff: DiffConfig,
@@ -31,7 +30,6 @@ pub struct PickConfig {
 pub struct LimitsConfig {
     pub max_untracked_file_size_mb: u64,
 }
-
 
 impl Default for GlobalConfig {
     fn default() -> Self {

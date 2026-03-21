@@ -92,24 +92,39 @@ fn main() -> anyhow::Result<()> {
         }
         Some(Commands::Pick { ref path, single }) => {
             let root = path.as_deref().unwrap_or(".");
+            let mut picked_mode = None;
             let selected = if single {
-                let s = pick::run_fzf(root, false, cli.regex.as_deref(), config.pick.preview_lines)?;
-                if s.is_empty() { return Ok(()); }
+                let s =
+                    pick::run_fzf(root, false, cli.regex.as_deref(), config.pick.preview_lines)?;
+                if s.is_empty() {
+                    return Ok(());
+                }
                 s
             } else {
-                let f = pick::interactive_pick_loop(root, cli.regex.as_deref(), config.pick.preview_lines)?;
-                if f.is_empty() { return Ok(()); }
+                let (f, mode_override) = pick::interactive_pick_loop(
+                    root,
+                    cli.regex.as_deref(),
+                    config.pick.preview_lines,
+                )?;
+                if f.is_empty() {
+                    return Ok(());
+                }
+                picked_mode = mode_override;
                 f
             };
             let pick_start = std::time::Instant::now();
             let depth = cli.resolve_depth(&config);
-            let mode = cli.resolve_mode(&config);
+            let mode = picked_mode.unwrap_or_else(|| cli.resolve_mode(&config));
             let result = context::generate_context(&selected, depth, cli.regex.as_deref(), mode)?;
             println!("{}", selected.join(" "));
             styles::print_pick_stats(result, no_copy, pick_start, text_tx, token_handle);
             return Ok(());
         }
-        Some(Commands::Tree { path, depth, no_git }) => {
+        Some(Commands::Tree {
+            path,
+            depth,
+            no_git,
+        }) => {
             let root = path.as_deref().unwrap_or(".");
 
             let statuses = if no_git {
@@ -118,7 +133,9 @@ fn main() -> anyhow::Result<()> {
                 git::get_status_map(root)?
             };
 
-            let status_ref = statuses.as_ref().map(|(map, prefix)| (map, prefix.as_str()));
+            let status_ref = statuses
+                .as_ref()
+                .map(|(map, prefix)| (map, prefix.as_str()));
             let result = tree::build_tree(root, depth, cli.regex.as_deref(), status_ref)?;
             styles::print_tree_result(result, root, no_copy, start, text_tx, token_handle);
         }
@@ -127,7 +144,11 @@ fn main() -> anyhow::Result<()> {
             // Expand any "p" tokens via fzf before processing
             let has_p = cli.paths.iter().any(|p| p == "p");
             let paths = if has_p {
-                let expanded = pick::expand_p_tokens(&cli.paths, cli.regex.as_deref(), config.pick.preview_lines)?;
+                let expanded = pick::expand_p_tokens(
+                    &cli.paths,
+                    cli.regex.as_deref(),
+                    config.pick.preview_lines,
+                )?;
                 if !expanded.is_empty() {
                     // Print resolved command so user can copy/rerun without fzf
                     eprintln!("{}", format!("supp {}", expanded.join(" ")).dimmed());
@@ -141,7 +162,8 @@ fn main() -> anyhow::Result<()> {
                 if has_p {
                     return Ok(());
                 }
-                let selected = pick::run_fzf(".", false, cli.regex.as_deref(), config.pick.preview_lines)?;
+                let selected =
+                    pick::run_fzf(".", false, cli.regex.as_deref(), config.pick.preview_lines)?;
                 if selected.is_empty() {
                     return Ok(());
                 }
@@ -159,7 +181,12 @@ fn main() -> anyhow::Result<()> {
                 styles::print_context_result(result, no_copy, start, text_tx, token_handle);
             }
         }
-        Some(Commands::Completions { .. } | Commands::Sym { .. } | Commands::Why { .. } | Commands::Mcp) => {
+        Some(
+            Commands::Completions { .. }
+            | Commands::Sym { .. }
+            | Commands::Why { .. }
+            | Commands::Mcp,
+        ) => {
             unreachable!()
         }
     }

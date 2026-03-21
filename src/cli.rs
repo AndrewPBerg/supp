@@ -67,7 +67,6 @@ pub enum Commands {
         /// Number of context lines in unified diff output
         #[arg(short = 'U', long = "unified")]
         context_lines: Option<u32>,
-
     },
     Tree {
         /// Directory to display (defaults to ".")

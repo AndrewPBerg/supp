@@ -135,9 +135,10 @@ fn extract_doc_comment(content: &str, sym: &Symbol) -> Option<String> {
 
     // Python: docstrings live inside the function/class body
     if lang == Some(Lang::Python)
-        && let Some(docstring) = extract_python_docstring(content, sym) {
-            return Some(docstring);
-        }
+        && let Some(docstring) = extract_python_docstring(content, sym)
+    {
+        return Some(docstring);
+    }
 
     // Rust/C/JS/etc: comments live above the definition
     extract_comment_above(content, sym.line)
@@ -238,9 +239,7 @@ fn extract_comment_above(content: &str, def_line: usize) -> Option<String> {
         } else if trimmed.starts_with("//") {
             // Regular line comments (Go, C, C++, Java, JS/TS)
             comment_lines.push(trimmed);
-        } else if trimmed.starts_with("/**")
-            || trimmed.ends_with("*/")
-            || trimmed.starts_with('*')
+        } else if trimmed.starts_with("/**") || trimmed.ends_with("*/") || trimmed.starts_with('*')
         {
             // Block doc comments (Java, JS/TS, C)
             comment_lines.push(trimmed);
@@ -292,23 +291,28 @@ fn find_definition_node<'a>(
     if node.start_position().row == line {
         // Standard named definitions (fn, class, struct, etc.)
         if let Some(name_node) = node.child_by_field_name("name")
-            && compress::node_text(content, name_node) == sym.name {
-                return Some(node);
-            }
+            && compress::node_text(content, name_node) == sym.name
+        {
+            return Some(node);
+        }
 
         // C/C++: function_definition → declarator → function_declarator → identifier
         if node.kind() == "function_definition"
             && let Some(declarator) = node.child_by_field_name("declarator")
-                && find_c_name_in_declarator(declarator, content) == Some(&sym.name) {
-                    return Some(node);
-                }
+            && find_c_name_in_declarator(declarator, content) == Some(&sym.name)
+        {
+            return Some(node);
+        }
 
         // C/C++: struct_specifier, enum_specifier, class_specifier with name field
-        if matches!(node.kind(), "struct_specifier" | "enum_specifier" | "class_specifier")
-            && let Some(name_node) = node.child_by_field_name("name")
-                && compress::node_text(content, name_node) == sym.name {
-                    return Some(node);
-                }
+        if matches!(
+            node.kind(),
+            "struct_specifier" | "enum_specifier" | "class_specifier"
+        ) && let Some(name_node) = node.child_by_field_name("name")
+            && compress::node_text(content, name_node) == sym.name
+        {
+            return Some(node);
+        }
 
         // JS/TS: const MyComponent = (...) => { ... } (lexical_declaration wrapping arrow fn)
         if matches!(node.kind(), "lexical_declaration" | "variable_declaration") {
@@ -318,10 +322,13 @@ fn find_definition_node<'a>(
                     let child = cursor.node();
                     if child.kind() == "variable_declarator"
                         && let Some(name_node) = child.child_by_field_name("name")
-                            && compress::node_text(content, name_node) == sym.name {
-                                return Some(node);
-                            }
-                    if !cursor.goto_next_sibling() { break; }
+                        && compress::node_text(content, name_node) == sym.name
+                    {
+                        return Some(node);
+                    }
+                    if !cursor.goto_next_sibling() {
+                        break;
+                    }
                 }
             }
         }
@@ -333,11 +340,11 @@ fn find_definition_node<'a>(
                 let child = cursor.node();
                 if child.kind() == "assignment"
                     && let Some(left) = child.child_by_field_name("left")
-                        && left.kind() == "identifier"
-                            && compress::node_text(content, left) == sym.name
-                        {
-                            return Some(node);
-                        }
+                    && left.kind() == "identifier"
+                    && compress::node_text(content, left) == sym.name
+                {
+                    return Some(node);
+                }
             }
         }
     }
@@ -366,16 +373,19 @@ fn find_c_name_in_declarator<'a>(node: tree_sitter::Node<'a>, content: &'a str) 
     // qualified_identifier: Foo::bar → the "name" field has the actual name
     if node.kind() == "qualified_identifier"
         && let Some(name) = node.child_by_field_name("name")
-            && name.kind() == "identifier" {
-                return Some(compress::node_text(content, name));
-            }
+        && name.kind() == "identifier"
+    {
+        return Some(compress::node_text(content, name));
+    }
     let mut cursor = node.walk();
     if cursor.goto_first_child() {
         loop {
             if let Some(name) = find_c_name_in_declarator(cursor.node(), content) {
                 return Some(name);
             }
-            if !cursor.goto_next_sibling() { break; }
+            if !cursor.goto_next_sibling() {
+                break;
+            }
         }
     }
     None
@@ -441,7 +451,11 @@ fn extract_definition_by_lines(content: &str, sym: &Symbol) -> String {
 // ── Import extraction ───────────────────────────────────────────────
 
 /// Maps imported name → module path (e.g. "BaseModel" → "pydantic")
-pub(crate) fn extract_file_imports(content: &str, file_path: &str, root: &Path) -> HashMap<String, String> {
+pub(crate) fn extract_file_imports(
+    content: &str,
+    file_path: &str,
+    root: &Path,
+) -> HashMap<String, String> {
     let lang = compress::detect_lang(file_path);
     match lang {
         Some(Lang::Python) => extract_python_imports(content),
@@ -465,8 +479,14 @@ fn extract_python_imports(content: &str) -> HashMap<String, String> {
                 let names_str = names_part.trim_start_matches('(').trim_end_matches(')');
                 for name in names_str.split(',') {
                     let name = name.trim().trim_end_matches('\\').trim();
-                    let actual = name.split_once(" as ").map(|(n, _)| n).unwrap_or(name).trim();
-                    if !actual.is_empty() && actual.chars().next().is_some_and(|c| c.is_alphabetic()) {
+                    let actual = name
+                        .split_once(" as ")
+                        .map(|(n, _)| n)
+                        .unwrap_or(name)
+                        .trim();
+                    if !actual.is_empty()
+                        && actual.chars().next().is_some_and(|c| c.is_alphabetic())
+                    {
                         imports.insert(actual.to_string(), module.to_string());
                     }
                 }
@@ -474,7 +494,11 @@ fn extract_python_imports(content: &str) -> HashMap<String, String> {
         } else if let Some(rest) = trimmed.strip_prefix("import ") {
             for part in rest.split(',') {
                 let part = part.trim();
-                let module = part.split_once(" as ").map(|(m, _)| m).unwrap_or(part).trim();
+                let module = part
+                    .split_once(" as ")
+                    .map(|(m, _)| m)
+                    .unwrap_or(part)
+                    .trim();
                 let short_name = module.rsplit('.').next().unwrap_or(module);
                 if !short_name.is_empty() {
                     imports.insert(short_name.to_string(), module.to_string());
@@ -494,17 +518,27 @@ fn extract_rust_imports(content: &str) -> HashMap<String, String> {
             // use foo::bar::Baz → "Baz" from "foo::bar"
             // use foo::bar::{Baz, Qux} → "Baz" from "foo::bar", "Qux" from "foo::bar"
             if let Some(brace_start) = path.find('{') {
-                let prefix = path[..brace_start].trim_end_matches(':').trim_end_matches(':');
+                let prefix = path[..brace_start]
+                    .trim_end_matches(':')
+                    .trim_end_matches(':');
                 let inner = path[brace_start + 1..].trim_end_matches('}');
                 for name in inner.split(',') {
-                    let name = name.trim().split_once(" as ").map(|(n, _)| n).unwrap_or(name.trim());
+                    let name = name
+                        .trim()
+                        .split_once(" as ")
+                        .map(|(n, _)| n)
+                        .unwrap_or(name.trim());
                     let name = name.trim();
                     if !name.is_empty() && name != "self" {
                         imports.insert(name.to_string(), prefix.to_string());
                     }
                 }
             } else if let Some((prefix, name)) = path.rsplit_once("::") {
-                let name = name.split_once(" as ").map(|(n, _)| n).unwrap_or(name).trim();
+                let name = name
+                    .split_once(" as ")
+                    .map(|(n, _)| n)
+                    .unwrap_or(name)
+                    .trim();
                 if !name.is_empty() {
                     imports.insert(name.to_string(), prefix.to_string());
                 }
@@ -535,7 +569,11 @@ fn extract_js_imports(content: &str) -> HashMap<String, String> {
                 .trim_end_matches('}');
 
             for name in names_str.split(',') {
-                let name = name.trim().split_once(" as ").map(|(n, _)| n).unwrap_or(name.trim());
+                let name = name
+                    .trim()
+                    .split_once(" as ")
+                    .map(|(n, _)| n)
+                    .unwrap_or(name.trim());
                 if !name.is_empty() && name != "default" && name != "*" {
                     imports.insert(name.to_string(), module.to_string());
                 }
@@ -582,10 +620,11 @@ fn extract_c_includes(content: &str, file_path: &str, root: &Path) -> HashMap<St
         }
         // <stdlib.h> — system include
         else if rest.starts_with('<')
-            && let Some(end) = rest.find('>') {
-                let header = &rest[1..end];
-                imports.insert(header.to_string(), format!("<{}>", header));
-            }
+            && let Some(end) = rest.find('>')
+        {
+            let header = &rest[1..end];
+            imports.insert(header.to_string(), format!("<{}>", header));
+        }
     }
     imports
 }
@@ -617,13 +656,16 @@ fn normalize_path(path: &Path) -> String {
     let mut parts: Vec<&std::ffi::OsStr> = Vec::new();
     for component in path.components() {
         match component {
-            std::path::Component::ParentDir => { parts.pop(); }
+            std::path::Component::ParentDir => {
+                parts.pop();
+            }
             std::path::Component::CurDir => {}
             std::path::Component::Normal(p) => parts.push(p),
             _ => {}
         }
     }
-    parts.iter()
+    parts
+        .iter()
         .map(|p| p.to_string_lossy())
         .collect::<Vec<_>>()
         .join("/")
@@ -649,9 +691,10 @@ fn collect_header_decl_names(node: tree_sitter::Node, content: &str, names: &mut
     match node.kind() {
         "function_definition" | "declaration" => {
             if let Some(declarator) = node.child_by_field_name("declarator")
-                && let Some(name) = find_c_decl_name(declarator, content) {
-                    names.push(name);
-                }
+                && let Some(name) = find_c_decl_name(declarator, content)
+            {
+                names.push(name);
+            }
         }
         "struct_specifier" | "enum_specifier" | "class_specifier" => {
             if let Some(name_node) = node.child_by_field_name("name") {
@@ -664,9 +707,10 @@ fn collect_header_decl_names(node: tree_sitter::Node, content: &str, names: &mut
         "type_definition" => {
             // typedef struct { ... } Name; → declarator has the typedef name
             if let Some(declarator) = node.child_by_field_name("declarator")
-                && let Some(name) = find_c_decl_name(declarator, content) {
-                    names.push(name);
-                }
+                && let Some(name) = find_c_decl_name(declarator, content)
+            {
+                names.push(name);
+            }
         }
         _ => {}
     }
@@ -707,7 +751,11 @@ fn find_c_decl_name(node: tree_sitter::Node, content: &str) -> Option<String> {
 }
 
 /// Try to resolve a relative import to a project file path.
-pub(crate) fn resolve_relative_import(module: &str, from_file: &str, root: &Path) -> Option<String> {
+pub(crate) fn resolve_relative_import(
+    module: &str,
+    from_file: &str,
+    root: &Path,
+) -> Option<String> {
     if !module.starts_with('.') {
         return None;
     }
@@ -793,9 +841,11 @@ pub(crate) fn find_call_sites(root: &Path, sym: &Symbol) -> Vec<CallSite> {
             // Skip lines inside the definition itself (same file only)
             if is_same_file
                 && let Some((def_start, def_end)) = def_span
-                    && line_num >= def_start && line_num <= def_end {
-                        continue;
-                    }
+                && line_num >= def_start
+                && line_num <= def_end
+            {
+                continue;
+            }
 
             if contains_identifier(line, name) {
                 let caller = lang.and_then(|l| {
@@ -824,10 +874,7 @@ fn find_definition_span(root: &Path, sym: &Symbol) -> Option<(usize, usize)> {
     let lang = compress::detect_lang(&sym.file)?;
     let tree = compress::parse_source(&content, lang)?;
     let node = find_definition_node(tree.root_node(), &content, sym, lang)?;
-    Some((
-        node.start_position().row + 1,
-        node.end_position().row + 1,
-    ))
+    Some((node.start_position().row + 1, node.end_position().row + 1))
 }
 
 pub(crate) fn contains_identifier(line: &str, name: &str) -> bool {
@@ -884,10 +931,9 @@ fn find_enclosing_fn_recursive(
                     | "constructor_declaration"
             );
 
-            if is_fn
-                && let Some(name_node) = child.child_by_field_name("name") {
-                    return Some(compress::node_text(content, name_node).to_string());
-                }
+            if is_fn && let Some(name_node) = child.child_by_field_name("name") {
+                return Some(compress::node_text(content, name_node).to_string());
+            }
 
             if let Some(found) = find_enclosing_fn_recursive(child, content, line) {
                 return Some(found);
@@ -1014,9 +1060,9 @@ fn collect_body_identifiers(
         loop {
             let child = cursor.node();
             // Skip the name node itself (avoids self-reference)
-            let is_name = name_text
-                .as_ref()
-                .is_some_and(|n| child.kind() == "identifier" && compress::node_text(content, child) == n);
+            let is_name = name_text.as_ref().is_some_and(|n| {
+                child.kind() == "identifier" && compress::node_text(content, child) == n
+            });
             if !is_name {
                 collect_all_identifiers(child, content, lang, idents);
             }
@@ -1117,31 +1163,27 @@ pub(crate) fn extract_hierarchy(
             }
             // Java/TS/JS: class Child extends Parent
             if sig.contains("extends") || sig.contains("implements") {
-                let after_keyword = sig
-                    .find("extends")
-                    .map(|i| &sig[i + 7..])
-                    .unwrap_or("");
+                let after_keyword = sig.find("extends").map(|i| &sig[i + 7..]).unwrap_or("");
                 if contains_identifier(after_keyword, &sym.name) {
                     return true;
                 }
-                let after_impl = sig
-                    .find("implements")
-                    .map(|i| &sig[i + 10..])
-                    .unwrap_or("");
+                let after_impl = sig.find("implements").map(|i| &sig[i + 10..]).unwrap_or("");
                 if contains_identifier(after_impl, &sym.name) {
                     return true;
                 }
             }
             // C++: class Derived : public Base
-            if sig.contains(':') && !sig.contains("::") || sig.matches(':').count() > sig.matches("::").count() * 2 {
+            if sig.contains(':') && !sig.contains("::")
+                || sig.matches(':').count() > sig.matches("::").count() * 2
+            {
                 // Has a non-scope-resolution colon — likely inheritance
                 if let Some(colon_idx) = sig.find(':') {
                     let after_colon = &sig[colon_idx + 1..];
                     // Skip if this is just a scope resolution
-                    if !after_colon.starts_with(':')
-                        && contains_identifier(after_colon, &sym.name) {
-                            return true;
-                        }
+                    if !after_colon.starts_with(':') && contains_identifier(after_colon, &sym.name)
+                    {
+                        return true;
+                    }
                 }
             }
             false
@@ -1160,11 +1202,7 @@ pub(crate) fn extract_hierarchy(
     Some(Hierarchy { parents, children })
 }
 
-fn extract_parent_names(
-    def_node: tree_sitter::Node,
-    content: &str,
-    lang: Lang,
-) -> Vec<String> {
+fn extract_parent_names(def_node: tree_sitter::Node, content: &str, lang: Lang) -> Vec<String> {
     match lang {
         Lang::Python => {
             // class Foo(Bar, Baz): → superclasses is an argument_list
@@ -1251,11 +1289,15 @@ fn extract_parent_names(
                                 if inner.node().kind() == "base_class_specifier" {
                                     collect_type_idents(inner.node(), content, &mut names);
                                 }
-                                if !inner.goto_next_sibling() { break; }
+                                if !inner.goto_next_sibling() {
+                                    break;
+                                }
                             }
                         }
                     }
-                    if !cursor.goto_next_sibling() { break; }
+                    if !cursor.goto_next_sibling() {
+                        break;
+                    }
                 }
             }
             // Fallback: text-based "class X : public Y"
@@ -1266,14 +1308,21 @@ fn extract_parent_names(
                     let after = &first_line[colon_idx + 1..];
                     let until_brace = after.split('{').next().unwrap_or(after);
                     for part in until_brace.split(',') {
-                        let cleaned = part.trim()
-                            .trim_start_matches("public").trim()
-                            .trim_start_matches("protected").trim()
-                            .trim_start_matches("private").trim()
-                            .trim_start_matches("virtual").trim();
+                        let cleaned = part
+                            .trim()
+                            .trim_start_matches("public")
+                            .trim()
+                            .trim_start_matches("protected")
+                            .trim()
+                            .trim_start_matches("private")
+                            .trim()
+                            .trim_start_matches("virtual")
+                            .trim();
                         let name = cleaned.split('<').next().unwrap_or("").trim();
                         let name = name.split_whitespace().next().unwrap_or("").trim();
-                        if !name.is_empty() && name.chars().next().is_some_and(|c| c.is_alphabetic()) {
+                        if !name.is_empty()
+                            && name.chars().next().is_some_and(|c| c.is_alphabetic())
+                        {
                             names.push(name.to_string());
                         }
                     }
@@ -1321,11 +1370,7 @@ fn collect_type_idents(node: tree_sitter::Node, content: &str, names: &mut Vec<S
 
 /// Walk children of a class node looking for identifiers after "extends" or "implements" keywords.
 /// Works across Java, JS, TS by matching on text content.
-fn extract_extends_names(
-    def_node: tree_sitter::Node,
-    content: &str,
-    names: &mut Vec<String>,
-) {
+fn extract_extends_names(def_node: tree_sitter::Node, content: &str, names: &mut Vec<String>) {
     // Recursively find all identifier/type_identifier nodes that appear after
     // an "extends" or "implements" keyword, but before the class body
     let full_text = compress::node_text(content, def_node);
@@ -1669,7 +1714,11 @@ impl Config {
         assert!(config_dep.is_some(), "should have Config dep");
         // Config import should be tracked from the use statement
         let dep = config_dep.unwrap();
-        assert!(dep.import_from.as_deref() == Some("crate::helper"), "import_from={:?}", dep.import_from);
+        assert!(
+            dep.import_from.as_deref() == Some("crate::helper"),
+            "import_from={:?}",
+            dep.import_from
+        );
     }
 
     // ── Python ──────────────────────────────────────────────────
@@ -1725,7 +1774,10 @@ def get_count():
         let dir = setup(&python_fixtures());
         let r = run(&dir, &["BaseModel"]);
         let doc = r.doc_comment.as_deref().unwrap();
-        assert!(doc.contains("Base model with common functionality"), "doc={doc}");
+        assert!(
+            doc.contains("Base model with common functionality"),
+            "doc={doc}"
+        );
         assert!(doc.contains("serialization and validation"), "doc={doc}");
     }
 
@@ -1771,7 +1823,9 @@ def get_count():
             .collect();
         assert!(!sites.is_empty(), "should find usage in service.py");
         assert!(
-            sites.iter().any(|s| s.caller.as_deref() == Some("create_user")),
+            sites
+                .iter()
+                .any(|s| s.caller.as_deref() == Some("create_user")),
             "caller should be create_user"
         );
     }
@@ -1800,7 +1854,10 @@ def get_count():
         let r = run(&dir, &["User"]);
         let h = r.hierarchy.as_ref().expect("should have hierarchy");
         let parent_names: Vec<&str> = h.parents.iter().map(|p| p.name.as_str()).collect();
-        assert!(parent_names.contains(&"BaseModel"), "parents={parent_names:?}");
+        assert!(
+            parent_names.contains(&"BaseModel"),
+            "parents={parent_names:?}"
+        );
     }
 
     #[test]
@@ -1832,7 +1889,10 @@ class MyModel(BaseModel):
             Some("pydantic"),
             "should tag external parent module"
         );
-        assert!(h.parents[0].location.is_none(), "external parent has no project location");
+        assert!(
+            h.parents[0].location.is_none(),
+            "external parent has no project location"
+        );
     }
 
     #[test]
@@ -1905,23 +1965,43 @@ export function createApp(config: AppConfig): AppService {
     fn ts_full_def_interface() {
         let dir = setup(&ts_fixtures());
         let r = run(&dir, &["AppConfig"]);
-        assert!(r.full_definition.contains("name: string"), "def={}", r.full_definition);
-        assert!(r.full_definition.contains("debug: boolean"), "def={}", r.full_definition);
+        assert!(
+            r.full_definition.contains("name: string"),
+            "def={}",
+            r.full_definition
+        );
+        assert!(
+            r.full_definition.contains("debug: boolean"),
+            "def={}",
+            r.full_definition
+        );
     }
 
     #[test]
     fn ts_full_def_class() {
         let dir = setup(&ts_fixtures());
         let r = run(&dir, &["AppService"]);
-        assert!(r.full_definition.contains("constructor"), "def={}", r.full_definition);
-        assert!(r.full_definition.contains("start()"), "def={}", r.full_definition);
+        assert!(
+            r.full_definition.contains("constructor"),
+            "def={}",
+            r.full_definition
+        );
+        assert!(
+            r.full_definition.contains("start()"),
+            "def={}",
+            r.full_definition
+        );
     }
 
     #[test]
     fn ts_full_def_type_alias() {
         let dir = setup(&ts_fixtures());
         let r = run(&dir, &["StatusCode"]);
-        assert!(r.full_definition.contains("number"), "def={}", r.full_definition);
+        assert!(
+            r.full_definition.contains("number"),
+            "def={}",
+            r.full_definition
+        );
     }
 
     #[test]
@@ -1945,7 +2025,11 @@ export function createApp(config: AppConfig): AppService {
     fn ts_deps_import_tracked() {
         let dir = setup(&ts_fixtures());
         let r = run(&dir, &["createApp"]);
-        let cfg_dep = r.dependencies.iter().find(|d| d.name == "AppConfig").unwrap();
+        let cfg_dep = r
+            .dependencies
+            .iter()
+            .find(|d| d.name == "AppConfig")
+            .unwrap();
         assert_eq!(cfg_dep.import_from.as_deref(), Some("./types"));
     }
 
@@ -1955,7 +2039,10 @@ export function createApp(config: AppConfig): AppService {
         let r = run(&dir, &["AppService"]);
         let h = r.hierarchy.as_ref().expect("should have hierarchy");
         let parent_names: Vec<&str> = h.parents.iter().map(|p| p.name.as_str()).collect();
-        assert!(parent_names.contains(&"BaseService"), "parents={parent_names:?}");
+        assert!(
+            parent_names.contains(&"BaseService"),
+            "parents={parent_names:?}"
+        );
     }
 
     #[test]
@@ -1964,7 +2051,10 @@ export function createApp(config: AppConfig): AppService {
         let r = run(&dir, &["BaseService"]);
         let h = r.hierarchy.as_ref().expect("should have hierarchy");
         let child_names: Vec<&str> = h.children.iter().map(|c| c.name.as_str()).collect();
-        assert!(child_names.contains(&"AppService"), "children={child_names:?}");
+        assert!(
+            child_names.contains(&"AppService"),
+            "children={child_names:?}"
+        );
     }
 
     // ── TSX ─────────────────────────────────────────────────────
@@ -2017,14 +2107,21 @@ export function App() {
         let dir = setup(&tsx_fixtures());
         let r = run(&dir, &["Button"]);
         let files: Vec<&str> = r.call_sites.iter().map(|s| s.file.as_str()).collect();
-        assert!(files.contains(&"components/App.tsx"), "call_sites={files:?}");
+        assert!(
+            files.contains(&"components/App.tsx"),
+            "call_sites={files:?}"
+        );
     }
 
     #[test]
     fn tsx_full_def_class() {
         let dir = setup(&tsx_fixtures());
         let r = run(&dir, &["Button"]);
-        assert!(r.full_definition.contains("render()"), "def={}", r.full_definition);
+        assert!(
+            r.full_definition.contains("render()"),
+            "def={}",
+            r.full_definition
+        );
     }
 
     // ── JavaScript ──────────────────────────────────────────────
@@ -2087,7 +2184,11 @@ function run() {
     fn js_full_def_function() {
         let dir = setup(&js_fixtures());
         let r = run(&dir, &["calculate"]);
-        assert!(r.full_definition.contains("return a + b"), "def={}", r.full_definition);
+        assert!(
+            r.full_definition.contains("return a + b"),
+            "def={}",
+            r.full_definition
+        );
     }
 
     #[test]
@@ -2174,22 +2275,38 @@ func UseServer() {
     fn go_full_def_struct() {
         let dir = setup(&go_fixtures());
         let r = run(&dir, &["Server"]);
-        assert!(r.full_definition.contains("Port"), "def={}", r.full_definition);
-        assert!(r.full_definition.contains("Handler"), "def={}", r.full_definition);
+        assert!(
+            r.full_definition.contains("Port"),
+            "def={}",
+            r.full_definition
+        );
+        assert!(
+            r.full_definition.contains("Handler"),
+            "def={}",
+            r.full_definition
+        );
     }
 
     #[test]
     fn go_full_def_function() {
         let dir = setup(&go_fixtures());
         let r = run(&dir, &["NewServer"]);
-        assert!(r.full_definition.contains("return &Server"), "def={}", r.full_definition);
+        assert!(
+            r.full_definition.contains("return &Server"),
+            "def={}",
+            r.full_definition
+        );
     }
 
     #[test]
     fn go_full_def_interface() {
         let dir = setup(&go_fixtures());
         let r = run(&dir, &["Handler"]);
-        assert!(r.full_definition.contains("Handle"), "def={}", r.full_definition);
+        assert!(
+            r.full_definition.contains("Handle"),
+            "def={}",
+            r.full_definition
+        );
     }
 
     #[test]
@@ -2203,7 +2320,9 @@ func UseServer() {
             .collect();
         assert!(!sites.is_empty(), "should find call in handler.go");
         assert!(
-            sites.iter().any(|s| s.caller.as_deref() == Some("UseServer")),
+            sites
+                .iter()
+                .any(|s| s.caller.as_deref() == Some("UseServer")),
             "caller should be UseServer, got {:?}",
             sites.iter().map(|s| &s.caller).collect::<Vec<_>>()
         );
@@ -2284,8 +2403,16 @@ public class Dog extends Animal {
     fn java_full_def_class() {
         let dir = setup(&java_fixtures());
         let r = run(&dir, &["Dog"]);
-        assert!(r.full_definition.contains("breed"), "def={}", r.full_definition);
-        assert!(r.full_definition.contains("bark"), "def={}", r.full_definition);
+        assert!(
+            r.full_definition.contains("breed"),
+            "def={}",
+            r.full_definition
+        );
+        assert!(
+            r.full_definition.contains("bark"),
+            "def={}",
+            r.full_definition
+        );
     }
 
     #[test]
@@ -2376,10 +2503,7 @@ public class Dog extends Animal {
     #[test]
     fn edge_short_name_call_sites_empty() {
         // Symbols with name length <= 2 should skip call site search
-        let dir = setup(&[(
-            "lib.rs",
-            "pub fn go() { }\nfn main() { go(); }\n",
-        )]);
+        let dir = setup(&[("lib.rs", "pub fn go() { }\nfn main() { go(); }\n")]);
         let r = run(&dir, &["go"]);
         assert!(r.call_sites.is_empty(), "short names skip call site search");
     }
@@ -2390,14 +2514,20 @@ public class Dog extends Animal {
     fn imports_python_from() {
         let imports = extract_python_imports("from app.models import User, Config\nimport os\n");
         assert_eq!(imports.get("User").map(String::as_str), Some("app.models"));
-        assert_eq!(imports.get("Config").map(String::as_str), Some("app.models"));
+        assert_eq!(
+            imports.get("Config").map(String::as_str),
+            Some("app.models")
+        );
         assert_eq!(imports.get("os").map(String::as_str), Some("os"));
     }
 
     #[test]
     fn imports_python_relative() {
         let imports = extract_python_imports("from .main_prompt import build\n");
-        assert_eq!(imports.get("build").map(String::as_str), Some(".main_prompt"));
+        assert_eq!(
+            imports.get("build").map(String::as_str),
+            Some(".main_prompt")
+        );
     }
 
     #[test]
@@ -2408,17 +2538,31 @@ public class Dog extends Animal {
 
     #[test]
     fn imports_rust_use() {
-        let imports = extract_rust_imports("use anyhow::Result;\nuse std::collections::{HashMap, HashSet};\n");
+        let imports = extract_rust_imports(
+            "use anyhow::Result;\nuse std::collections::{HashMap, HashSet};\n",
+        );
         assert_eq!(imports.get("Result").map(String::as_str), Some("anyhow"));
-        assert_eq!(imports.get("HashMap").map(String::as_str), Some("std::collections"));
-        assert_eq!(imports.get("HashSet").map(String::as_str), Some("std::collections"));
+        assert_eq!(
+            imports.get("HashMap").map(String::as_str),
+            Some("std::collections")
+        );
+        assert_eq!(
+            imports.get("HashSet").map(String::as_str),
+            Some("std::collections")
+        );
     }
 
     #[test]
     fn imports_js_named() {
         let imports = extract_js_imports("import { AppConfig, BaseService } from './types';\n");
-        assert_eq!(imports.get("AppConfig").map(String::as_str), Some("./types"));
-        assert_eq!(imports.get("BaseService").map(String::as_str), Some("./types"));
+        assert_eq!(
+            imports.get("AppConfig").map(String::as_str),
+            Some("./types")
+        );
+        assert_eq!(
+            imports.get("BaseService").map(String::as_str),
+            Some("./types")
+        );
     }
 
     #[test]
@@ -2580,10 +2724,7 @@ export function Counter() {
 
     #[test]
     fn c_function_def_found() {
-        let dir = setup(&[(
-            "math.c",
-            "int add(int a, int b) {\n    return a + b;\n}\n",
-        )]);
+        let dir = setup(&[("math.c", "int add(int a, int b) {\n    return a + b;\n}\n")]);
         let r = run(&dir, &["add"]);
         assert_eq!(r.symbol.kind, SymbolKind::Function);
         assert!(r.full_definition.contains("return a + b"));
@@ -2597,7 +2738,12 @@ export function Counter() {
         )]);
         let r = run(&dir, &["add"]);
         assert!(r.doc_comment.is_some());
-        assert!(r.doc_comment.as_deref().unwrap().contains("Add two integers"));
+        assert!(
+            r.doc_comment
+                .as_deref()
+                .unwrap()
+                .contains("Add two integers")
+        );
     }
 
     #[test]
@@ -2623,7 +2769,10 @@ export function Counter() {
     fn c_call_sites_across_files() {
         let dir = setup(&[
             ("util.c", "int square(int x) { return x * x; }\n"),
-            ("main.c", "int square(int x);\nint main() { return square(5); }\n"),
+            (
+                "main.c",
+                "int square(int x);\nint main() { return square(5); }\n",
+            ),
         ]);
         let r = run(&dir, &["square"]);
         let files: Vec<&str> = r.call_sites.iter().map(|s| s.file.as_str()).collect();
@@ -2745,8 +2894,14 @@ export function Counter() {
     #[test]
     fn cpp_multiple_inheritance() {
         let dir = setup(&[
-            ("a.hpp", "class Drawable {\npublic:\n    virtual void draw() = 0;\n};\n"),
-            ("b.hpp", "class Clickable {\npublic:\n    virtual void click() = 0;\n};\n"),
+            (
+                "a.hpp",
+                "class Drawable {\npublic:\n    virtual void draw() = 0;\n};\n",
+            ),
+            (
+                "b.hpp",
+                "class Clickable {\npublic:\n    virtual void click() = 0;\n};\n",
+            ),
             (
                 "button.hpp",
                 "#include \"a.hpp\"\n#include \"b.hpp\"\nclass Button : public Drawable, public Clickable {\npublic:\n    void draw() override;\n    void click() override;\n};\n",
@@ -2755,8 +2910,14 @@ export function Counter() {
         let r = run(&dir, &["Button"]);
         let h = r.hierarchy.as_ref().expect("should have hierarchy");
         let parent_names: Vec<&str> = h.parents.iter().map(|p| p.name.as_str()).collect();
-        assert!(parent_names.contains(&"Drawable"), "parents={parent_names:?}");
-        assert!(parent_names.contains(&"Clickable"), "parents={parent_names:?}");
+        assert!(
+            parent_names.contains(&"Drawable"),
+            "parents={parent_names:?}"
+        );
+        assert!(
+            parent_names.contains(&"Clickable"),
+            "parents={parent_names:?}"
+        );
     }
 
     // ── C/C++ include import tests ─────────────────────────────
@@ -2788,7 +2949,10 @@ export function Counter() {
     fn imports_cpp_include_subdir() {
         let dir = setup(&[
             ("include/vec.hpp", "struct Vec2 { double x, y; };\n"),
-            ("src/main.cpp", "#include \"../include/vec.hpp\"\nint main() { return 0; }\n"),
+            (
+                "src/main.cpp",
+                "#include \"../include/vec.hpp\"\nint main() { return 0; }\n",
+            ),
         ]);
         let content = std::fs::read_to_string(dir.path().join("src/main.cpp")).unwrap();
         let imports = extract_file_imports(&content, "src/main.cpp", dir.path());
