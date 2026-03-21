@@ -36,6 +36,12 @@
    cargo test
    ```
 
+6. **Locally use the CLI**
+  
+  ```sh
+  cargo install --path .
+```
+
 ## Pre-commit Hooks
 
 We use [prek](https://github.com/j178/prek) to run checks before each commit:

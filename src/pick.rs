@@ -39,7 +39,7 @@ pub fn collect_files(root: &str, regex: Option<&str>) -> Result<Vec<String>> {
 }
 
 /// Build the fzf argument list. Extracted for testability.
-fn build_fzf_args(multi: bool, preview_lines: usize) -> Vec<String> {
+fn build_fzf_args(multi: bool, preview_lines: usize, has_history: bool) -> Vec<String> {
     let mut args: Vec<String> = Vec::new();
     if multi {
         args.extend([
@@ -56,9 +56,28 @@ fn build_fzf_args(multi: bool, preview_lines: usize) -> Vec<String> {
             "ctrl-space: select | enter: toggle all | tab: confirm | esc: cancel".into(),
         ]);
     }
+    // When history is present, lines are tab-delimited:
+    // History: "[hist N] files...\t"  (field 2 empty → unsearchable)
+    // Files:   "\tfilepath"           (field 2 = filepath → searchable)
+    // --nth 2: search only field 2 (hides history from search results)
+    // --accept-nth '{1}{2}': output concatenated fields (clean, no tabs)
+    if has_history {
+        args.extend([
+            "--delimiter".into(),
+            "\t".into(),
+            "--nth".into(),
+            "2".into(),
+            "--accept-nth".into(),
+            "{1}{2}".into(),
+        ]);
+    }
     args.push("--preview".into());
+    // {1} = first tab-delimited field; for files it's empty, for history it's the display text
+    // {2} = second field; for files it's the filepath, for history it's empty
+    // Use {1}{2} to get the meaningful content for preview
+    let field = if has_history { "{1}{2}" } else { "{}" };
     args.push(format!(
-        r#"case {{}} in "[hist "*)  echo {{}} | sed 's/\[hist [0-9]*\] //' | tr ', ' '\n' ;; *) head -{preview_lines} {{}} ;; esac"#
+        r#"case {field} in "[hist "*)  echo {field} | sed 's/\[hist [0-9]*\] //' | tr ', ' '\n' ;; *) head -{preview_lines} {field} ;; esac"#
     ));
     args
 }
@@ -132,6 +151,20 @@ pub fn run_fzf(
     run_fzf_with_history(root, multi, regex, preview_lines, &[])
 }
 
+/// Build tab-delimited fzf input lines.
+/// History lines: `[hist N] files...\t` (empty field 2 → unsearchable with --nth 2)
+/// File lines: `\tfilepath` (field 2 = filepath → searchable with --nth 2)
+fn build_fzf_input(history: &[Vec<String>], files: &[String]) -> String {
+    let mut lines = Vec::new();
+    for (i, entry) in history.iter().enumerate().rev() {
+        lines.push(format!("{}\t", format_history_line(i, entry)));
+    }
+    for f in files {
+        lines.push(format!("\t{f}"));
+    }
+    lines.join("\n")
+}
+
 /// Spawn fzf with history entries at the top, then regular files below.
 pub fn run_fzf_with_history(
     root: &str,
@@ -145,19 +178,18 @@ pub fn run_fzf_with_history(
         bail!("no files found under '{}'", root);
     }
 
-    let args = build_fzf_args(multi, preview_lines);
-
-    // Build input: history entries (newest first) then files
-    let mut lines = Vec::new();
-    for (i, entry) in history.iter().enumerate().rev() {
-        lines.push(format_history_line(i, entry));
-    }
-    lines.extend(files);
-    let input = lines.join("\n");
+    let has_history = !history.is_empty();
+    let args = build_fzf_args(multi, preview_lines, has_history);
+    let input = if has_history {
+        build_fzf_input(history, &files)
+    } else {
+        files.join("\n")
+    };
 
     let raw_selected = spawn_fzf(&input, &args)?;
 
     // Expand any history lines back to their file lists
+    // With --accept-nth '{1}{2}', output is already clean (no tab delimiters)
     let mut result = Vec::new();
     for line in raw_selected {
         if let Some(expanded) = parse_history_line(&line) {
@@ -419,7 +451,7 @@ mod tests {
 
     #[test]
     fn fzf_args_single_mode() {
-        let args = build_fzf_args(false, 50);
+        let args = build_fzf_args(false, 50, false);
         assert!(!args.contains(&"--multi".to_string()));
         assert!(args.contains(&"--preview".to_string()));
         assert!(args.iter().any(|a| a.contains("head -50")));
@@ -427,7 +459,7 @@ mod tests {
 
     #[test]
     fn fzf_args_multi_mode() {
-        let args = build_fzf_args(true, 30);
+        let args = build_fzf_args(true, 30, false);
         assert!(args.contains(&"--multi".to_string()));
         assert!(args.contains(&"ctrl-space:toggle".to_string()));
         assert!(args.contains(&"enter:toggle-all".to_string()));
@@ -543,5 +575,59 @@ mod tests {
     fn parse_history_line_not_history() {
         assert!(parse_history_line("./src/main.rs").is_none());
         assert!(parse_history_line("").is_none());
+    }
+
+    #[test]
+    fn fzf_args_history_mode_includes_nth_and_accept_nth() {
+        let args = build_fzf_args(true, 50, true);
+        assert!(args.contains(&"--delimiter".to_string()));
+        assert!(args.contains(&"\t".to_string()));
+        assert!(args.contains(&"--nth".to_string()));
+        assert!(args.contains(&"2".to_string()));
+        assert!(args.contains(&"--accept-nth".to_string()));
+        // Must NOT contain --with-nth (breaks --nth matching)
+        assert!(!args.iter().any(|a| a == "--with-nth"));
+    }
+
+    #[test]
+    fn fzf_args_no_history_omits_delimiter() {
+        let args = build_fzf_args(true, 50, false);
+        assert!(!args.contains(&"--delimiter".to_string()));
+        assert!(!args.contains(&"--nth".to_string()));
+        assert!(!args.contains(&"--accept-nth".to_string()));
+    }
+
+    #[test]
+    fn build_fzf_input_history_lines_unsearchable() {
+        // History lines should have empty field 2 (after tab) so --nth 2 won't match them
+        let history = vec![vec!["a.rs".into(), "b.rs".into()]];
+        let files = vec!["./src/main.rs".to_string()];
+        let input = build_fzf_input(&history, &files);
+        let lines: Vec<&str> = input.lines().collect();
+
+        // History line: "[hist 1] a.rs, b.rs\t" — field 2 is empty
+        assert!(lines[0].starts_with("[hist 1] a.rs, b.rs\t"));
+        let hist_field2: &str = lines[0].split('\t').nth(1).unwrap();
+        assert!(
+            hist_field2.is_empty(),
+            "history field 2 should be empty for unsearchability, got: {hist_field2:?}"
+        );
+
+        // File line: "\t./src/main.rs" — field 2 is the filepath
+        let file_field2 = lines[1].split('\t').nth(1).unwrap();
+        assert_eq!(file_field2, "./src/main.rs");
+    }
+
+    #[test]
+    fn parse_fzf_output_strips_tab_fields() {
+        // fzf with --accept-nth '{1}{2}' outputs clean text
+        // File output: "./src/main.rs"
+        // History output: "[hist 1] a.rs, b.rs"
+        let file_output = "./src/main.rs";
+        let hist_output = "[hist 1] a.rs, b.rs";
+
+        assert!(parse_history_line(file_output).is_none());
+        let expanded = parse_history_line(hist_output).unwrap();
+        assert_eq!(expanded, vec!["a.rs", "b.rs"]);
     }
 }
