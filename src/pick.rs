@@ -40,9 +40,9 @@ fn build_fzf_args(multi: bool, preview_lines: usize) -> Vec<String> {
         args.extend([
             "--multi".into(),
             "--bind".into(),
-            "space:toggle+down".into(),
+            "space:toggle".into(),
             "--bind".into(),
-            "enter:toggle+down".into(),
+            "enter:toggle".into(),
             "--bind".into(),
             "tab:accept".into(),
             "--bind".into(),
@@ -124,56 +124,17 @@ fn read_single_key() -> Result<KeyCode> {
     terminal::enable_raw_mode()?;
     let result = (|| {
         loop {
-            if event::poll(Duration::from_secs(60))? {
-                if let Event::Key(KeyEvent { code, .. }) = event::read()? {
+            if event::poll(Duration::from_secs(60))?
+                && let Event::Key(KeyEvent { code, .. }) = event::read()? {
                     return Ok(code);
                 }
-            }
         }
     })();
     terminal::disable_raw_mode()?;
     result
 }
 
-// ── Confirmation / accumulation UI ──────────────────────────────
-
-enum ConfirmAction {
-    Confirm,
-    Reselect,
-}
-
-fn show_confirmation(files: &[String]) -> Result<ConfirmAction> {
-    eprintln!();
-    eprintln!("{}", "  Selected files:".bold());
-    for (i, f) in files.iter().enumerate() {
-        eprintln!("    {} {}", format!("{}.", i + 1).dimmed(), f.cyan());
-    }
-    eprintln!();
-    eprint!("{}", "  tab: confirm | any key: back to fzf ".dimmed());
-    io::stderr().flush()?;
-
-    let key = read_single_key()?;
-    eprintln!();
-
-    match key {
-        KeyCode::Tab => Ok(ConfirmAction::Confirm),
-        _ => Ok(ConfirmAction::Reselect),
-    }
-}
-
-/// Run fzf in a loop with a confirmation step. Returns confirmed selection or empty vec on cancel.
-pub fn pick_with_confirm(root: &str, regex: Option<&str>, preview_lines: usize) -> Result<Vec<String>> {
-    loop {
-        let selected = run_fzf(root, true, regex, preview_lines)?;
-        if selected.is_empty() {
-            return Ok(Vec::new());
-        }
-        match show_confirmation(&selected)? {
-            ConfirmAction::Confirm => return Ok(selected),
-            ConfirmAction::Reselect => continue,
-        }
-    }
-}
+// ── Accumulation UI ─────────────────────────────────────────────
 
 /// Merge new files into accumulated list, deduplicating.
 pub fn merge_unique(accumulated: &mut Vec<String>, new: Vec<String>) {
@@ -185,6 +146,8 @@ pub fn merge_unique(accumulated: &mut Vec<String>, new: Vec<String>) {
 }
 
 /// Interactive accumulation loop. Shows accumulated files and lets user pick more, execute, or cancel.
+/// After each fzf session, selected files are merged into the accumulator and the user can
+/// pick more (p), execute (enter), or cancel (esc).
 pub fn interactive_pick_loop(
     root: &str,
     regex: Option<&str>,
@@ -194,7 +157,6 @@ pub fn interactive_pick_loop(
     let mut accumulated = initial;
 
     loop {
-        // Show accumulated files
         eprintln!();
         eprintln!("{}", "  Accumulated files:".bold());
         for (i, f) in accumulated.iter().enumerate() {
@@ -209,7 +171,7 @@ pub fn interactive_pick_loop(
 
         match key {
             KeyCode::Char('p' | 'P') => {
-                let more = pick_with_confirm(root, regex, preview_lines)?;
+                let more = run_fzf(root, true, regex, preview_lines)?;
                 if !more.is_empty() {
                     merge_unique(&mut accumulated, more);
                 }
@@ -235,7 +197,7 @@ pub fn expand_p_tokens(
     let mut result = Vec::new();
     for path in paths {
         if path == "p" {
-            let picked = pick_with_confirm(".", regex, preview_lines)?;
+            let picked = run_fzf(".", true, regex, preview_lines)?;
             result.extend(picked);
         } else {
             result.push(path.clone());
@@ -303,8 +265,8 @@ mod tests {
     fn fzf_args_multi_mode() {
         let args = build_fzf_args(true, 30);
         assert!(args.contains(&"--multi".to_string()));
-        assert!(args.contains(&"space:toggle+down".to_string()));
-        assert!(args.contains(&"enter:toggle+down".to_string()));
+        assert!(args.contains(&"space:toggle".to_string()));
+        assert!(args.contains(&"enter:toggle".to_string()));
         assert!(args.contains(&"tab:accept".to_string()));
         assert!(args.contains(&"esc:abort".to_string()));
         assert!(args.contains(&"space/enter: select | tab: confirm | esc: cancel".to_string()));

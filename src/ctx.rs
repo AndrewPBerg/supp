@@ -75,11 +75,10 @@ pub fn analyze(
             bail!("path does not exist: {}", p);
         }
         if path.is_file() {
-            if let Some(ref re) = re {
-                if !re.is_match(p) {
+            if let Some(ref re) = re
+                && !re.is_match(p) {
                     continue;
                 }
-            }
             file_paths.push(p.clone());
             individual_files.push(p.clone());
         } else if path.is_dir() {
@@ -90,11 +89,10 @@ pub fn analyze(
             for entry in walker.flatten() {
                 if entry.path().is_file() {
                     let rel = entry.path().to_string_lossy().to_string();
-                    if let Some(ref re) = re {
-                        if !re.is_match(&rel) {
+                    if let Some(ref re) = re
+                        && !re.is_match(&rel) {
                             continue;
                         }
-                    }
                     file_paths.push(rel);
                 }
             }
@@ -375,10 +373,11 @@ fn find_file_references(
 
 // ── Renderer ────────────────────────────────────────────────────────
 
+#[allow(clippy::too_many_arguments)]
 fn render(
     files: &[FileData],
     analyses: &[FileAnalysis],
-    all_symbols: &[Symbol],
+    _all_symbols: &[Symbol],
     mode: Mode,
     depth: usize,
     regex: Option<&str>,

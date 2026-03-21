@@ -134,11 +134,10 @@ fn extract_doc_comment(content: &str, sym: &Symbol) -> Option<String> {
     let lang = compress::detect_lang(&sym.file);
 
     // Python: docstrings live inside the function/class body
-    if lang == Some(Lang::Python) {
-        if let Some(docstring) = extract_python_docstring(content, sym) {
+    if lang == Some(Lang::Python)
+        && let Some(docstring) = extract_python_docstring(content, sym) {
             return Some(docstring);
         }
-    }
 
     // Rust/C/JS/etc: comments live above the definition
     extract_comment_above(content, sym.line)
@@ -176,9 +175,10 @@ fn extract_python_docstring(content: &str, sym: &Symbol) -> Option<String> {
 
 fn clean_docstring(raw: &str) -> String {
     let s = raw.trim();
-    let inner = if s.starts_with("\"\"\"") && s.ends_with("\"\"\"") && s.len() >= 6 {
-        &s[3..s.len() - 3]
-    } else if s.starts_with("'''") && s.ends_with("'''") && s.len() >= 6 {
+    let inner = if (s.starts_with("\"\"\"") && s.ends_with("\"\"\"")
+        || s.starts_with("'''") && s.ends_with("'''"))
+        && s.len() >= 6
+    {
         &s[3..s.len() - 3]
     } else {
         s
@@ -291,29 +291,24 @@ fn find_definition_node<'a>(
 
     if node.start_position().row == line {
         // Standard named definitions (fn, class, struct, etc.)
-        if let Some(name_node) = node.child_by_field_name("name") {
-            if compress::node_text(content, name_node) == sym.name {
+        if let Some(name_node) = node.child_by_field_name("name")
+            && compress::node_text(content, name_node) == sym.name {
                 return Some(node);
             }
-        }
 
         // C/C++: function_definition → declarator → function_declarator → identifier
-        if node.kind() == "function_definition" {
-            if let Some(declarator) = node.child_by_field_name("declarator") {
-                if find_c_name_in_declarator(declarator, content) == Some(&sym.name) {
+        if node.kind() == "function_definition"
+            && let Some(declarator) = node.child_by_field_name("declarator")
+                && find_c_name_in_declarator(declarator, content) == Some(&sym.name) {
                     return Some(node);
                 }
-            }
-        }
 
         // C/C++: struct_specifier, enum_specifier, class_specifier with name field
-        if matches!(node.kind(), "struct_specifier" | "enum_specifier" | "class_specifier") {
-            if let Some(name_node) = node.child_by_field_name("name") {
-                if compress::node_text(content, name_node) == sym.name {
+        if matches!(node.kind(), "struct_specifier" | "enum_specifier" | "class_specifier")
+            && let Some(name_node) = node.child_by_field_name("name")
+                && compress::node_text(content, name_node) == sym.name {
                     return Some(node);
                 }
-            }
-        }
 
         // JS/TS: const MyComponent = (...) => { ... } (lexical_declaration wrapping arrow fn)
         if matches!(node.kind(), "lexical_declaration" | "variable_declaration") {
@@ -321,13 +316,11 @@ fn find_definition_node<'a>(
             if cursor.goto_first_child() {
                 loop {
                     let child = cursor.node();
-                    if child.kind() == "variable_declarator" {
-                        if let Some(name_node) = child.child_by_field_name("name") {
-                            if compress::node_text(content, name_node) == sym.name {
+                    if child.kind() == "variable_declarator"
+                        && let Some(name_node) = child.child_by_field_name("name")
+                            && compress::node_text(content, name_node) == sym.name {
                                 return Some(node);
                             }
-                        }
-                    }
                     if !cursor.goto_next_sibling() { break; }
                 }
             }
@@ -338,15 +331,13 @@ fn find_definition_node<'a>(
             let mut cursor = node.walk();
             if cursor.goto_first_child() {
                 let child = cursor.node();
-                if child.kind() == "assignment" {
-                    if let Some(left) = child.child_by_field_name("left") {
-                        if left.kind() == "identifier"
+                if child.kind() == "assignment"
+                    && let Some(left) = child.child_by_field_name("left")
+                        && left.kind() == "identifier"
                             && compress::node_text(content, left) == sym.name
                         {
                             return Some(node);
                         }
-                    }
-                }
             }
         }
     }
@@ -373,13 +364,11 @@ fn find_c_name_in_declarator<'a>(node: tree_sitter::Node<'a>, content: &'a str) 
         return Some(compress::node_text(content, node));
     }
     // qualified_identifier: Foo::bar → the "name" field has the actual name
-    if node.kind() == "qualified_identifier" {
-        if let Some(name) = node.child_by_field_name("name") {
-            if name.kind() == "identifier" {
+    if node.kind() == "qualified_identifier"
+        && let Some(name) = node.child_by_field_name("name")
+            && name.kind() == "identifier" {
                 return Some(compress::node_text(content, name));
             }
-        }
-    }
     let mut cursor = node.walk();
     if cursor.goto_first_child() {
         loop {
@@ -575,9 +564,9 @@ fn extract_c_includes(content: &str, file_path: &str, root: &Path) -> HashMap<St
         };
 
         // "file.h" — local include
-        if rest.starts_with('"') {
-            if let Some(end) = rest[1..].find('"') {
-                let header = &rest[1..1 + end];
+        if let Some(stripped) = rest.strip_prefix('"') {
+            if let Some(end) = stripped.find('"') {
+                let header = &stripped[..end];
                 if let Some(resolved) = resolve_c_include(header, file_dir, root) {
                     let abs = root.join(&resolved);
                     if let Ok(header_content) = std::fs::read_to_string(&abs) {
@@ -592,12 +581,11 @@ fn extract_c_includes(content: &str, file_path: &str, root: &Path) -> HashMap<St
             }
         }
         // <stdlib.h> — system include
-        else if rest.starts_with('<') {
-            if let Some(end) = rest.find('>') {
+        else if rest.starts_with('<')
+            && let Some(end) = rest.find('>') {
                 let header = &rest[1..end];
                 imports.insert(header.to_string(), format!("<{}>", header));
             }
-        }
     }
     imports
 }
@@ -660,11 +648,10 @@ fn scan_header_symbols(content: &str, file_path: &str) -> Vec<String> {
 fn collect_header_decl_names(node: tree_sitter::Node, content: &str, names: &mut Vec<String>) {
     match node.kind() {
         "function_definition" | "declaration" => {
-            if let Some(declarator) = node.child_by_field_name("declarator") {
-                if let Some(name) = find_c_decl_name(declarator, content) {
+            if let Some(declarator) = node.child_by_field_name("declarator")
+                && let Some(name) = find_c_decl_name(declarator, content) {
                     names.push(name);
                 }
-            }
         }
         "struct_specifier" | "enum_specifier" | "class_specifier" => {
             if let Some(name_node) = node.child_by_field_name("name") {
@@ -676,11 +663,10 @@ fn collect_header_decl_names(node: tree_sitter::Node, content: &str, names: &mut
         }
         "type_definition" => {
             // typedef struct { ... } Name; → declarator has the typedef name
-            if let Some(declarator) = node.child_by_field_name("declarator") {
-                if let Some(name) = find_c_decl_name(declarator, content) {
+            if let Some(declarator) = node.child_by_field_name("declarator")
+                && let Some(name) = find_c_decl_name(declarator, content) {
                     names.push(name);
                 }
-            }
         }
         _ => {}
     }
@@ -805,13 +791,11 @@ pub(crate) fn find_call_sites(root: &Path, sym: &Symbol) -> Vec<CallSite> {
             let line_num = line_idx + 1; // 1-based
 
             // Skip lines inside the definition itself (same file only)
-            if is_same_file {
-                if let Some((def_start, def_end)) = def_span {
-                    if line_num >= def_start && line_num <= def_end {
+            if is_same_file
+                && let Some((def_start, def_end)) = def_span
+                    && line_num >= def_start && line_num <= def_end {
                         continue;
                     }
-                }
-            }
 
             if contains_identifier(line, name) {
                 let caller = lang.and_then(|l| {
@@ -900,11 +884,10 @@ fn find_enclosing_fn_recursive(
                     | "constructor_declaration"
             );
 
-            if is_fn {
-                if let Some(name_node) = child.child_by_field_name("name") {
+            if is_fn
+                && let Some(name_node) = child.child_by_field_name("name") {
                     return Some(compress::node_text(content, name_node).to_string());
                 }
-            }
 
             if let Some(found) = find_enclosing_fn_recursive(child, content, line) {
                 return Some(found);
@@ -1155,11 +1138,10 @@ pub(crate) fn extract_hierarchy(
                 if let Some(colon_idx) = sig.find(':') {
                     let after_colon = &sig[colon_idx + 1..];
                     // Skip if this is just a scope resolution
-                    if !after_colon.starts_with(':') {
-                        if contains_identifier(after_colon, &sym.name) {
+                    if !after_colon.starts_with(':')
+                        && contains_identifier(after_colon, &sym.name) {
                             return true;
                         }
-                    }
                 }
             }
             false

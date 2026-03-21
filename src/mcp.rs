@@ -155,7 +155,8 @@ impl SuppServer {
     ) -> Result<CallToolResult, McpError> {
         tokio::task::spawn_blocking(move || {
             let mode = parse_mode(params.mode.as_deref());
-            let result = crate::ctx::analyze(".", &params.file, mode)
+            let files = vec![params.file];
+            let result = crate::ctx::analyze(".", &files, 2, None, mode)
                 .map_err(|e| err(e.to_string()))?;
             Ok(CallToolResult::success(vec![Content::text(result.plain)]))
         })
@@ -250,7 +251,7 @@ impl SuppServer {
                 params.regex.as_deref(),
                 mode,
             )
-            .map_err(|e| err(e.to_string()))?;
+            .map_err(|e: anyhow::Error| err(e.to_string()))?;
             Ok(CallToolResult::success(vec![Content::text(result.plain)]))
         })
         .await
@@ -261,8 +262,11 @@ impl SuppServer {
 #[tool_handler]
 impl ServerHandler for SuppServer {
     fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
-            .with_instructions("supp: structured code context for LLMs — diffs, file analysis, symbol search, tree views".to_string())
+        ServerInfo {
+            capabilities: ServerCapabilities::builder().enable_tools().build(),
+            instructions: Some("supp: structured code context for LLMs — diffs, file analysis, symbol search, tree views".to_string()),
+            ..Default::default()
+        }
     }
 }
 

@@ -168,7 +168,7 @@ pub fn get_status_map(path: &str) -> Result<Option<(HashMap<String, FileStatus>,
                     } => {
                         let path_str = rela_path.to_string();
                         // Don't overwrite staged status (staged has higher priority)
-                        if !map.contains_key(&path_str) {
+                        if let std::collections::hash_map::Entry::Vacant(e) = map.entry(path_str) {
                             use gix_status::index_as_worktree::{Change, EntryStatus};
                             let fs = match status {
                                 EntryStatus::Change(change) => match change {
@@ -181,16 +181,14 @@ pub fn get_status_map(path: &str) -> Result<Option<(HashMap<String, FileStatus>,
                                 EntryStatus::Conflict { .. } => FileStatus::Modified,
                                 EntryStatus::NeedsUpdate(_) => continue,
                             };
-                            map.insert(path_str, fs);
+                            e.insert(fs);
                         }
                     }
                     IW::DirectoryContents { entry, .. } => {
                         use gix::dir::entry::Status;
                         if matches!(entry.status, Status::Untracked) {
                             let path_str = entry.rela_path.to_string();
-                            if !map.contains_key(&path_str) {
-                                map.insert(path_str, FileStatus::Untracked);
-                            }
+                            map.entry(path_str).or_insert(FileStatus::Untracked);
                         }
                     }
                     IW::Rewrite {
@@ -198,9 +196,7 @@ pub fn get_status_map(path: &str) -> Result<Option<(HashMap<String, FileStatus>,
                         ..
                     } => {
                         let path_str = dirwalk_entry.rela_path.to_string();
-                        if !map.contains_key(&path_str) {
-                            map.insert(path_str, FileStatus::Renamed);
-                        }
+                        map.entry(path_str).or_insert(FileStatus::Renamed);
                     }
                 }
             }
@@ -352,11 +348,9 @@ pub(crate) fn collect_untracked_files(repo_dir: &Path, max_untracked_size: u64) 
         if let gix::status::Item::IndexWorktree(
             gix::status::index_worktree::Item::DirectoryContents { entry, .. },
         ) = item
-        {
-            if matches!(entry.status, gix::dir::entry::Status::Untracked) {
+            && matches!(entry.status, gix::dir::entry::Status::Untracked) {
                 untracked_paths.push(entry.rela_path.to_string());
             }
-        }
     }
 
     let mut files = Vec::new();

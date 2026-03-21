@@ -94,35 +94,23 @@ fn main() -> anyhow::Result<()> {
         }
         Some(Commands::Pick { ref path, single }) => {
             let root = path.as_deref().unwrap_or(".");
-            if single {
-                // Single mode: no confirmation, straight to analysis
-                let selected = pick::run_fzf(root, false, cli.regex.as_deref(), config.pick.preview_lines)?;
-                if selected.is_empty() {
-                    return Ok(());
-                }
-                let pick_start = std::time::Instant::now();
-                let depth = cli.resolve_depth(&config);
-                let mode = cli.resolve_mode(&config);
-                let result = context::generate_context(&selected, depth, cli.regex.as_deref(), mode)?;
-                println!("{}", selected.join(" "));
-                styles::print_pick_stats(result, no_copy, pick_start, text_tx, token_handle);
+            let selected = if single {
+                let s = pick::run_fzf(root, false, cli.regex.as_deref(), config.pick.preview_lines)?;
+                if s.is_empty() { return Ok(()); }
+                s
             } else {
-                // Multi mode: confirm → accumulate → execute
-                let confirmed = pick::pick_with_confirm(root, cli.regex.as_deref(), config.pick.preview_lines)?;
-                if confirmed.is_empty() {
-                    return Ok(());
-                }
-                let final_files = pick::interactive_pick_loop(root, cli.regex.as_deref(), config.pick.preview_lines, confirmed)?;
-                if final_files.is_empty() {
-                    return Ok(());
-                }
-                let pick_start = std::time::Instant::now();
-                let depth = cli.resolve_depth(&config);
-                let mode = cli.resolve_mode(&config);
-                let result = context::generate_context(&final_files, depth, cli.regex.as_deref(), mode)?;
-                println!("{}", final_files.join(" "));
-                styles::print_pick_stats(result, no_copy, pick_start, text_tx, token_handle);
-            }
+                let initial = pick::run_fzf(root, true, cli.regex.as_deref(), config.pick.preview_lines)?;
+                if initial.is_empty() { return Ok(()); }
+                let f = pick::interactive_pick_loop(root, cli.regex.as_deref(), config.pick.preview_lines, initial)?;
+                if f.is_empty() { return Ok(()); }
+                f
+            };
+            let pick_start = std::time::Instant::now();
+            let depth = cli.resolve_depth(&config);
+            let mode = cli.resolve_mode(&config);
+            let result = context::generate_context(&selected, depth, cli.regex.as_deref(), mode)?;
+            println!("{}", selected.join(" "));
+            styles::print_pick_stats(result, no_copy, pick_start, text_tx, token_handle);
             return Ok(());
         }
         Some(Commands::Tree { path, depth, no_git }) => {

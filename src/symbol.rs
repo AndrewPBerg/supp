@@ -138,6 +138,7 @@ fn build_index(root: &Path) -> (Vec<Symbol>, Vec<f64>) {
     let files = collect_files(root);
 
     // Parse files in parallel
+    #[allow(clippy::type_complexity)]
     let results: Mutex<Vec<(String, Vec<Symbol>, Vec<String>)>> = Mutex::new(Vec::new());
 
     std::thread::scope(|s| {
@@ -151,14 +152,13 @@ fn build_index(root: &Path) -> (Vec<Symbol>, Vec<f64>) {
                     Err(_) => return,
                 };
 
-                if let Some(lang) = compress::detect_lang(&rel) {
-                    if let Some(tree) = compress::parse_source(&content, lang) {
+                if let Some(lang) = compress::detect_lang(&rel)
+                    && let Some(tree) = compress::parse_source(&content, lang) {
                         let symbols = extract_symbols(&rel, &content, lang, &tree);
                         let refs = extract_references(&content, lang, &tree);
                         results.lock().unwrap().push((rel, symbols, refs));
                         return;
                     }
-                }
 
                 // Non-code file: create a file-level symbol and extract plain-text refs
                 let filename = Path::new(&rel)
@@ -209,16 +209,14 @@ fn build_index(root: &Path) -> (Vec<Symbol>, Vec<f64>) {
 
     // For each file's references, create edges from function/method symbols in that file
     // to the referenced symbols
-    let mut file_idx = 0;
     let mut sorted_files: Vec<&str> = file_to_sym_indices.keys().copied().collect();
     sorted_files.sort();
 
-    for refs in &file_refs {
+    for (file_idx, refs) in file_refs.iter().enumerate() {
         if file_idx >= sorted_files.len() {
             break;
         }
         let file = sorted_files[file_idx];
-        file_idx += 1;
 
         let source_indices: Vec<usize> = file_to_sym_indices
             .get(file)
@@ -585,9 +583,9 @@ fn extract_python_assignment(
     }
     loop {
         let child = cursor.node();
-        if child.kind() == "assignment" {
-            if let Some(left) = child.child_by_field_name("left") {
-                if left.kind() == "identifier" {
+        if child.kind() == "assignment"
+            && let Some(left) = child.child_by_field_name("left")
+                && left.kind() == "identifier" {
                     let name = compress::node_text(content, left).to_string();
                     // Skip dunder names and _private (but keep __all__)
                     if name.starts_with("__") && name.ends_with("__") && name != "__all__" {
@@ -608,8 +606,6 @@ fn extract_python_assignment(
                         keywords: Vec::new(),
                     });
                 }
-            }
-        }
         if !cursor.goto_next_sibling() {
             break;
         }
@@ -618,6 +614,7 @@ fn extract_python_assignment(
 
 // ── JS/TS symbols ───────────────────────────────────────────────────
 
+#[allow(clippy::too_many_arguments)]
 fn extract_js_symbols(
     file: &str,
     content: &str,
@@ -718,8 +715,8 @@ fn extract_js_symbols(
             if cursor.goto_first_child() {
                 loop {
                     let child = cursor.node();
-                    if child.kind() == "variable_declarator" {
-                        if let Some(name) = name_from_field(child, content) {
+                    if child.kind() == "variable_declarator"
+                        && let Some(name) = name_from_field(child, content) {
                             let value = child.child_by_field_name("value");
                             let is_fn = value.is_some_and(|v| {
                                 matches!(v.kind(), "arrow_function" | "function" | "function_expression")
@@ -736,7 +733,6 @@ fn extract_js_symbols(
                                 });
                             }
                         }
-                    }
                     if !cursor.goto_next_sibling() {
                         break;
                     }
@@ -884,6 +880,7 @@ fn determine_go_type_kind(spec: tree_sitter::Node) -> SymbolKind {
 
 // ── C/C++ symbols ───────────────────────────────────────────────────
 
+#[allow(clippy::too_many_arguments)]
 fn extract_c_symbols(
     file: &str,
     content: &str,
@@ -896,8 +893,8 @@ fn extract_c_symbols(
 ) {
     match kind {
         "function_definition" => {
-            if let Some(declarator) = node.child_by_field_name("declarator") {
-                if let Some(name) = find_declarator_name(declarator, content) {
+            if let Some(declarator) = node.child_by_field_name("declarator")
+                && let Some(name) = find_declarator_name(declarator, content) {
                     // C++: detect Foo::bar() scope qualifier for method resolution
                     let scope = find_scope_qualifier(declarator, content);
                     let effective_parent = scope.as_deref().or(parent);
@@ -916,7 +913,6 @@ fn extract_c_symbols(
                         keywords: Vec::new(),
                     });
                 }
-            }
         }
         "struct_specifier" | "enum_specifier" => {
             if let Some(name) = name_from_field(node, content) {
@@ -1419,7 +1415,7 @@ fn score_query(symbols: &[Symbol], ranks: &[f64], query_tokens: &[String]) -> Ve
             let parent_words: Vec<String> = sym
                 .parent
                 .as_deref()
-                .map(|p| split_subwords(p))
+                .map(split_subwords)
                 .unwrap_or_default();
 
             let mut matched_tokens = 0;

@@ -303,6 +303,7 @@ pub fn generate_context(
         }
 
         // Import / dependency analysis per included file
+        #[allow(clippy::type_complexity)]
         let mut all_imports: Vec<(String, Vec<(String, String, Option<String>)>)> = Vec::new();
         for (path, _, original) in &read_files {
             let rel = path.as_str();

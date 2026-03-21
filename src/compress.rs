@@ -57,6 +57,7 @@ pub fn parse_source(content: &str, lang: Lang) -> Option<Tree> {
     parser.parse(content, None)
 }
 
+#[allow(dead_code)]
 pub fn lang_hint(file_path: &str) -> &'static str {
     match detect_lang(file_path) {
         Some(Lang::Rust) => "rust",
