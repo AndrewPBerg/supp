@@ -4,11 +4,11 @@
 
 - [x] Context generation — bundle files/dirs into clipboard-ready LLM context
 - [x] Compression modes — `--slim` (strip comments) and `--map` (signatures only, ~58% reduction)
-- [x] Diff — git diff with branch comparison, staged/unstaged/untracked/all modes, glob filtering
+- [x] Diff — git diff with branch comparison, staged/tracked/untracked/local/all modes, regex filtering
 - [x] Tree — directory tree with git status indicators
 - [x] Shell completions (bash, zsh, fish)
 - [x] fzf integration (`supp pick`) — interactive multi-select file picker, composable with all commands
-- [x] Config system — global + local `supp.toml` with field-level merge, CLI flags always win
+- [x] Config system — hardcoded defaults, CLI flags always win
 - [x] Symbol search (`supp sym`) — PageRank-ranked index across Rust, Python, TS, TSX, JS, Go, C, C++, Java, JSON, Markdown
 - [x] Symbol deep-dive (`supp why`) — full definition, doc comments, call sites, deps, class hierarchy
 - [x] TSX/JSX component-aware `why` — arrow function components, props interface linking, hook deps, JSX element tracking
@@ -17,12 +17,14 @@
 - [x] Token estimation — cl100k_base token count on every output
 - [x] `supp ctx` — fzf-powered single-file context (pick → context in one step)
 - [x] Regex file filtering (`-r`) — works globally across context, diff, pick, tree
+- [x] Claude Code skills — `/project:diff`, `/project:ctx`, `/project:why`, `/project:sym`, `/project:tree`
+- [x] MCP server (`supp mcp`) — 6 tools over stdio for autonomous AI context gathering
 
 ## Current state
 
-- **12 source modules**, 247 passing tests, 0 TODOs
+- **13 source modules**, 256 passing tests, 0 TODOs
 - **9 tree-sitter grammars**: Rust, Python, JS, TS, TSX, Go, C, C++, Java
-- **6 subcommands**: `diff`, `tree`, `sym`, `why`, `pick`, `completions` (plus default context mode and `ctx`)
+- **8 subcommands**: `diff`, `tree`, `sym`, `why`, `pick`, `mcp`, `completions` (plus default context mode and `ctx`)
 
 ## Next
 

@@ -31,7 +31,7 @@ supp completions fish > ~/.config/fish/completions/supp.fish
 
 ## fzf Integration
 
-The `pick` subcommand launches [fzf](https://github.com/junegunn/fzf) for interactive file selection and prints the selected paths to stdout. This makes it composable with other commands.
+The `pick` subcommand (alias `p`) launches [fzf](https://github.com/junegunn/fzf) for interactive file selection, generates context from the selected files, and copies it to the clipboard.
 
 ### Usage
 
@@ -43,35 +43,29 @@ supp pick [PATH] [OPTIONS]
 
 | Flag | Short | Description |
 |------|-------|-------------|
-| `--single` | `-s` | Select only one file (disables multi-select) |
+| `--single` | `-1` | Select a single file (skips confirmation and accumulation) |
 | `--regex` | `-r` | Regex pattern to pre-filter the file list |
+
+### Behavior
+
+By default, `pick` opens fzf in multi-select mode. After selecting files, you enter an interactive loop where you can confirm, add more files, or clear. Once confirmed, context is generated and copied to the clipboard.
+
+With `--single` (`-1`), fzf opens in single-select mode and immediately generates context — no confirmation step.
 
 ### Examples
 
 ```bash
-# Pick files, then generate context
-supp $(supp pick)
+# Interactive multi-select with confirm loop
+supp pick
 
-# Pick files, print context without clipboard
-supp $(supp pick) -n
-
-# Pick a single file, prints its path
-supp pick --single
+# Single file, no confirmation
+supp pick -1
 
 # Pick from a specific directory
 supp pick src/
 
 # Pre-filter to only Rust files
 supp -r '\.rs$' pick
-```
-
-### Configuration
-
-The number of preview lines shown in fzf (default: 100) can be changed in [`~/.supp/config.toml`](config.md):
-
-```toml
-[pick]
-preview_lines = 50
 ```
 
 ### Requirements

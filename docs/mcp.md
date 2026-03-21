@@ -44,7 +44,7 @@ The server communicates via JSON-RPC over stdin/stdout. It's not meant to be run
 
 | Tool | Description | Key params |
 |------|-------------|------------|
-| `supp_diff` | Compare git changes | `path?`, `cached?`, `untracked?`, `local?`, `branch?`, `all?`, `self_branch?`, `context_lines?`, `filter?` |
+| `supp_diff` | Compare git changes | `path?`, `untracked?`, `tracked?`, `staged?`, `local?`, `all?`, `branch?`, `context_lines?`, `regex?` |
 | `supp_ctx` | Single-file analysis with deps and usage | `file`, `mode?` |
 | `supp_why` | Deep-dive a symbol | `query` |
 | `supp_sym` | Search symbols by name | `query` |
@@ -63,4 +63,4 @@ echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":
 
 - The `pick` command is excluded — it requires an interactive terminal
 - All tools run synchronously under the hood via `spawn_blocking`
-- Config from `~/.supp/config.toml` is respected for defaults (context lines, depth, etc.)
+- Config defaults (context lines, depth, etc.) are built-in

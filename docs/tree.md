@@ -16,8 +16,6 @@ supp [-n] tree [PATH] [OPTIONS]
 | `--no-color` | | Disable colored output |
 | `--regex` | `-r` | Regex pattern to filter file paths |
 
-Defaults for `--no-copy` and `--no-color` can be set in [`~/.supp/config.toml`](config.md).
-
 ## Options
 
 | Flag | Short | Description |

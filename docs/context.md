@@ -16,10 +16,8 @@ supp [-n] <paths...> [OPTIONS]
 | `--no-color` | | Disable colored output |
 | `--regex` | `-r` | Regex pattern to filter file paths |
 | `--depth` | `-d` | Tree depth in context header (default: 2, configurable) |
-| `--slim` | `-S` | Strip comments and collapse blank lines |
-| `--map` | `-M` | Extract only signatures and definitions (codemap) |
-
-Defaults for `--no-copy`, `--depth`, and the output mode can be set in [`~/.supp/config.toml`](config.md).
+| `--slim` | | Strip comments and collapse blank lines |
+| `--map` | `-m` | Extract only signatures and definitions (codemap) |
 
 ## Examples
 
@@ -37,7 +35,7 @@ supp src/ -r '\.rs$'
 supp src/main.rs -n
 
 # Pick files interactively, then generate context
-supp $(supp pick)
+supp pick
 ```
 
 ## Example output

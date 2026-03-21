@@ -68,25 +68,23 @@ fn main() -> anyhow::Result<()> {
     match cli.command {
         Some(Commands::Diff {
             path,
-            cached,
             untracked,
+            tracked,
+            staged,
             local,
-            branch,
             all,
-            self_branch,
+            branch,
             context_lines,
-            filter,
         }) => {
             let repo_path = path.as_deref().unwrap_or(".");
             let opts = DiffOptions {
-                cached,
                 untracked,
+                tracked,
+                staged,
                 local,
-                branch,
                 all,
-                self_branch,
+                branch,
                 context_lines: context_lines.or(Some(config.diff.context_lines)),
-                filter,
                 max_untracked_size,
             };
             let result = get_diff(repo_path, opts, cli.regex.as_deref())?;
@@ -99,9 +97,7 @@ fn main() -> anyhow::Result<()> {
                 if s.is_empty() { return Ok(()); }
                 s
             } else {
-                let initial = pick::run_fzf(root, true, cli.regex.as_deref(), config.pick.preview_lines)?;
-                if initial.is_empty() { return Ok(()); }
-                let f = pick::interactive_pick_loop(root, cli.regex.as_deref(), config.pick.preview_lines, initial)?;
+                let f = pick::interactive_pick_loop(root, cli.regex.as_deref(), config.pick.preview_lines)?;
                 if f.is_empty() { return Ok(()); }
                 f
             };

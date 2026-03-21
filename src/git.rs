@@ -25,28 +25,26 @@ pub enum DeltaStatus {
 }
 
 pub struct DiffOptions {
-    pub cached: bool,
     pub untracked: bool,
+    pub tracked: bool,
+    pub staged: bool,
     pub local: bool,
-    pub branch: Option<String>,
     pub all: bool,
-    pub self_branch: bool,
+    pub branch: Option<String>,
     pub context_lines: Option<u32>,
-    pub filter: Option<String>,
     pub max_untracked_size: u64,
 }
 
 impl Default for DiffOptions {
     fn default() -> Self {
         Self {
-            cached: false,
             untracked: false,
+            tracked: false,
+            staged: false,
             local: false,
             branch: None,
             all: false,
-            self_branch: false,
             context_lines: None,
-            filter: None,
             max_untracked_size: 10 * 1024 * 1024,
         }
     }
@@ -394,26 +392,6 @@ pub(crate) fn collect_untracked_files(repo_dir: &Path, max_untracked_size: u64) 
 
 // ── Filters ─────────────────────────────────────────────────────────
 
-/// Apply glob filter to file entries, removing non-matching paths.
-pub(crate) fn apply_filter(files: Vec<FileEntry>, filter: &str) -> Vec<FileEntry> {
-    let glob = ignore::gitignore::GitignoreBuilder::new("")
-        .add_line(None, filter)
-        .ok()
-        .and_then(|b| b.build().ok());
-
-    match glob {
-        Some(matcher) => files
-            .into_iter()
-            .filter(|f| {
-                matcher
-                    .matched_path_or_any_parents(&f.path, false)
-                    .is_ignore()
-            })
-            .collect(),
-        None => files,
-    }
-}
-
 /// Apply regex filter to file entries, keeping paths that match.
 pub(crate) fn apply_regex_filter(files: Vec<FileEntry>, pattern: &str) -> Result<Vec<FileEntry>> {
     let re = regex::Regex::new(pattern)
@@ -427,19 +405,10 @@ pub fn get_diff(repo_path: &str, opts: DiffOptions, regex: Option<&str>) -> Resu
     let (_, repo_dir) = discover_repo(repo_path)?
         .ok_or_else(|| anyhow!("not a git repository: {}", repo_path))?;
 
-    let filter = opts.filter.clone();
-
     let mut result = get_diff_inner(&repo_dir, opts)?;
 
-    if let Some(ref pattern) = filter {
-        result.files = apply_filter(result.files, pattern);
-    }
     if let Some(pattern) = regex {
         result.files = apply_regex_filter(result.files, pattern)?;
-    }
-
-    // Rebuild text from remaining files' patches after filtering
-    if filter.is_some() || regex.is_some() {
         result.text = result.files.iter().map(|f| f.patch.as_str()).collect();
     }
 
@@ -566,7 +535,7 @@ fn get_diff_inner(repo_dir: &Path, opts: DiffOptions) -> Result<DiffResult> {
         vec![]
     };
 
-    if opts.cached {
+    if opts.staged {
         let mut args = vec!["--cached"];
         args.extend_from_slice(&base_diff_args);
         let (files, text) = run_diff(repo_dir, &args)?;
@@ -590,10 +559,10 @@ fn get_diff_inner(repo_dir: &Path, opts: DiffOptions) -> Result<DiffResult> {
         });
     }
 
-    if opts.local {
+    if opts.tracked {
         let (files, text) = run_diff(repo_dir, &base_diff_args)?;
         return Ok(DiffResult {
-            label: "Local changes (unstaged)".into(),
+            label: "Tracked changes (unstaged)".into(),
             files,
             text,
             has_conflicts: false,
@@ -601,6 +570,27 @@ fn get_diff_inner(repo_dir: &Path, opts: DiffOptions) -> Result<DiffResult> {
             commit_count: None,
             stale_check: None,
         });
+    }
+
+    if opts.local {
+        // Gather all local changes (untracked + staged + unstaged)
+        // then compare against self branch remote
+        let repo = open_repo(repo_dir)?;
+        let current_branch = repo
+            .head_ref()
+            .map_err(|e| anyhow!("failed to read HEAD: {}", e))?
+            .ok_or_else(|| anyhow!("Detached HEAD — use -b <branch> to specify a target"))?
+            .name()
+            .shorten()
+            .to_string();
+
+        return diff_branch_against_remote(
+            repo_dir,
+            &current_branch,
+            &current_branch,
+            opts.context_lines,
+            format!("origin/{} ... {}", current_branch, current_branch),
+        );
     }
 
     if opts.all {
@@ -677,17 +667,7 @@ fn get_diff_inner(repo_dir: &Path, opts: DiffOptions) -> Result<DiffResult> {
         .shorten()
         .to_string();
 
-    if opts.self_branch {
-        return diff_branch_against_remote(
-            repo_dir,
-            &current_branch,
-            &current_branch,
-            opts.context_lines,
-            format!("origin/{} ... {}", current_branch, current_branch),
-        );
-    }
-
-    // Remote diff (default): compare current branch against the default branch
+    // Remote diff (default / -a): compare current branch against the default branch
     let base_branch = match opts.branch {
         Some(b) => b,
         None => {
@@ -856,35 +836,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn filter_keeps_matching() {
-        let files = vec![make_entry("src/main.rs"), make_entry("readme.md")];
-        let result = apply_filter(files, "*.rs");
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0].path, "src/main.rs");
-    }
-
-    #[test]
-    fn filter_no_match_empty() {
-        let files = vec![make_entry("main.rs")];
-        let result = apply_filter(files, "*.xyz");
-        assert!(result.is_empty());
-    }
-
-    #[test]
-    fn filter_star_keeps_all() {
-        let files = vec![make_entry("a.rs"), make_entry("b.txt")];
-        let result = apply_filter(files, "*");
-        assert_eq!(result.len(), 2);
-    }
-
-    #[test]
-    fn filter_invalid_glob_graceful() {
-        let files = vec![make_entry("a.rs")];
-        let result = apply_filter(files, "[invalid");
-        let _ = result;
-    }
-
     // ── apply_regex_filter ───────────────────────────────────────
 
     #[test]
@@ -974,23 +925,23 @@ mod tests {
         let dir = setup_test_repo();
         write_and_stage(dir.path(), "staged.txt", "content");
         let mut opts = default_opts();
-        opts.cached = true;
+        opts.staged = true;
         let result = get_diff(dir.path().to_str().unwrap(), opts, None).unwrap();
         assert!(result.label.contains("Staged"));
         assert_eq!(result.files.len(), 1);
     }
 
     #[test]
-    fn get_diff_local_mode() {
+    fn get_diff_tracked_mode() {
         let dir = setup_test_repo();
         write_and_stage(dir.path(), "file.txt", "v1");
         commit(dir.path(), "add");
         // Now modify without staging
         fs::write(dir.path().join("file.txt"), "v2").unwrap();
         let mut opts = default_opts();
-        opts.local = true;
+        opts.tracked = true;
         let result = get_diff(dir.path().to_str().unwrap(), opts, None).unwrap();
-        assert!(result.label.contains("Local") || result.label.contains("unstaged"));
+        assert!(result.label.contains("Tracked") || result.label.contains("unstaged"));
         assert_eq!(result.files.len(), 1);
     }
 
@@ -1027,22 +978,9 @@ mod tests {
     fn get_diff_empty_cached() {
         let dir = setup_test_repo();
         let mut opts = default_opts();
-        opts.cached = true;
+        opts.staged = true;
         let result = get_diff(dir.path().to_str().unwrap(), opts, None).unwrap();
         assert!(result.files.is_empty());
-    }
-
-    #[test]
-    fn get_diff_with_glob_filter() {
-        let dir = setup_test_repo();
-        write_and_stage(dir.path(), "keep.rs", "fn main() {}");
-        write_and_stage(dir.path(), "skip.txt", "hello");
-        let mut opts = default_opts();
-        opts.cached = true;
-        opts.filter = Some("*.rs".to_string());
-        let result = get_diff(dir.path().to_str().unwrap(), opts, None).unwrap();
-        assert_eq!(result.files.len(), 1);
-        assert_eq!(result.files[0].path, "keep.rs");
     }
 
     #[test]
@@ -1051,7 +989,7 @@ mod tests {
         write_and_stage(dir.path(), "main.rs", "fn main() {}");
         write_and_stage(dir.path(), "readme.md", "# readme");
         let mut opts = default_opts();
-        opts.cached = true;
+        opts.staged = true;
         let result = get_diff(dir.path().to_str().unwrap(), opts, Some(r"\.rs$")).unwrap();
         assert_eq!(result.files.len(), 1);
         assert_eq!(result.files[0].path, "main.rs");

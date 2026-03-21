@@ -16,30 +16,30 @@ pub struct DiffParams {
     #[schemars(description = "Path or registered repo name (defaults to '.')")]
     #[serde(default)]
     pub path: Option<String>,
-    #[schemars(description = "Only diff staged (cached) files")]
-    #[serde(default)]
-    pub cached: bool,
     #[schemars(description = "Only diff untracked files")]
     #[serde(default)]
     pub untracked: bool,
-    #[schemars(description = "Only diff local (unstaged) changes")]
+    #[schemars(description = "Unstaged changes to tracked files only")]
+    #[serde(default)]
+    pub tracked: bool,
+    #[schemars(description = "Staged changes only")]
+    #[serde(default)]
+    pub staged: bool,
+    #[schemars(description = "All local changes vs self branch remote")]
     #[serde(default)]
     pub local: bool,
-    #[schemars(description = "Branch to compare against")]
-    #[serde(default)]
-    pub branch: Option<String>,
-    #[schemars(description = "Combine all local changes (untracked + staged + unstaged)")]
+    #[schemars(description = "All branch changes vs remote default main (default)")]
     #[serde(default)]
     pub all: bool,
-    #[schemars(description = "Compare current branch against its own remote")]
+    #[schemars(description = "Branch to compare to (used with all)")]
     #[serde(default)]
-    pub self_branch: bool,
+    pub branch: Option<String>,
     #[schemars(description = "Number of context lines in unified diff")]
     #[serde(default)]
     pub context_lines: Option<u32>,
-    #[schemars(description = "Glob pattern to filter files (e.g. '*.rs')")]
+    #[schemars(description = "Regex pattern to filter file paths (e.g. '\\.rs$')")]
     #[serde(default)]
-    pub filter: Option<String>,
+    pub regex: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -130,17 +130,16 @@ impl SuppServer {
             let repo_path = params.path.as_deref().unwrap_or(".");
             let max_untracked_size = config.limits.max_untracked_file_size_mb * 1024 * 1024;
             let opts = DiffOptions {
-                cached: params.cached,
                 untracked: params.untracked,
+                tracked: params.tracked,
+                staged: params.staged,
                 local: params.local,
-                branch: params.branch,
                 all: params.all,
-                self_branch: params.self_branch,
+                branch: params.branch,
                 context_lines: params.context_lines.or(Some(config.diff.context_lines)),
-                filter: params.filter,
                 max_untracked_size,
             };
-            let result = crate::git::get_diff(repo_path, opts, None)
+            let result = crate::git::get_diff(repo_path, opts, params.regex.as_deref())
                 .map_err(|e| err(e.to_string()))?;
             Ok(CallToolResult::success(vec![Content::text(result.text)]))
         })

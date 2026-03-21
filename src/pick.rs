@@ -1,4 +1,5 @@
-use std::io::{self, Write};
+use std::io::{self, BufRead, Write};
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
@@ -8,6 +9,8 @@ use crossterm::event::{self, Event, KeyCode, KeyEvent};
 use crossterm::terminal;
 use ignore::WalkBuilder;
 use regex::Regex;
+
+const MAX_HISTORY: usize = 20;
 
 /// Collect all files under `root`, respecting .gitignore, with optional regex filter.
 pub fn collect_files(root: &str, regex: Option<&str>) -> Result<Vec<String>> {
@@ -56,17 +59,10 @@ fn build_fzf_args(multi: bool, preview_lines: usize) -> Vec<String> {
     args
 }
 
-/// Spawn fzf with the collected file list, return selected paths.
-pub fn run_fzf(root: &str, multi: bool, regex: Option<&str>, preview_lines: usize) -> Result<Vec<String>> {
-    let files = collect_files(root, regex)?;
-    if files.is_empty() {
-        bail!("no files found under '{}'", root);
-    }
-
-    let args = build_fzf_args(multi, preview_lines);
-
+/// Spawn fzf, return selected paths.
+fn spawn_fzf(input: &str, args: &[String]) -> Result<Vec<String>> {
     let mut child = match Command::new("fzf")
-        .args(&args)
+        .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
@@ -85,9 +81,7 @@ pub fn run_fzf(root: &str, multi: bool, regex: Option<&str>, preview_lines: usiz
         Err(e) => return Err(e.into()),
     };
 
-    // Write file list to fzf's stdin
     if let Some(mut stdin) = child.stdin.take() {
-        let input = files.join("\n");
         stdin.write_all(input.as_bytes())?;
     }
 
@@ -95,25 +89,82 @@ pub fn run_fzf(root: &str, multi: bool, regex: Option<&str>, preview_lines: usiz
 
     match output.status.code() {
         Some(0) => {}
-        Some(130) | Some(1) => {
-            // User pressed Esc/Ctrl-C or no match — clean exit
-            return Ok(Vec::new());
-        }
-        Some(code) => {
-            bail!("fzf exited with code {}", code);
-        }
-        None => {
-            bail!("fzf was terminated by a signal");
-        }
+        Some(130) | Some(1) => return Ok(Vec::new()),
+        Some(code) => bail!("fzf exited with code {}", code),
+        None => bail!("fzf was terminated by a signal"),
     }
 
-    let selected: Vec<String> = String::from_utf8_lossy(&output.stdout)
+    Ok(String::from_utf8_lossy(&output.stdout)
         .lines()
         .filter(|l| !l.is_empty())
         .map(String::from)
-        .collect();
+        .collect())
+}
 
-    Ok(selected)
+const HIST_PREFIX: &str = "[hist ";
+
+/// Format a history entry as a single fzf-selectable line.
+fn format_history_line(index: usize, files: &[String]) -> String {
+    format!("{}{}] {}", HIST_PREFIX, index + 1, files.join(", "))
+}
+
+/// Parse a selected fzf line — if it's a history entry, return the expanded file list.
+fn parse_history_line(line: &str) -> Option<Vec<String>> {
+    if !line.starts_with(HIST_PREFIX) {
+        return None;
+    }
+    let rest = line.strip_prefix(HIST_PREFIX)?;
+    let (_, files_part) = rest.split_once("] ")?;
+    Some(files_part.split(", ").map(String::from).collect())
+}
+
+/// Spawn fzf with the collected file list, return selected paths.
+pub fn run_fzf(root: &str, multi: bool, regex: Option<&str>, preview_lines: usize) -> Result<Vec<String>> {
+    run_fzf_with_history(root, multi, regex, preview_lines, &[])
+}
+
+/// Spawn fzf with history entries at the top, then regular files below.
+pub fn run_fzf_with_history(
+    root: &str,
+    multi: bool,
+    regex: Option<&str>,
+    preview_lines: usize,
+    history: &[Vec<String>],
+) -> Result<Vec<String>> {
+    let files = collect_files(root, regex)?;
+    if files.is_empty() && history.is_empty() {
+        bail!("no files found under '{}'", root);
+    }
+
+    let args = build_fzf_args(multi, preview_lines);
+
+    // Build input: history entries (newest first) then files
+    let mut lines = Vec::new();
+    for (i, entry) in history.iter().enumerate().rev() {
+        lines.push(format_history_line(i, entry));
+    }
+    lines.extend(files);
+    let input = lines.join("\n");
+
+    let raw_selected = spawn_fzf(&input, &args)?;
+
+    // Expand any history lines back to their file lists
+    let mut result = Vec::new();
+    for line in raw_selected {
+        if let Some(expanded) = parse_history_line(&line) {
+            for f in expanded {
+                if !result.contains(&f) {
+                    result.push(f);
+                }
+            }
+        } else {
+            if !result.contains(&line) {
+                result.push(line);
+            }
+        }
+    }
+
+    Ok(result)
 }
 
 // ── Terminal key input ───────────────────────────────────────────
@@ -134,6 +185,57 @@ fn read_single_key() -> Result<KeyCode> {
     result
 }
 
+// ── Pick history ────────────────────────────────────────────────
+
+fn history_path(root: &Path) -> PathBuf {
+    if let Ok(repo) = gix::discover(root) {
+        let git_dir = repo.git_dir().to_path_buf();
+        return git_dir.join("supp").join("pick-history");
+    }
+    let mut hasher = 0u64;
+    for b in root.to_string_lossy().bytes() {
+        hasher = hasher.wrapping_mul(31).wrapping_add(b as u64);
+    }
+    PathBuf::from(format!("/tmp/supp-pick-{:x}", hasher))
+}
+
+/// Load history entries (newest last). Silently skips malformed lines.
+fn load_history(path: &Path) -> Vec<Vec<String>> {
+    let Ok(file) = std::fs::File::open(path) else {
+        return Vec::new();
+    };
+    io::BufReader::new(file)
+        .lines()
+        .map_while(Result::ok)
+        .filter_map(|line| serde_json::from_str::<Vec<String>>(&line).ok())
+        .collect()
+}
+
+/// Append `selection` to history, skipping if it duplicates the last entry. Bounds to MAX_HISTORY.
+fn save_history(path: &Path, history: &mut Vec<Vec<String>>, selection: &[String]) {
+    if selection.is_empty() {
+        return;
+    }
+    // Deduplicate: remove any existing identical entry
+    history.retain(|entry| entry != selection);
+    history.push(selection.to_vec());
+    // Bound
+    if history.len() > MAX_HISTORY {
+        *history = history.split_off(history.len() - MAX_HISTORY);
+    }
+    // Write
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let mut out = Vec::new();
+    for entry in history.iter() {
+        if let Ok(json) = serde_json::to_string(entry) {
+            out.push(json);
+        }
+    }
+    let _ = std::fs::write(path, out.join("\n") + "\n");
+}
+
 // ── Accumulation UI ─────────────────────────────────────────────
 
 /// Merge new files into accumulated list, deduplicating.
@@ -145,41 +247,55 @@ pub fn merge_unique(accumulated: &mut Vec<String>, new: Vec<String>) {
     }
 }
 
-/// Interactive accumulation loop. Shows accumulated files and lets user pick more, execute, or cancel.
-/// After each fzf session, selected files are merged into the accumulator and the user can
-/// pick more (p), execute (enter), or cancel (esc).
+/// Interactive pick flow. Opens fzf with history entries at the top, then enters
+/// an accumulation loop (pick more / execute / cancel). History is saved on execute.
 pub fn interactive_pick_loop(
     root: &str,
     regex: Option<&str>,
     preview_lines: usize,
-    initial: Vec<String>,
 ) -> Result<Vec<String>> {
-    let mut accumulated = initial;
+    let hist_path = history_path(Path::new("."));
+    let mut history = load_history(&hist_path);
+
+    // First fzf session — includes history
+    let mut accumulated = run_fzf_with_history(root, true, regex, preview_lines, &history)?;
+    if accumulated.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut need_redraw = true;
 
     loop {
-        eprintln!();
-        eprintln!("{}", "  Accumulated files:".bold());
-        for (i, f) in accumulated.iter().enumerate() {
-            eprintln!("    {} {}", format!("{}.", i + 1).dimmed(), f.cyan());
+        if need_redraw {
+            eprintln!();
+            eprintln!("{}", "  Accumulated files:".bold());
+            for (i, f) in accumulated.iter().enumerate() {
+                eprintln!("    {} {}", format!("{}.", i + 1).dimmed(), f.cyan());
+            }
+            eprintln!();
+            eprint!("{}", "  p: pick more | enter: execute | esc: cancel ".dimmed());
+            io::stderr().flush()?;
+            need_redraw = false;
         }
-        eprintln!();
-        eprint!("{}", "  p: pick more | enter: execute | esc: cancel ".dimmed());
-        io::stderr().flush()?;
 
         let key = read_single_key()?;
-        eprintln!();
 
         match key {
             KeyCode::Char('p' | 'P') => {
-                let more = run_fzf(root, true, regex, preview_lines)?;
+                eprintln!();
+                let more = run_fzf_with_history(root, true, regex, preview_lines, &history)?;
                 if !more.is_empty() {
                     merge_unique(&mut accumulated, more);
                 }
+                need_redraw = true;
             }
             KeyCode::Enter => {
+                eprintln!();
+                save_history(&hist_path, &mut history, &accumulated);
                 return Ok(accumulated);
             }
             KeyCode::Esc => {
+                eprintln!();
                 return Ok(Vec::new());
             }
             _ => {}
@@ -291,5 +407,91 @@ mod tests {
         let mut acc: Vec<String> = vec![];
         merge_unique(&mut acc, vec!["a.rs".into()]);
         assert_eq!(acc, vec!["a.rs"]);
+    }
+
+    #[test]
+    fn history_roundtrip() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("pick-history");
+
+        let sel1 = vec!["a.rs".to_string(), "b.rs".to_string()];
+        let sel2 = vec!["c.rs".to_string()];
+
+        let mut history = Vec::new();
+        save_history(&path, &mut history, &sel1);
+        save_history(&path, &mut history, &sel2);
+
+        let loaded = load_history(&path);
+        assert_eq!(loaded.len(), 2);
+        assert_eq!(loaded[0], sel1);
+        assert_eq!(loaded[1], sel2);
+    }
+
+    #[test]
+    fn history_deduplicates() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("pick-history");
+
+        let sel = vec!["a.rs".to_string()];
+        let mut history = Vec::new();
+        save_history(&path, &mut history, &sel);
+        save_history(&path, &mut history, &sel);
+
+        let loaded = load_history(&path);
+        assert_eq!(loaded.len(), 1);
+    }
+
+    #[test]
+    fn history_bounds_to_max() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("pick-history");
+
+        let mut history = Vec::new();
+        for i in 0..25 {
+            save_history(&path, &mut history, &[format!("file{i}.rs")]);
+        }
+
+        let loaded = load_history(&path);
+        assert_eq!(loaded.len(), MAX_HISTORY);
+        // Most recent should be last
+        assert_eq!(loaded.last().unwrap(), &vec!["file24.rs".to_string()]);
+    }
+
+    #[test]
+    fn history_skips_empty_selection() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("pick-history");
+
+        let mut history = Vec::new();
+        save_history(&path, &mut history, &[]);
+
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn history_skips_malformed_lines() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("pick-history");
+        fs::write(&path, "[\"a.rs\"]\nnot json\n[\"b.rs\"]\n").unwrap();
+
+        let loaded = load_history(&path);
+        assert_eq!(loaded.len(), 2);
+        assert_eq!(loaded[0], vec!["a.rs".to_string()]);
+        assert_eq!(loaded[1], vec!["b.rs".to_string()]);
+    }
+
+    #[test]
+    fn history_line_roundtrip() {
+        let files = vec!["a.rs".to_string(), "b.rs".to_string()];
+        let line = format_history_line(0, &files);
+        assert_eq!(line, "[hist 1] a.rs, b.rs");
+        let parsed = parse_history_line(&line).unwrap();
+        assert_eq!(parsed, files);
+    }
+
+    #[test]
+    fn parse_history_line_not_history() {
+        assert!(parse_history_line("./src/main.rs").is_none());
+        assert!(parse_history_line("").is_none());
     }
 }

@@ -15,35 +15,33 @@ supp [-n] diff [PATH] [OPTIONS]
 | `--no-copy` | `-n` | Show stats only, skip clipboard copy |
 | `--no-color` | | Disable colored output |
 | `--regex` | `-r` | Regex pattern to filter file paths |
-| `--slim` | `-S` | Strip comments and collapse blank lines |
-| `--map` | `-M` | Extract only signatures and definitions (codemap) |
+| `--slim` | | Strip comments and collapse blank lines |
+| `--map` | `-m` | Extract only signatures and definitions (codemap) |
 
 ## Options
 
 | Flag | Short | Description |
 |------|-------|-------------|
-| `--cached` | `-c` | Staged files vs HEAD |
 | `--untracked` | `-u` | Untracked (new) files |
-| `--local` | `-l` | Unstaged working directory changes |
-| `--branch <BRANCH>` | `-b` | Base branch to compare against |
-| `--all` | `-a` | All local changes (untracked + staged + unstaged) |
-| `--self-branch` | `-s` | Unpushed commits vs `origin/<current-branch>` |
+| `--tracked` | `-t` | Unstaged changes to tracked files |
+| `--staged` | `-s` | Staged changes vs HEAD |
+| `--local` | `-l` | All local changes vs self branch remote |
+| `--all` | `-a` | All branch changes vs remote default main (default) |
+| `--branch <BRANCH>` | `-b` | Branch to compare to (used with `-a`) |
 | `--unified` | `-U` | Number of context lines in unified diff output (default: 3, configurable) |
-| `--filter` | `-f` | Glob pattern to filter files (e.g. `*.rs`) |
 
-Defaults for `--no-copy`, `--unified`, and the max untracked file size can be set in [`~/.supp/config.toml`](config.md).
 
 ## Modes
 
 | Command | Compares |
 |---------|----------|
 | `supp diff` | default branch ... current branch (fetches origin) |
-| `supp diff -c` | HEAD ... index |
-| `supp diff -l` | index ... working directory |
 | `supp diff -u` | untracked files |
-| `supp diff -b develop` | develop ... current branch |
-| `supp diff -a` | all local changes combined |
-| `supp diff -s` | origin/branch ... branch (unpushed commits) |
+| `supp diff -t` | index ... working directory (tracked only) |
+| `supp diff -s` | HEAD ... index (staged only) |
+| `supp diff -l` | origin/branch ... branch (local vs self remote) |
+| `supp diff -a` | default branch ... current branch (explicit) |
+| `supp diff -a -b develop` | develop ... current branch |
 
 ## Example output
 

@@ -19,7 +19,7 @@ pub struct Cli {
     pub paths: Vec<String>,
 
     /// Strip comments and collapse blank lines
-    #[arg(short = 's', long, global = true)]
+    #[arg(long, global = true)]
     pub slim: bool,
 
     /// Extract only signatures and definitions (codemap)
@@ -40,37 +40,33 @@ pub enum Commands {
         /// Path or registered repo name (defaults to '.')
         path: Option<String>,
 
-        /// Only diff staged (cached) files
-        #[arg(short = 'c', long)]
-        cached: bool,
-
-        /// Only diff untracked files
+        /// Untracked files only
         #[arg(short = 'u', long)]
         untracked: bool,
 
-        /// Only diff local (unstaged) changes
+        /// Unstaged changes to tracked files
+        #[arg(short = 't', long)]
+        tracked: bool,
+
+        /// Staged changes only
+        #[arg(short = 's', long)]
+        staged: bool,
+
+        /// All local changes vs self branch remote
         #[arg(short = 'l', long)]
         local: bool,
 
-        /// Branch to target for remote comparison (default: current branch)
-        #[arg(short = 'b', long)]
-        branch: Option<String>,
-
-        /// Combine all local changes (untracked + staged + unstaged)
+        /// All branch changes vs remote default main (default behavior)
         #[arg(short = 'a', long)]
         all: bool,
 
-        /// Compare current branch against its own remote (origin/<branch>)
-        #[arg(short = 'S', long)]
-        self_branch: bool,
+        /// Branch to compare to (used with -a)
+        #[arg(short = 'b', long)]
+        branch: Option<String>,
 
         /// Number of context lines in unified diff output
         #[arg(short = 'U', long = "unified")]
         context_lines: Option<u32>,
-
-        /// Glob pattern to filter files (e.g. "*.rs")
-        #[arg(short = 'f', long = "filter")]
-        filter: Option<String>,
 
     },
     Tree {
@@ -226,19 +222,28 @@ mod tests {
     // ── Diff flags ───────────────────────────────────────────────
 
     #[test]
-    fn diff_cached() {
-        let cli = parse(&["supp", "diff", "-c"]).unwrap();
+    fn diff_untracked() {
+        let cli = parse(&["supp", "diff", "-u"]).unwrap();
         match cli.command {
-            Some(Commands::Diff { cached, .. }) => assert!(cached),
+            Some(Commands::Diff { untracked, .. }) => assert!(untracked),
             _ => panic!("expected diff"),
         }
     }
 
     #[test]
-    fn diff_untracked() {
-        let cli = parse(&["supp", "diff", "-u"]).unwrap();
+    fn diff_tracked() {
+        let cli = parse(&["supp", "diff", "-t"]).unwrap();
         match cli.command {
-            Some(Commands::Diff { untracked, .. }) => assert!(untracked),
+            Some(Commands::Diff { tracked, .. }) => assert!(tracked),
+            _ => panic!("expected diff"),
+        }
+    }
+
+    #[test]
+    fn diff_staged() {
+        let cli = parse(&["supp", "diff", "-s"]).unwrap();
+        match cli.command {
+            Some(Commands::Diff { staged, .. }) => assert!(staged),
             _ => panic!("expected diff"),
         }
     }
@@ -262,15 +267,6 @@ mod tests {
     }
 
     #[test]
-    fn diff_self_branch() {
-        let cli = parse(&["supp", "diff", "-S"]).unwrap();
-        match cli.command {
-            Some(Commands::Diff { self_branch, .. }) => assert!(self_branch),
-            _ => panic!("expected diff"),
-        }
-    }
-
-    #[test]
     fn diff_branch() {
         let cli = parse(&["supp", "diff", "-b", "develop"]).unwrap();
         match cli.command {
@@ -284,15 +280,6 @@ mod tests {
         let cli = parse(&["supp", "diff", "-U", "5"]).unwrap();
         match cli.command {
             Some(Commands::Diff { context_lines, .. }) => assert_eq!(context_lines, Some(5)),
-            _ => panic!("expected diff"),
-        }
-    }
-
-    #[test]
-    fn diff_filter() {
-        let cli = parse(&["supp", "diff", "-f", "*.rs"]).unwrap();
-        match cli.command {
-            Some(Commands::Diff { filter, .. }) => assert_eq!(filter.as_deref(), Some("*.rs")),
             _ => panic!("expected diff"),
         }
     }
@@ -413,13 +400,13 @@ mod tests {
 
     #[test]
     fn combined_global_and_diff_flags() {
-        let cli = parse(&["supp", "diff", "-n", "--no-color", "-c", "-f", "*.rs"]).unwrap();
+        let cli = parse(&["supp", "diff", "-n", "--no-color", "-s", "-r", r"\.rs$"]).unwrap();
         assert!(cli.no_copy);
         assert!(cli.no_color);
+        assert_eq!(cli.regex.as_deref(), Some(r"\.rs$"));
         match cli.command {
-            Some(Commands::Diff { cached, filter, .. }) => {
-                assert!(cached);
-                assert_eq!(filter.as_deref(), Some("*.rs"));
+            Some(Commands::Diff { staged, .. }) => {
+                assert!(staged);
             }
             _ => panic!("expected diff"),
         }
