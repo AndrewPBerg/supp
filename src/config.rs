@@ -12,6 +12,7 @@ pub struct Config {
 pub struct GlobalConfig {
     pub no_copy: bool,
     pub no_color: bool,
+    pub json: bool,
     pub depth: usize,
     pub mode: String,
 }
@@ -38,6 +39,7 @@ impl Default for GlobalConfig {
         Self {
             no_copy: false,
             no_color: false,
+            json: false,
             depth: 2,
             mode: "full".to_string(),
         }
@@ -81,6 +83,7 @@ mod tests {
         let config = Config::default();
         assert!(!config.global.no_copy);
         assert!(!config.global.no_color);
+        assert!(!config.global.json);
         assert_eq!(config.global.depth, 2);
         assert_eq!(config.global.mode, "full");
         assert_eq!(config.diff.context_lines, 3);

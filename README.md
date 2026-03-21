@@ -64,6 +64,7 @@ Add `-n` to any command to print output without copying to clipboard.
 | Flag | Short | Description |
 |------|-------|-------------|
 | `--no-copy` | `-n` | Print only, skip clipboard |
+| `--json` | | Output as JSON (machine-readable) |
 | `--regex` | `-r` | Filter paths by regex |
 | `--slim` | | Strip comments, collapse blanks |
 | `--map` | `-m` | Signatures and definitions only |
@@ -100,15 +101,13 @@ The cache is scoped to each project root (the directory you pass to supp). Diffe
 ## Shell completions
 
 ```sh
-# Bash — add to ~/.bashrc
-eval "$(supp completions bash)"
+# Bash
+echo 'eval "$(supp completions bash)"' >> ~/.bashrc
 
-# Zsh — add to ~/.zshrc
-eval "$(supp completions zsh)"
+# Zsh
+echo 'eval "$(supp completions zsh)"' >> ~/.zshrc
 
-# Fish — run once
-supp completions fish | source
-# Or persist:
+# Fish
 supp completions fish > ~/.config/fish/completions/supp.fish
 ```
 

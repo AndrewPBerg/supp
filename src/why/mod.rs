@@ -7,6 +7,7 @@ pub(crate) mod hierarchy;
 pub(crate) mod imports;
 
 use anyhow::Result;
+use serde::Serialize;
 
 use crate::compress::{self, Lang};
 use crate::symbol::{self, SearchResult, Symbol, SymbolKind};
@@ -19,6 +20,7 @@ pub(crate) use imports::{extract_file_imports, resolve_relative_import};
 
 // ── Result types ────────────────────────────────────────────────────
 
+#[derive(Serialize)]
 pub struct WhyResult {
     pub symbol: Symbol,
     pub doc_comment: Option<String>,
@@ -29,6 +31,7 @@ pub struct WhyResult {
     pub plain: String,
 }
 
+#[derive(Serialize)]
 pub struct CallSite {
     pub file: String,
     pub line: usize,
@@ -36,6 +39,7 @@ pub struct CallSite {
     pub caller: Option<String>,
 }
 
+#[derive(Serialize)]
 pub struct Dependency {
     pub name: String,
     pub kind: Option<SymbolKind>,
@@ -43,11 +47,13 @@ pub struct Dependency {
     pub import_from: Option<String>,       // module path if imported
 }
 
+#[derive(Serialize)]
 pub struct Hierarchy {
     pub parents: Vec<HierarchyEntry>,
     pub children: Vec<HierarchyEntry>,
 }
 
+#[derive(Serialize)]
 pub struct HierarchyEntry {
     pub name: String,
     pub location: Option<(String, usize)>,

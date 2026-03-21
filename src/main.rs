@@ -11,6 +11,8 @@ mod symbol;
 mod tree;
 mod why;
 
+use std::io::IsTerminal;
+
 use clap::Parser;
 use colored::Colorize;
 
@@ -29,11 +31,14 @@ fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    if cli.resolve_no_color(&config) {
+    let json = cli.resolve_json(&config);
+    let piped = !std::io::stdout().is_terminal();
+
+    if cli.resolve_no_color(&config) || json || piped {
         colored::control::set_override(false);
     }
 
-    let no_copy = cli.resolve_no_copy(&config);
+    let no_copy = json || piped || cli.resolve_no_copy(&config);
     let max_untracked_size = config.limits.max_untracked_file_size_mb * 1024 * 1024;
     let max_files = config.limits.max_files;
     let max_total_bytes = config.limits.max_total_mb * 1024 * 1024;
@@ -46,12 +51,20 @@ fn main() -> anyhow::Result<()> {
         }
         Some(Commands::Sym { ref query }) => {
             let result = symbol::search(".", query)?;
-            styles::print_sym_results(&result, no_copy, start);
+            if json {
+                println!("{}", serde_json::to_string_pretty(&result)?);
+            } else {
+                styles::print_sym_results(&result, no_copy, start);
+            }
             return Ok(());
         }
         Some(Commands::Why { ref query }) => {
             let result = why::explain(".", query)?;
-            styles::print_why_result(&result, no_copy, start);
+            if json {
+                println!("{}", serde_json::to_string_pretty(&result)?);
+            } else {
+                styles::print_why_result(&result, no_copy, start);
+            }
             return Ok(());
         }
         Some(Commands::Mcp) => {
@@ -108,7 +121,11 @@ fn main() -> anyhow::Result<()> {
                 max_untracked_size,
             };
             let result = get_diff(repo_path, opts, cli.regex.as_deref())?;
-            styles::print_diff_result(result, no_copy, start);
+            if json {
+                println!("{}", serde_json::to_string_pretty(&result)?);
+            } else {
+                styles::print_diff_result(result, no_copy, start);
+            }
         }
         Some(Commands::Pick { ref path, single }) => {
             let root = path.as_deref().unwrap_or(".");
@@ -144,8 +161,12 @@ fn main() -> anyhow::Result<()> {
                 max_files,
                 max_total_bytes,
             )?;
-            println!("{}", selected.join(" "));
-            styles::print_pick_stats(&result, no_copy, pick_start);
+            if json {
+                println!("{}", serde_json::to_string_pretty(&result)?);
+            } else {
+                println!("{}", selected.join(" "));
+                styles::print_pick_stats(&result, no_copy, pick_start);
+            }
             return Ok(());
         }
         Some(Commands::Tree {
@@ -165,7 +186,11 @@ fn main() -> anyhow::Result<()> {
                 .as_ref()
                 .map(|(map, prefix)| (map, prefix.as_str()));
             let result = tree::build_tree(root, depth, cli.regex.as_deref(), status_ref)?;
-            styles::print_tree_result(result, root, no_copy, start);
+            if json {
+                println!("{}", serde_json::to_string_pretty(&result)?);
+            } else {
+                styles::print_tree_result(result, root, no_copy, start);
+            }
         }
         None => {
             let mode = cli.resolve_mode(&config);
@@ -206,7 +231,11 @@ fn main() -> anyhow::Result<()> {
                     max_files,
                     max_total_bytes,
                 )?;
-                styles::print_ctx_result(&result, no_copy, start);
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&result)?);
+                } else {
+                    styles::print_ctx_result(&result, no_copy, start);
+                }
             } else if paths.len() == 1 && std::path::Path::new(&paths[0]).is_file() {
                 let depth = cli.resolve_depth(&config);
                 let result = ctx::analyze(
@@ -218,7 +247,11 @@ fn main() -> anyhow::Result<()> {
                     max_files,
                     max_total_bytes,
                 )?;
-                styles::print_ctx_result(&result, no_copy, start);
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&result)?);
+                } else {
+                    styles::print_ctx_result(&result, no_copy, start);
+                }
             } else {
                 let depth = cli.resolve_depth(&config);
                 let result = ctx::analyze(
@@ -230,7 +263,11 @@ fn main() -> anyhow::Result<()> {
                     max_files,
                     max_total_bytes,
                 )?;
-                styles::print_context_result(&result, no_copy, start);
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&result)?);
+                } else {
+                    styles::print_context_result(&result, no_copy, start);
+                }
             }
         }
         Some(

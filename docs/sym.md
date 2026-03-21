@@ -14,6 +14,7 @@ supp [-n] sym <query...>
 |------|-------|-------------|
 | `--no-copy` | `-n` | Show results only, skip clipboard copy |
 | `--no-color` | | Disable colored output |
+| `--json` | | Output as JSON (machine-readable) |
 
 ## How it works
 

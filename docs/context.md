@@ -14,6 +14,7 @@ supp [-n] <paths...> [OPTIONS]
 |------|-------|-------------|
 | `--no-copy` | `-n` | Print context only, skip clipboard copy |
 | `--no-color` | | Disable colored output |
+| `--json` | | Output as JSON (machine-readable) |
 | `--regex` | `-r` | Regex pattern to filter file paths |
 | `--depth` | `-d` | Tree depth in context header (default: 2, configurable) |
 | `--slim` | | Strip comments and collapse blank lines |

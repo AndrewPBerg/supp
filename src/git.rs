@@ -4,8 +4,9 @@ use std::process::Command;
 use std::sync::mpsc;
 
 use anyhow::{Result, anyhow};
+use serde::Serialize;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 pub enum FileStatus {
     Modified,
     Added,
@@ -14,7 +15,7 @@ pub enum FileStatus {
     Untracked,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 pub enum DeltaStatus {
     Added,
     Deleted,
@@ -50,6 +51,7 @@ impl Default for DiffOptions {
     }
 }
 
+#[derive(Serialize)]
 pub struct FileEntry {
     pub path: String,
     pub old_path: Option<String>,
@@ -59,6 +61,7 @@ pub struct FileEntry {
     pub patch: String,
 }
 
+#[derive(Serialize)]
 pub struct DiffResult {
     pub label: String,
     pub files: Vec<FileEntry>,
@@ -66,6 +69,7 @@ pub struct DiffResult {
     pub has_conflicts: bool,
     pub is_branch_comparison: bool,
     pub commit_count: Option<usize>,
+    #[serde(skip)]
     pub stale_check: Option<mpsc::Receiver<bool>>,
 }
 

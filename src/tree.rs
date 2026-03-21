@@ -6,6 +6,8 @@ use ignore::WalkBuilder;
 use regex::Regex;
 use std::path::Path;
 
+use serde::Serialize;
+
 use crate::git::FileStatus;
 use crate::styles::file_status_indicator;
 
@@ -16,6 +18,7 @@ struct TreeNode {
     children: Vec<TreeNode>,
 }
 
+#[derive(Serialize)]
 pub struct TreeResult {
     pub display: String,
     pub plain: String,

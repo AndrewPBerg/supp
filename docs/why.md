@@ -14,6 +14,7 @@ supp [-n] why <symbol...>
 |------|-------|-------------|
 | `--no-copy` | `-n` | Show results only, skip clipboard copy |
 | `--no-color` | | Disable colored output |
+| `--json` | | Output as JSON (machine-readable) |
 
 ## What it extracts
 

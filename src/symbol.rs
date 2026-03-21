@@ -57,6 +57,7 @@ pub struct Symbol {
     pub keywords: Vec<String>,
 }
 
+#[derive(Serialize)]
 pub struct SearchResult {
     // add comments here
     pub matches: Vec<(Symbol, f64)>,

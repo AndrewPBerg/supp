@@ -19,10 +19,7 @@
 - [x] Regex file filtering (`-r`) — works globally across context, diff, pick, tree
 - [x] Claude Code skills — `/project:diff`, `/project:ctx`, `/project:why`, `/project:sym`, `/project:tree`
 - [x] MCP server (`supp mcp`) — 6 tools over stdio for autonomous AI context gathering
-## Next
-
 - [x] Incremental `why` — reuse cached symbol index, skip unchanged files
-- [ ] `supp why --json` — machine-readable output for editor/IDE integrations
-- [ ] `supp sym --kind fn` — filter symbol search by kind (fn, class, trait, etc.)
+- [x] `--json` flag — machine-readable JSON output across all commands for editor/IDE integrations
 - [x] Smarter hierarchy — multi-level inheritance chains, mixin/trait resolution
-- [ ] Pipe-friendly output — detect `| pipe` and skip color/clipboard automatically
+- [x] Pipe-friendly output — detect `| pipe` and skip color/clipboard automatically

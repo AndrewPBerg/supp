@@ -6,6 +6,8 @@ use ignore::WalkBuilder;
 use rayon::prelude::*;
 use regex::Regex;
 
+use serde::Serialize;
+
 use crate::compress::{self, Mode};
 use crate::symbol::{self, Symbol, SymbolKind};
 use crate::tree;
@@ -13,6 +15,7 @@ use crate::why;
 
 // ── Result type ─────────────────────────────────────────────────────
 
+#[derive(Serialize)]
 pub struct AnalysisResult {
     pub plain: String,
     pub file_count: usize,

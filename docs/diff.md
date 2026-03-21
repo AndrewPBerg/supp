@@ -14,6 +14,7 @@ supp [-n] diff [PATH] [OPTIONS]
 |------|-------|-------------|
 | `--no-copy` | `-n` | Show stats only, skip clipboard copy |
 | `--no-color` | | Disable colored output |
+| `--json` | | Output as JSON (machine-readable) |
 | `--regex` | `-r` | Regex pattern to filter file paths |
 | `--slim` | | Strip comments and collapse blank lines |
 | `--map` | `-m` | Extract only signatures and definitions (codemap) |

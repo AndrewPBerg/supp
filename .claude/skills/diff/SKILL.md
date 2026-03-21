@@ -7,5 +7,5 @@ user_invocable: true
 Show the user the output of the following command:
 
 ```
-supp diff --no-copy --no-color $ARGUMENTS
+supp diff --no-copy --no-color --json $ARGUMENTS
 ```

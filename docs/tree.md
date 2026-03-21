@@ -14,6 +14,7 @@ supp [-n] tree [PATH] [OPTIONS]
 |------|-------|-------------|
 | `--no-copy` | `-n` | Show tree only, skip clipboard copy |
 | `--no-color` | | Disable colored output |
+| `--json` | | Output as JSON (machine-readable) |
 | `--regex` | `-r` | Regex pattern to filter file paths |
 
 ## Options

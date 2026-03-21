@@ -14,6 +14,10 @@ pub struct Cli {
     #[arg(long = "no-color", global = true)]
     pub no_color: bool,
 
+    /// Output as JSON (machine-readable)
+    #[arg(long, global = true)]
+    pub json: bool,
+
     /// Regex pattern to filter file paths (e.g. "src/.*\.rs$")
     #[arg(short = 'r', long = "regex", global = true)]
     pub regex: Option<String>,
@@ -39,6 +43,7 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Commands {
+    /// Structured diff between branches or working tree
     Diff {
         /// Path or registered repo name (defaults to '.')
         path: Option<String>,
@@ -71,6 +76,7 @@ pub enum Commands {
         #[arg(short = 'U', long = "unified")]
         context_lines: Option<u32>,
     },
+    /// Directory tree with git status markers
     Tree {
         /// Directory to display (defaults to ".")
         path: Option<String>,
@@ -135,6 +141,10 @@ impl Cli {
 
     pub fn resolve_no_color(&self, config: &crate::config::Config) -> bool {
         self.no_color || config.global.no_color
+    }
+
+    pub fn resolve_json(&self, config: &crate::config::Config) -> bool {
+        self.json || config.global.json
     }
 
     pub fn resolve_mode(&self, config: &crate::config::Config) -> crate::compress::Mode {
