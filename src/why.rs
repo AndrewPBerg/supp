@@ -697,7 +697,7 @@ fn collect_header_decl_names(node: tree_sitter::Node, content: &str, names: &mut
 
 fn find_c_decl_name(node: tree_sitter::Node, content: &str) -> Option<String> {
     match node.kind() {
-        "identifier" => Some(compress::node_text(content, node).to_string()),
+        "identifier" | "type_identifier" => Some(compress::node_text(content, node).to_string()),
         "function_declarator" | "pointer_declarator" | "array_declarator" | "init_declarator" => {
             if let Some(decl) = node.child_by_field_name("declarator") {
                 return find_c_decl_name(decl, content);
@@ -2786,15 +2786,7 @@ export function Counter() {
             ("main.c", "#include \"types.h\"\nint main() { return 0; }\n"),
         ]);
         let content = std::fs::read_to_string(dir.path().join("main.c")).unwrap();
-        eprintln!("content={content:?}");
-        eprintln!("root={:?}", dir.path());
-        eprintln!("types.h exists={}", dir.path().join("types.h").exists());
-        let header_content = std::fs::read_to_string(dir.path().join("types.h")).unwrap();
-        eprintln!("header_content={header_content:?}");
-        let syms = scan_header_symbols(&header_content, "types.h");
-        eprintln!("header_syms={syms:?}");
         let imports = extract_file_imports(&content, "main.c", dir.path());
-        eprintln!("imports={imports:?}");
         assert!(imports.contains_key("Point"), "imports={imports:?}");
     }
 

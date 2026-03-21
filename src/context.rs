@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 
 use anyhow::{Result, bail};
 use ignore::WalkBuilder;
@@ -70,24 +70,25 @@ pub fn generate_context(
         bail!("no files matched the given paths/filters");
     }
 
-    // Concurrent reads: (path, compressed_content, original_byte_len)
-    let results: Arc<Mutex<Vec<(String, String, usize)>>> = Arc::new(Mutex::new(Vec::new()));
+    // Concurrent reads: (path, compressed_content, original_content)
+    let need_originals = mode != Mode::Full;
+    let results: Mutex<Vec<(String, String, String)>> = Mutex::new(Vec::new());
     std::thread::scope(|s| {
         for fp in &file_paths {
-            let results = Arc::clone(&results);
+            let results = &results;
             let fp = fp.clone();
             s.spawn(move || {
                 if let Ok(content) = std::fs::read_to_string(&fp) {
-                    let original_len = content.len();
                     let compressed = compress::compress(&content, &fp, mode);
-                    results.lock().unwrap().push((fp, compressed, original_len));
+                    let original = if need_originals { content } else { String::new() };
+                    results.lock().unwrap().push((fp, compressed, original));
                 }
             });
         }
     });
 
     // Sort by original order
-    let mut read_files = Arc::try_unwrap(results).unwrap().into_inner().unwrap();
+    let mut read_files = results.into_inner().unwrap();
     let order: std::collections::HashMap<&str, usize> = file_paths
         .iter()
         .enumerate()
@@ -96,9 +97,11 @@ pub fn generate_context(
     read_files.sort_by_key(|(p, _, _)| order.get(p.as_str()).copied().unwrap_or(usize::MAX));
 
     let file_count = read_files.len();
-    let original_bytes: usize = read_files.iter().map(|(_, _, orig)| orig).sum();
+    let original_bytes: usize = read_files.iter().map(|(_, _, orig)| if orig.is_empty() { 0 } else { orig.len() }).sum();
     let total_bytes: usize = read_files.iter().map(|(_, c, _)| c.len()).sum();
     let total_lines: usize = read_files.iter().map(|(_, c, _)| c.lines().count()).sum();
+    // In full mode, original_bytes == total_bytes (content == compressed)
+    let original_bytes = if need_originals { original_bytes } else { total_bytes };
 
     // Assemble plain output
     let mut plain = String::new();
@@ -170,8 +173,8 @@ pub fn generate_context(
 
     plain.push_str("</documents>\n");
 
-    // Symbol index + dependency analysis (slim and map modes)
-    if mode != Mode::Full {
+    // Symbol index + dependency analysis
+    {
         let included: std::collections::HashSet<&str> =
             read_files.iter().map(|(p, _, _)| p.as_str()).collect();
 
@@ -227,14 +230,13 @@ pub fn generate_context(
             }
         }
 
-        // Import / dependency analysis per included file
+        // Import / dependency analysis per included file (reuse already-read content)
         let mut all_imports: Vec<(String, Vec<(String, String, Option<String>)>)> = Vec::new();
-        for (path, _, _) in &read_files {
-            let abs = root_path.join(path);
-            let content = match std::fs::read_to_string(&abs) {
-                Ok(c) => c,
-                Err(_) => continue,
-            };
+        for (path, _, original) in &read_files {
+            if original.is_empty() {
+                continue;
+            }
+            let content = original;
             let rel = path.as_str();
             let imports = why::extract_file_imports(&content, rel, &root_path);
             if imports.is_empty() {

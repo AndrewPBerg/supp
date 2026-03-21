@@ -23,7 +23,7 @@ pub struct Cli {
     pub slim: bool,
 
     /// Extract only signatures and definitions (codemap)
-    #[arg(short = 'M', long, global = true, conflicts_with = "slim")]
+    #[arg(short = 'm', long, global = true, conflicts_with = "slim")]
     pub map: bool,
 
     /// Tree depth in context header (default: 2)

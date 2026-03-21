@@ -26,15 +26,35 @@ fn main() -> anyhow::Result<()> {
         colored::control::set_override(false);
     }
 
+    let no_copy = cli.resolve_no_copy(&config);
+    let max_untracked_size = config.limits.max_untracked_file_size_mb * 1024 * 1024;
+
+    // Commands that don't need token counting — handle early without spawning the thread
+    match cli.command {
+        Some(Commands::Completions { shell }) => {
+            Cli::generate_completions(shell);
+            return Ok(());
+        }
+        Some(Commands::Sym { ref query }) => {
+            let result = symbol::search(".", query)?;
+            styles::print_sym_results(&result, no_copy, start);
+            return Ok(());
+        }
+        Some(Commands::Why { ref query }) => {
+            let result = why::explain(".", query)?;
+            styles::print_why_result(&result, no_copy, start);
+            return Ok(());
+        }
+        _ => {}
+    }
+
+    // Spawn token-counting thread only for commands that use it
     let (text_tx, text_rx) = std::sync::mpsc::channel::<String>();
     let token_handle = std::thread::spawn(move || {
         let bpe = tiktoken_rs::cl100k_base().ok()?;
         let text: String = text_rx.recv().ok()?;
         Some(bpe.encode_with_special_tokens(&text).len())
     });
-
-    let no_copy = cli.resolve_no_copy(&config);
-    let max_untracked_size = config.limits.max_untracked_file_size_mb * 1024 * 1024;
 
     match cli.command {
         Some(Commands::Diff {
@@ -63,20 +83,6 @@ fn main() -> anyhow::Result<()> {
             let result = get_diff(repo_path, opts, cli.regex.as_deref())?;
             let _ = text_tx.send(result.text.clone());
             styles::print_diff_result(result, no_copy, start, token_handle);
-        }
-        Some(Commands::Completions { shell }) => {
-            Cli::generate_completions(shell);
-            return Ok(());
-        }
-        Some(Commands::Sym { ref query }) => {
-            let result = symbol::search(".", query)?;
-            styles::print_sym_results(&result, no_copy, start);
-            return Ok(());
-        }
-        Some(Commands::Why { ref query }) => {
-            let result = why::explain(".", query)?;
-            styles::print_why_result(&result, no_copy, start);
-            return Ok(());
         }
         Some(Commands::Pick { ref path, single }) => {
             let root = path.as_deref().unwrap_or(".");
@@ -110,7 +116,6 @@ fn main() -> anyhow::Result<()> {
         None => {
             let mode = cli.resolve_mode(&config);
             if cli.paths.is_empty() {
-                // No paths: launch fzf picker → ctx analysis
                 let selected = pick::run_fzf(".", false, cli.regex.as_deref(), config.pick.preview_lines)?;
                 if selected.is_empty() {
                     return Ok(());
@@ -120,17 +125,18 @@ fn main() -> anyhow::Result<()> {
                 let _ = text_tx.send(result.plain.clone());
                 styles::print_ctx_result(&result, no_copy, start, token_handle);
             } else if cli.paths.len() == 1 && std::path::Path::new(&cli.paths[0]).is_file() {
-                // Single file: ctx analysis
                 let result = ctx::analyze(".", &cli.paths[0], mode)?;
                 let _ = text_tx.send(result.plain.clone());
                 styles::print_ctx_result(&result, no_copy, start, token_handle);
             } else {
-                // Multiple paths or directories: original context dump
                 let depth = cli.resolve_depth(&config);
                 let result = context::generate_context(&cli.paths, depth, cli.regex.as_deref(), mode)?;
                 let _ = text_tx.send(result.plain.clone());
                 styles::print_context_result(result, no_copy, start, token_handle);
             }
+        }
+        Some(Commands::Completions { .. } | Commands::Sym { .. } | Commands::Why { .. }) => {
+            unreachable!()
         }
     }
     Ok(())

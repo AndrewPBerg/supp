@@ -1,14 +1,17 @@
 # Examples
 
-The `examples/` directory contains a mini project-management app implemented in 6 languages. Every language dir has the same domain — users, projects, tasks — so you can compare how supp handles each one.
+The `examples/` directory contains demo projects in 8 languages. The `go/`, `java/`, `javascript/`, `python/`, `rust/`, and `typescript/` dirs share the same domain (users, projects, tasks) so you can compare across languages. The `tsx/` and `c/`/`cpp/` dirs showcase React components and header/source pairing.
 
 ```
 examples/
+├── c/            # typedef structs, #include header/source pairing
+├── cpp/          # class hierarchy (: public Base), out-of-class methods (Foo::bar)
 ├── go/           # structs, interfaces, // doc comments
 ├── java/         # class hierarchy, extends/implements, Javadoc
 ├── javascript/   # functions, require() imports, JSDoc
 ├── python/       # dataclass hierarchy, """docstrings""", from/import
 ├── rust/         # traits, structs, /// doc comments, use imports
+├── tsx/          # React components, props interfaces, hooks, JSX refs
 └── typescript/   # interfaces, generics, abstract classes, ES imports
 ```
 
@@ -161,6 +164,69 @@ supp why User
 
 Shows the `extends BaseEntity implements Validatable` hierarchy, Javadoc, and cross-file usage in `ProjectService.java`.
 
+### TSX React component
+
+```bash
+supp why Button
+```
+
+Arrow function components are indexed. Shows props interface (`ButtonProps`) as a dependency, `useState` as an external React hook, and JSX usage sites:
+
+```
+  Depends on 2 symbols
+    if ButtonProps  examples/tsx/types.tsx:2
+    -- useState  (react)
+```
+
+```bash
+supp why App
+```
+
+Full component graph: `useAuth` (custom hook) → project, `UserCard` (JSX element) → project, `useState`/`useEffect` → external:
+
+```
+  Depends on 5 symbols
+    if AppProps   examples/tsx/types.tsx:18
+    fn UserCard   examples/tsx/UserCard.tsx:5
+    fn useAuth    examples/tsx/hooks.tsx:4
+    -- useEffect  (react)
+    -- useState   (react)
+```
+
+### C header/source pairing
+
+```bash
+supp why circle_area
+```
+
+The function is defined in `shapes.c` and declared in `shapes.h`. Both the declaration and all call sites in `main.c` are found. Dependencies from `#include`d headers (like `Circle`, `Point`) are resolved.
+
+### C++ class hierarchy
+
+```bash
+supp why Shape
+```
+
+Shows the abstract base class with its children found via `: public Shape`:
+
+```
+  Children
+    v Circle  examples/cpp/include/circle.hpp:7
+    v Rect    examples/cpp/include/rect.hpp:7
+```
+
+```bash
+supp why Circle
+```
+
+Shows parent `Shape`, the full class declaration from the header, and all out-of-class method definitions (`Circle::area()`, `Circle::perimeter()`, etc.) as call sites.
+
+```bash
+supp why area
+```
+
+Picks `Circle::area` — the out-of-class method definition. Shows `parent: Circle` and cross-file references in the header and `main.cpp`.
+
 ## Combining commands
 
 ```bash
@@ -169,6 +235,12 @@ supp why $(supp pick -s examples/java/)
 
 # Generate slim context for just the Python layer
 supp --slim examples/python/
+
+# React component context — just the TSX files
+supp -r '\.tsx$' examples/tsx/
+
+# C++ codemap — signatures only
+supp --map examples/cpp/
 
 # Diff your changes, filtered to examples only
 supp diff -f "examples/*"

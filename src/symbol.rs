@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 use std::time::SystemTime;
 
 use anyhow::Result;
@@ -138,18 +138,17 @@ fn build_index(root: &Path) -> (Vec<Symbol>, Vec<f64>) {
     let files = collect_files(root);
 
     // Parse files in parallel
-    let results: Arc<Mutex<Vec<(String, Vec<Symbol>, Vec<String>)>>> =
-        Arc::new(Mutex::new(Vec::new()));
+    let results: Mutex<Vec<(String, Vec<Symbol>, Vec<String>)>> = Mutex::new(Vec::new());
 
     std::thread::scope(|s| {
         for (abs_path, rel_path) in &files {
-            let results = Arc::clone(&results);
+            let results = &results;
             let abs = abs_path.clone();
             let rel = rel_path.clone();
             s.spawn(move || {
                 let content = match std::fs::read_to_string(&abs) {
                     Ok(c) => c,
-                    Err(_) => return, // skip binary/unreadable files
+                    Err(_) => return,
                 };
 
                 if let Some(lang) = compress::detect_lang(&rel) {
@@ -182,7 +181,7 @@ fn build_index(root: &Path) -> (Vec<Symbol>, Vec<f64>) {
         }
     });
 
-    let mut all_results = Arc::try_unwrap(results).unwrap().into_inner().unwrap();
+    let mut all_results = results.into_inner().unwrap();
     all_results.sort_by(|a, b| a.0.cmp(&b.0));
 
     let mut symbols: Vec<Symbol> = Vec::new();

@@ -19,7 +19,7 @@ supp [-n] why <symbol...>
 
 | Section | Description |
 |---------|-------------|
-| **Doc comment** | Language-aware: Python `"""docstrings"""`, Rust `///`, Go `//`, Java/JS/TS `/** */` |
+| **Doc comment** | Language-aware: Python `"""docstrings"""`, Rust `///`, Go/C/C++ `//`, Java/JS/TS `/** */` |
 | **Full definition** | Complete source text of the symbol (not just the signature) |
 | **Hierarchy** | For classes/structs: parent classes and child classes found in the project |
 | **Call sites** | Every file + line where the symbol is referenced, with caller context |
@@ -33,8 +33,24 @@ supp [-n] why <symbol...>
 4. Scans all project files for references (excluding the definition itself)
 5. Collects identifiers from the definition body and resolves them against:
    - The project symbol index
-   - File-level imports (Python `from/import`, Rust `use`, JS/TS `import`)
+   - File-level imports (Python `from/import`, Rust `use`, JS/TS `import`, C/C++ `#include`)
 6. For classes/structs, finds parent and child classes via AST and signature analysis
+
+### TSX/JSX component awareness
+
+- Arrow function components (`const Button = () => { ... }`) are indexed and searchable
+- Props interfaces are detected as dependencies (e.g. `ButtonProps` in `({ label }: ButtonProps)`)
+- JSX element usage (`<UserCard />`) is tracked as both a call site and a dependency
+- React hooks (`useState`, `useEffect`) show as external dependencies from `react`
+- Custom hooks (`useAuth`) resolve to their project definition
+
+### C/C++ support
+
+- `#include "file.h"` is resolved relative to the file, project root, and `include/` directories
+- Symbols declared in included headers are mapped as dependencies
+- `#include <stdlib.h>` system includes are shown as external dependencies
+- C++ class hierarchy via `: public Base` is fully supported (parents + children)
+- Out-of-class method definitions (`Foo::bar()`) link back to their class
 
 Everything is formatted and copied to the clipboard as structured context for an LLM.
 
@@ -123,3 +139,57 @@ supp w -n MyClass
 ```
 
 External dependencies (from imports that don't resolve to project files) are shown with `--` and the module path in parentheses.
+
+### React component with hooks
+
+```
+  supp why fn Button  examples/tsx/Button.tsx:5
+  ────────────────────────────────────────
+
+  /** A styled button with click tracking. */
+
+  Button = ({ label, onClick, disabled, variant = "primary" }: ButtonProps) => {
+    const [clicks, setClicks] = useState(0);
+    ...
+  }
+
+  Referenced in 3 locations
+    examples/tsx/UserCard.tsx:2    import Button from "./Button"
+    examples/tsx/UserCard.tsx:11   {onEdit && <Button label="Edit" onClick={onEdit} />}
+    examples/tsx/Button.tsx:24    export default Button;
+
+  Dependencies  2 symbols
+    if ButtonProps  examples/tsx/types.tsx:2
+    -- useState  (react)
+```
+
+Props interfaces, JSX element references, and React hooks are all tracked automatically.
+
+### C++ class hierarchy
+
+```
+  supp why cl Shape  examples/cpp/include/shape.hpp:7
+  ────────────────────────────────────────
+
+  /** Abstract base class for all shapes. */
+
+  Children
+    v Circle  examples/cpp/include/circle.hpp:7
+    v Rect    examples/cpp/include/rect.hpp:7
+
+  class Shape {
+  public:
+      virtual ~Shape() = default;
+      virtual double area() const = 0;
+      virtual double perimeter() const = 0;
+      virtual std::string describe() const = 0;
+  }
+
+  Referenced in 4 locations
+    examples/cpp/include/circle.hpp:7   class Circle : public Shape
+    examples/cpp/include/rect.hpp:7     class Rect : public Shape
+    examples/cpp/src/main.cpp:7         void print_shape(const Shape& s)
+    examples/cpp/src/main.cpp:15        vector<unique_ptr<Shape>> shapes;
+```
+
+Out-of-class methods like `Circle::area()` show their parent class and resolve `#include` dependencies from headers.

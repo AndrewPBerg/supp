@@ -12,12 +12,12 @@
 - [x] Symbol search (`supp sym`) — PageRank-ranked symbol index across 9+ languages
 - [x] Symbol deep-dive (`supp why`) — full definition, doc comments, call sites, deps, hierarchy
 - [x] Multi-language examples directory for testing and demos
+- [x] TSX/JSX component-aware `why` — props interfaces, hook dependencies, JSX element tracking
+- [x] C/C++ support for `why` — `#include` tracking, header/source pairing, class hierarchy, scope-qualified methods
 
 ## Next
 
 - [ ] `supp ctx` — fzf-powered single-file context (pick → context in one step)
-- [ ] TSX/JSX component-aware `why` — props interfaces, hook dependencies
-- [ ] C/C++ support for `why` — `#include` tracking, header/source pairing
 - [ ] Incremental `why` — reuse cached symbol index, skip unchanged files
 - [ ] `supp why --json` — machine-readable output for editor integrations
 - [ ] `supp sym --kind fn` — filter symbol search by kind (fn, class, trait, etc.)

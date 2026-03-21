@@ -473,19 +473,7 @@ pub fn print_sym_results(result: &crate::symbol::SearchResult, no_copy: bool, st
 
         for (idx, (sym, _score)) in result.matches.iter().enumerate() {
             let tag = sym.kind.tag();
-            let tag_colored = match sym.kind {
-                crate::symbol::SymbolKind::Function => tag.cyan().bold().to_string(),
-                crate::symbol::SymbolKind::Struct => tag.yellow().bold().to_string(),
-                crate::symbol::SymbolKind::Enum => tag.green().bold().to_string(),
-                crate::symbol::SymbolKind::Trait => tag.magenta().bold().to_string(),
-                crate::symbol::SymbolKind::Class => tag.yellow().bold().to_string(),
-                crate::symbol::SymbolKind::Interface => tag.magenta().bold().to_string(),
-                crate::symbol::SymbolKind::Method => tag.cyan().to_string(),
-                crate::symbol::SymbolKind::Type => tag.blue().to_string(),
-                crate::symbol::SymbolKind::Const => tag.red().to_string(),
-                crate::symbol::SymbolKind::Macro => tag.red().bold().to_string(),
-                crate::symbol::SymbolKind::File => tag.dimmed().to_string(),
-            };
+            let tag_colored = color_kind_tag(sym.kind);
 
             let location = format!("{}:{}", sym.file, sym.line);
             let name_display = if let Some(ref parent) = sym.parent {
@@ -526,36 +514,42 @@ pub fn print_sym_results(result: &crate::symbol::SearchResult, no_copy: bool, st
         format_elapsed(start.elapsed()).dimmed(),
     );
 
-    if !plain.is_empty() {
-        if no_copy {
-            println!(
-                "  {} {}",
-                "–".dimmed(),
-                "(not copied)".dimmed(),
-            );
-        } else {
-            match copy_to_clipboard(&plain) {
-                Ok(()) => {
-                    println!(
-                        "  {} {}",
-                        "✓".green().bold(),
-                        "Copied to clipboard".green(),
-                    );
-                }
-                Err(e) => {
-                    println!(
-                        "  {} {}",
-                        "✗".red().bold(),
-                        format!("Clipboard error: {}", e).red(),
-                    );
-                }
-            }
-        }
-    }
+    print_clipboard_status(&plain, no_copy);
     println!();
 }
 
 // ── Why display ─────────────────────────────────────────────────
+
+fn print_clipboard_status(text: &str, no_copy: bool) {
+    if text.is_empty() {
+        return;
+    }
+    if no_copy {
+        println!(
+            "  {} {}",
+            "–".dimmed(),
+            format!("({}, not copied)", format_size(text.len())).dimmed(),
+        );
+    } else {
+        match copy_to_clipboard(text) {
+            Ok(()) => {
+                println!(
+                    "  {} {} {}",
+                    "✓".green().bold(),
+                    "Copied to clipboard".green(),
+                    format!("({})", format_size(text.len())).dimmed(),
+                );
+            }
+            Err(e) => {
+                println!(
+                    "  {} {}",
+                    "✗".red().bold(),
+                    format!("Clipboard error: {}", e).red(),
+                );
+            }
+        }
+    }
+}
 
 fn color_kind_tag(kind: crate::symbol::SymbolKind) -> String {
     let tag = kind.tag();
@@ -690,34 +684,7 @@ pub fn print_why_result(result: &crate::why::WhyResult, no_copy: bool, start: st
 
     println!();
 
-    // Footer with clipboard
-    if !result.plain.is_empty() {
-        if no_copy {
-            println!(
-                "  {} {}",
-                "–".dimmed(),
-                format!("({}, not copied)", format_size(result.plain.len())).dimmed(),
-            );
-        } else {
-            match copy_to_clipboard(&result.plain) {
-                Ok(()) => {
-                    println!(
-                        "  {} {} {}",
-                        "✓".green().bold(),
-                        "Copied to clipboard".green(),
-                        format!("({})", format_size(result.plain.len())).dimmed(),
-                    );
-                }
-                Err(e) => {
-                    println!(
-                        "  {} {}",
-                        "✗".red().bold(),
-                        format!("Clipboard error: {}", e).red(),
-                    );
-                }
-            }
-        }
-    }
+    print_clipboard_status(&result.plain, no_copy);
     println!("  {}", format!("Done in {}", format_elapsed(start.elapsed())).dimmed());
     println!();
 }
