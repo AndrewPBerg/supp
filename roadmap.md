@@ -27,3 +27,9 @@
 ## TODO
 - [ ] Upgrade wording and prompting around supp -mapping, context, and symbols
 - [ ] make base `supp` dfeault to `.` path
+- [ ] expand README and docs around supp claude code usage
+  - [ ] define some happy paths for claude prompts to use supp w/ like
+    - [ ] "map out this codebase"
+    - [ ] "explain this function"
+    - [ ] "what do you suggest we do next, use supp"
+    - the goal is to upgrade Claude Codes context lenses to have super quick commands to read/understand fresh context
