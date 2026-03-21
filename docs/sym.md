@@ -52,7 +52,7 @@ supp s -n handler
   3 symbols
 
   ✓ Copied to clipboard (412 B)
-  ≈ ~128 tokens (cl100k est.)
+  ≈ ~128 tokens (est.)
 ```
 
 Results are sorted by relevance (PageRank score). The index is cached and rebuilt incrementally when files change.

@@ -155,10 +155,20 @@ impl SuppServer {
         Parameters(params): Parameters<CtxParams>,
     ) -> Result<CallToolResult, McpError> {
         tokio::task::spawn_blocking(move || {
+            let config = Config::load();
             let mode = parse_mode(params.mode.as_deref());
             let files = vec![params.file];
-            let result =
-                crate::ctx::analyze(".", &files, 2, None, mode).map_err(|e| err(e.to_string()))?;
+            let max_bytes = config.limits.max_total_mb * 1024 * 1024;
+            let result = crate::ctx::analyze(
+                ".",
+                &files,
+                2,
+                None,
+                mode,
+                config.limits.max_files,
+                max_bytes,
+            )
+            .map_err(|e| err(e.to_string()))?;
             Ok(CallToolResult::success(vec![Content::text(result.plain)]))
         })
         .await
@@ -257,9 +267,17 @@ impl SuppServer {
             let config = Config::load();
             let mode = parse_mode(params.mode.as_deref());
             let depth = params.depth.unwrap_or(config.global.depth);
-            let result =
-                crate::ctx::analyze(".", &params.paths, depth, params.regex.as_deref(), mode)
-                    .map_err(|e: anyhow::Error| err(e.to_string()))?;
+            let max_bytes = config.limits.max_total_mb * 1024 * 1024;
+            let result = crate::ctx::analyze(
+                ".",
+                &params.paths,
+                depth,
+                params.regex.as_deref(),
+                mode,
+                config.limits.max_files,
+                max_bytes,
+            )
+            .map_err(|e: anyhow::Error| err(e.to_string()))?;
             Ok(CallToolResult::success(vec![Content::text(result.plain)]))
         })
         .await

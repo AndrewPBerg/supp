@@ -49,12 +49,14 @@ Add `-n` to any command to print output without copying to clipboard.
 
 | Command | What it does |
 |---------|-------------|
-| `supp <paths>` | Extract file contents with token count |
+| `supp <paths>` | Extract file contents with token estimate |
 | `supp diff` | Structured diff between branches |
 | `supp tree` | Directory tree with git status markers |
 | `supp sym <query>` | Search symbols with PageRank ranking |
 | `supp why <symbol>` | Full context for a symbol |
 | `supp pick` | Interactive file picker (requires fzf) |
+| `supp clean-cache` | Delete the symbol cache for a project |
+| `supp completions <shell>` | Generate shell completions (bash, zsh, fish) |
 | `supp mcp` | Start as an MCP server |
 
 ## Useful flags
@@ -75,6 +77,40 @@ Detailed usage for each command:
 - [Diff](https://github.com/AndrewPBerg/supp/blob/main/docs/diff.md) — git diffs and modes
 - [Tree](https://github.com/AndrewPBerg/supp/blob/main/docs/tree.md) — directory tree
 - [Config](https://github.com/AndrewPBerg/supp/blob/main/docs/config.md) — configuration
+
+## Token estimation
+
+supp shows an approximate token count for all output (`≈ ~N tokens`). This uses a fast heuristic — `bytes / 3.5` — rather than running a full BPE tokenizer. For mixed code, this is typically accurate within ~10% of the true cl100k count. The tradeoff is speed: estimation is instant, while tokenization would add hundreds of milliseconds.
+
+## Symbol cache
+
+`supp sym`, `supp why`, and `supp <paths>` build a symbol index using tree-sitter. The index is cached per project at `.git/supp/sym-cache` (or `/tmp/supp-sym-<hash>` for non-git directories).
+
+On subsequent runs, supp checks file mtimes and sizes — only changed files are re-parsed. If nothing changed, the cached index is used as-is.
+
+To force a full rebuild, delete the cache:
+
+```sh
+supp clean-cache          # current directory
+supp clean-cache ~/myproj # specific project
+```
+
+The cache is scoped to each project root (the directory you pass to supp). Different projects maintain independent caches.
+
+## Shell completions
+
+```sh
+# Bash — add to ~/.bashrc
+eval "$(supp completions bash)"
+
+# Zsh — add to ~/.zshrc
+eval "$(supp completions zsh)"
+
+# Fish — run once
+supp completions fish | source
+# Or persist:
+supp completions fish > ~/.config/fish/completions/supp.fish
+```
 
 ## Managing supp
 

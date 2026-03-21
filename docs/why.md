@@ -104,7 +104,7 @@ supp w -n MyClass
     fn   merge               src/config.rs:70
 
   ✓ Copied to clipboard (1.2 KB)
-  ≈ ~384 tokens (cl100k est.)
+  ≈ ~384 tokens (est.)
   Done in 45ms
 ```
 

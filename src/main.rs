@@ -35,6 +35,8 @@ fn main() -> anyhow::Result<()> {
 
     let no_copy = cli.resolve_no_copy(&config);
     let max_untracked_size = config.limits.max_untracked_file_size_mb * 1024 * 1024;
+    let max_files = config.limits.max_files;
+    let max_total_bytes = config.limits.max_total_mb * 1024 * 1024;
 
     // Commands that don't need token counting — handle early without spawning the thread
     match cli.command {
@@ -71,16 +73,17 @@ fn main() -> anyhow::Result<()> {
             self_update::uninstall()?;
             return Ok(());
         }
+        Some(Commands::CleanCache { ref path }) => {
+            let root = path.as_deref().unwrap_or(".");
+            symbol::clean_cache(root)?;
+            eprintln!(
+                "Symbol cache deleted for {}",
+                std::fs::canonicalize(root)?.display()
+            );
+            return Ok(());
+        }
         _ => {}
     }
-
-    // Spawn token-counting thread only for commands that use it
-    let (text_tx, text_rx) = std::sync::mpsc::channel::<String>();
-    let token_handle = std::thread::spawn(move || {
-        let bpe = tiktoken_rs::cl100k_base().ok()?;
-        let text: String = text_rx.recv().ok()?;
-        Some(bpe.encode_with_special_tokens(&text).len())
-    });
 
     match cli.command {
         Some(Commands::Diff {
@@ -105,7 +108,7 @@ fn main() -> anyhow::Result<()> {
                 max_untracked_size,
             };
             let result = get_diff(repo_path, opts, cli.regex.as_deref())?;
-            styles::print_diff_result(result, no_copy, start, text_tx, token_handle);
+            styles::print_diff_result(result, no_copy, start);
         }
         Some(Commands::Pick { ref path, single }) => {
             let root = path.as_deref().unwrap_or(".");
@@ -132,9 +135,17 @@ fn main() -> anyhow::Result<()> {
             let pick_start = std::time::Instant::now();
             let depth = cli.resolve_depth(&config);
             let mode = picked_mode.unwrap_or_else(|| cli.resolve_mode(&config));
-            let result = ctx::analyze(".", &selected, depth, cli.regex.as_deref(), mode)?;
+            let result = ctx::analyze(
+                ".",
+                &selected,
+                depth,
+                cli.regex.as_deref(),
+                mode,
+                max_files,
+                max_total_bytes,
+            )?;
             println!("{}", selected.join(" "));
-            styles::print_pick_stats(&result, no_copy, pick_start, text_tx, token_handle);
+            styles::print_pick_stats(&result, no_copy, pick_start);
             return Ok(());
         }
         Some(Commands::Tree {
@@ -154,7 +165,7 @@ fn main() -> anyhow::Result<()> {
                 .as_ref()
                 .map(|(map, prefix)| (map, prefix.as_str()));
             let result = tree::build_tree(root, depth, cli.regex.as_deref(), status_ref)?;
-            styles::print_tree_result(result, root, no_copy, start, text_tx, token_handle);
+            styles::print_tree_result(result, root, no_copy, start);
         }
         None => {
             let mode = cli.resolve_mode(&config);
@@ -186,16 +197,40 @@ fn main() -> anyhow::Result<()> {
                 }
                 let file = selected.into_iter().next().unwrap();
                 let depth = cli.resolve_depth(&config);
-                let result = ctx::analyze(".", &[file], depth, cli.regex.as_deref(), mode)?;
-                styles::print_ctx_result(&result, no_copy, start, text_tx, token_handle);
+                let result = ctx::analyze(
+                    ".",
+                    &[file],
+                    depth,
+                    cli.regex.as_deref(),
+                    mode,
+                    max_files,
+                    max_total_bytes,
+                )?;
+                styles::print_ctx_result(&result, no_copy, start);
             } else if paths.len() == 1 && std::path::Path::new(&paths[0]).is_file() {
                 let depth = cli.resolve_depth(&config);
-                let result = ctx::analyze(".", &paths, depth, cli.regex.as_deref(), mode)?;
-                styles::print_ctx_result(&result, no_copy, start, text_tx, token_handle);
+                let result = ctx::analyze(
+                    ".",
+                    &paths,
+                    depth,
+                    cli.regex.as_deref(),
+                    mode,
+                    max_files,
+                    max_total_bytes,
+                )?;
+                styles::print_ctx_result(&result, no_copy, start);
             } else {
                 let depth = cli.resolve_depth(&config);
-                let result = ctx::analyze(".", &paths, depth, cli.regex.as_deref(), mode)?;
-                styles::print_context_result(&result, no_copy, start, text_tx, token_handle);
+                let result = ctx::analyze(
+                    ".",
+                    &paths,
+                    depth,
+                    cli.regex.as_deref(),
+                    mode,
+                    max_files,
+                    max_total_bytes,
+                )?;
+                styles::print_context_result(&result, no_copy, start);
             }
         }
         Some(
@@ -205,7 +240,8 @@ fn main() -> anyhow::Result<()> {
             | Commands::Mcp
             | Commands::Version
             | Commands::Update
-            | Commands::Uninstall,
+            | Commands::Uninstall
+            | Commands::CleanCache { .. },
         ) => {
             unreachable!()
         }

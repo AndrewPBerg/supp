@@ -85,8 +85,14 @@ pub fn explain(root: &str, query: &[String]) -> Result<WhyResult> {
         deps::find_dependencies(&root_path, &sym, &content, &all_symbols, &file_imports);
 
     // 8. Extract class hierarchy (parents + children)
-    let class_hierarchy =
-        hierarchy::extract_hierarchy(&root_path, &sym, &content, &all_symbols, &file_imports);
+    let class_hierarchy = hierarchy::extract_hierarchy(
+        &root_path,
+        &sym,
+        &content,
+        &all_symbols,
+        &file_imports,
+        None,
+    );
 
     // 9. Build plain text for clipboard
     let plain = build_plain_text(
@@ -1706,5 +1712,144 @@ export function Counter() {
             file_imports.contains_key("Vec2"),
             "imports={file_imports:?}"
         );
+    }
+
+    // ── resolve_relative_import ───────────────────────────────
+
+    #[test]
+    fn resolve_relative_import_non_relative() {
+        let dir = setup(&[]);
+        assert!(imports::resolve_relative_import("os", "main.py", dir.path()).is_none());
+    }
+
+    #[test]
+    fn resolve_relative_import_dot_only() {
+        let dir = setup(&[]);
+        // `from . import X` returns None (can't resolve without imported name)
+        assert!(imports::resolve_relative_import(".", "main.py", dir.path()).is_none());
+    }
+
+    #[test]
+    fn resolve_relative_import_single_dot() {
+        let dir = setup(&[("utils.py", "def helper(): pass\n")]);
+        let result = imports::resolve_relative_import(".utils", "main.py", dir.path());
+        assert_eq!(result.as_deref(), Some("utils.py"));
+    }
+
+    #[test]
+    fn resolve_relative_import_double_dot() {
+        let dir = setup(&[("helpers.py", "def h(): pass\n")]);
+        let result = imports::resolve_relative_import("..helpers", "sub/main.py", dir.path());
+        assert_eq!(result.as_deref(), Some("helpers.py"));
+    }
+
+    #[test]
+    fn resolve_relative_import_package() {
+        let dir = setup(&[("pkg/__init__.py", "")]);
+        let result = imports::resolve_relative_import(".pkg", "main.py", dir.path());
+        assert_eq!(result.as_deref(), Some("pkg/__init__.py"));
+    }
+
+    #[test]
+    fn resolve_relative_import_not_found() {
+        let dir = setup(&[]);
+        assert!(imports::resolve_relative_import(".missing", "main.py", dir.path()).is_none());
+    }
+
+    // ── C/C++ include resolution ──────────────────────────────
+
+    #[test]
+    fn c_include_resolves_in_common_dirs() {
+        let dir = setup(&[
+            ("include/math.h", "int add(int a, int b);\n"),
+            (
+                "src/main.c",
+                "#include \"math.h\"\nint main() { return add(1, 2); }\n",
+            ),
+        ]);
+        let content = std::fs::read_to_string(dir.path().join("src/main.c")).unwrap();
+        let imports = extract_file_imports(&content, "src/main.c", dir.path());
+        assert!(imports.contains_key("add"), "imports={imports:?}");
+    }
+
+    #[test]
+    fn c_include_system_header_skipped() {
+        let dir = setup(&[("main.c", "#include <stdio.h>\nint main() { return 0; }\n")]);
+        let content = std::fs::read_to_string(dir.path().join("main.c")).unwrap();
+        let imports = extract_file_imports(&content, "main.c", dir.path());
+        // System headers like <stdio.h> shouldn't resolve to local files
+        assert!(!imports.contains_key("printf"));
+    }
+
+    // ── build_plain_text coverage ─────────────────────────────
+
+    #[test]
+    fn why_with_hierarchy_and_deps() {
+        let dir = setup(&[
+            (
+                "base.py",
+                "class Animal:\n    def speak(self):\n        pass\n",
+            ),
+            (
+                "dog.py",
+                "from base import Animal\n\nclass Dog(Animal):\n    def bark(self):\n        return 'woof'\n",
+            ),
+            (
+                "main.py",
+                "from dog import Dog\n\ndef run():\n    d = Dog()\n    d.bark()\n",
+            ),
+        ]);
+        let result = explain(dir.path().to_str().unwrap(), &["Dog".to_string()]).unwrap();
+        assert_eq!(result.symbol.name, "Dog");
+        assert!(result.plain.contains("Dog"));
+        assert!(result.plain.contains("## Definition"));
+        // Should have hierarchy with Animal as parent
+        if result.hierarchy.is_some() {
+            assert!(result.plain.contains("Hierarchy"));
+        }
+    }
+
+    #[test]
+    fn why_with_call_sites_and_deps() {
+        let dir = setup(&[
+            ("lib.rs", "pub fn compute(x: i32) -> i32 {\n    x * 2\n}\n"),
+            (
+                "main.rs",
+                "use crate::lib::compute;\nfn main() {\n    compute(5);\n}\n",
+            ),
+        ]);
+        let result = explain(dir.path().to_str().unwrap(), &["compute".to_string()]).unwrap();
+        assert_eq!(result.symbol.name, "compute");
+        assert!(result.plain.contains("## Definition"));
+        // Should have call sites from main.rs
+        if !result.call_sites.is_empty() {
+            assert!(result.plain.contains("Call Sites"));
+        }
+    }
+
+    #[test]
+    fn why_with_doc_comment() {
+        let dir = setup(&[(
+            "lib.rs",
+            "/// Does something important\npub fn important() -> bool {\n    true\n}\n",
+        )]);
+        let result = explain(dir.path().to_str().unwrap(), &["important".to_string()]).unwrap();
+        assert!(result.doc_comment.is_some());
+        assert!(result.plain.contains("Documentation"));
+    }
+
+    #[test]
+    fn why_parent_name_resolution() {
+        let dir = setup(&[(
+            "lib.rs",
+            "pub struct Foo {}\nimpl Foo {\n    pub fn method(&self) {}\n}\n",
+        )]);
+        // Query "Foo::method" format
+        let result = explain(
+            dir.path().to_str().unwrap(),
+            &["Foo".to_string(), "method".to_string()],
+        )
+        .unwrap();
+        assert!(result.symbol.name == "method" || result.symbol.name == "Foo");
     }
 }

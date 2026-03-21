@@ -19,23 +19,10 @@
 - [x] Regex file filtering (`-r`) — works globally across context, diff, pick, tree
 - [x] Claude Code skills — `/project:diff`, `/project:ctx`, `/project:why`, `/project:sym`, `/project:tree`
 - [x] MCP server (`supp mcp`) — 6 tools over stdio for autonomous AI context gathering
-
-## Current state
-
-- **13 source modules**, 256 passing tests, 0 TODOs
-- **9 tree-sitter grammars**: Rust, Python, JS, TS, TSX, Go, C, C++, Java
-- **8 subcommands**: `diff`, `tree`, `sym`, `why`, `pick`, `mcp`, `completions` (plus default context mode and `ctx`)
-
 ## Next
 
-- [ ] Incremental `why` — reuse cached symbol index, skip unchanged files
+- [x] Incremental `why` — reuse cached symbol index, skip unchanged files
 - [ ] `supp why --json` — machine-readable output for editor/IDE integrations
 - [ ] `supp sym --kind fn` — filter symbol search by kind (fn, class, trait, etc.)
-- [ ] Smarter hierarchy — multi-level inheritance chains, mixin/trait resolution
-- [ ] `supp diff --why <symbol>` — diff scoped to a symbol and its callers
-- [ ] fzf symbol picker — `supp pick --symbols` to browse and select from the symbol index
-- [ ] `supp pick` preview modes — show codemap or symbol list in the fzf preview pane
+- [x] Smarter hierarchy — multi-level inheritance chains, mixin/trait resolution
 - [ ] Pipe-friendly output — detect `| pipe` and skip color/clipboard automatically
-- [ ] Watch mode — re-run on file changes for live context updating
-- [ ] Remote repo support — `supp why <symbol> --repo <url>` for quick lookups
-- [ ] LSP integration — use language servers for go-to-definition when available

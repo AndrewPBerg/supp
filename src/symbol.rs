@@ -70,6 +70,15 @@ struct Cache {
     symbols: Vec<Symbol>,
     ranks: Vec<f64>,
     file_meta: HashMap<PathBuf, (u64, u64)>, // mtime_secs, size
+    file_refs: HashMap<String, Vec<String>>, // rel_path → reference names
+}
+
+struct IndexResult {
+    symbols: Vec<Symbol>,
+    ranks: Vec<f64>,
+    file_meta: HashMap<PathBuf, (u64, u64)>,
+    file_refs: HashMap<String, Vec<String>>,
+    changed: bool,
 }
 
 fn cache_path(root: &Path) -> PathBuf {
@@ -113,101 +122,56 @@ fn save_cache(root: &Path, cache: &Cache) {
     }
 }
 
-// ── Index ───────────────────────────────────────────────────────────
+// ── Helpers ──────────────────────────────────────────────────────────
 
-fn collect_files(root: &Path) -> Vec<(PathBuf, String)> {
-    let mut files = Vec::new();
-    let walker = WalkBuilder::new(root)
-        .sort_by_file_name(|a, b| a.cmp(b))
-        .build();
-    for entry in walker.flatten() {
-        let path = entry.path().to_path_buf();
-        if path.is_file() {
-            let rel = path
-                .strip_prefix(root)
-                .unwrap_or(&path)
-                .to_string_lossy()
-                .to_string();
-            files.push((path, rel));
-        }
+fn parse_file_entry(abs_path: &Path, rel_path: &str) -> Option<(Vec<Symbol>, Vec<String>)> {
+    let content = std::fs::read_to_string(abs_path).ok()?;
+
+    if let Some(lang) = compress::detect_lang(rel_path)
+        && let Some(tree) = compress::parse_source(&content, lang)
+    {
+        let symbols = extract_symbols(rel_path, &content, lang, &tree);
+        let refs = extract_references(&content, lang, &tree);
+        return Some((symbols, refs));
     }
-    files
+
+    // Non-code file: create a file-level symbol and extract plain-text refs
+    let filename = Path::new(rel_path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(rel_path);
+    let first_line = content.lines().next().unwrap_or("").to_string();
+    let refs = extract_plaintext_refs(&content);
+    let sym = Symbol {
+        name: filename.to_string(),
+        kind: SymbolKind::File,
+        file: rel_path.to_string(),
+        line: 1,
+        signature: signature_line(&first_line),
+        parent: None,
+        keywords: refs.clone(),
+    };
+    Some((vec![sym], refs))
 }
 
-fn build_index(root: &Path) -> (Vec<Symbol>, Vec<f64>) {
-    let files = collect_files(root);
-
-    // Parse files in parallel (rayon thread pool)
-    let mut all_results: Vec<(String, Vec<Symbol>, Vec<String>)> = files
-        .par_iter()
-        .filter_map(|(abs_path, rel_path)| {
-            let content = std::fs::read_to_string(abs_path).ok()?;
-
-            if let Some(lang) = compress::detect_lang(rel_path)
-                && let Some(tree) = compress::parse_source(&content, lang)
-            {
-                let symbols = extract_symbols(rel_path, &content, lang, &tree);
-                let refs = extract_references(&content, lang, &tree);
-                return Some((rel_path.clone(), symbols, refs));
-            }
-
-            // Non-code file: create a file-level symbol and extract plain-text refs
-            let filename = Path::new(rel_path)
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or(rel_path);
-            let first_line = content.lines().next().unwrap_or("").to_string();
-            let refs = extract_plaintext_refs(&content);
-            let sym = Symbol {
-                name: filename.to_string(),
-                kind: SymbolKind::File,
-                file: rel_path.clone(),
-                line: 1,
-                signature: signature_line(&first_line),
-                parent: None,
-                keywords: refs.clone(),
-            };
-            Some((rel_path.clone(), vec![sym], refs))
-        })
-        .collect();
-    all_results.sort_by(|a, b| a.0.cmp(&b.0));
-
-    let mut symbols: Vec<Symbol> = Vec::new();
-    let mut file_refs: Vec<Vec<String>> = Vec::new();
-
-    for (_file, file_syms, refs) in all_results {
-        symbols.extend(file_syms);
-        file_refs.push(refs);
-    }
-
+fn compute_ranks(symbols: &[Symbol], file_refs: &HashMap<String, Vec<String>>) -> Vec<f64> {
     // Build name → symbol indices map
     let mut name_to_indices: HashMap<&str, Vec<usize>> = HashMap::new();
     for (i, sym) in symbols.iter().enumerate() {
         name_to_indices.entry(&sym.name).or_default().push(i);
     }
 
-    // Build edges: for each file's references, link symbols defined in that file to referenced symbols
+    // Build edges
     let mut edges: Vec<Vec<usize>> = vec![Vec::new(); symbols.len()];
 
-    // Group symbols by file for edge building
     let mut file_to_sym_indices: HashMap<&str, Vec<usize>> = HashMap::new();
     for (i, sym) in symbols.iter().enumerate() {
         file_to_sym_indices.entry(&sym.file).or_default().push(i);
     }
 
-    // For each file's references, create edges from function/method symbols in that file
-    // to the referenced symbols
-    let mut sorted_files: Vec<&str> = file_to_sym_indices.keys().copied().collect();
-    sorted_files.sort();
-
-    for (file_idx, refs) in file_refs.iter().enumerate() {
-        if file_idx >= sorted_files.len() {
-            break;
-        }
-        let file = sorted_files[file_idx];
-
+    for (file, refs) in file_refs {
         let source_indices: Vec<usize> = file_to_sym_indices
-            .get(file)
+            .get(file.as_str())
             .map(|v| {
                 v.iter()
                     .filter(|&&i| {
@@ -235,39 +199,163 @@ fn build_index(root: &Path) -> (Vec<Symbol>, Vec<f64>) {
         }
     }
 
-    let ranks = pagerank(&edges, symbols.len(), 15, 0.85);
-    (symbols, ranks)
+    pagerank(&edges, symbols.len(), 15, 0.85)
 }
 
-fn build_index_incremental(root: &Path, old_cache: &Cache) -> (Vec<Symbol>, Vec<f64>) {
+// ── Index ───────────────────────────────────────────────────────────
+
+fn collect_files(root: &Path) -> Vec<(PathBuf, String)> {
+    let mut files = Vec::new();
+    let walker = WalkBuilder::new(root)
+        .sort_by_file_name(|a, b| a.cmp(b))
+        .build();
+    for entry in walker.flatten() {
+        let path = entry.path().to_path_buf();
+        if path.is_file() {
+            let rel = path
+                .strip_prefix(root)
+                .unwrap_or(&path)
+                .to_string_lossy()
+                .to_string();
+            files.push((path, rel));
+        }
+    }
+    files
+}
+
+fn build_index(root: &Path) -> IndexResult {
     let files = collect_files(root);
 
-    // Check which files changed
-    let mut any_changed = false;
-    if files.len() != old_cache.file_meta.len() {
-        any_changed = true;
-    } else {
-        for (abs_path, _) in &files {
-            if let Some(meta) = file_meta(abs_path) {
-                if let Some(cached_meta) = old_cache.file_meta.get(abs_path) {
-                    if meta != *cached_meta {
-                        any_changed = true;
-                        break;
-                    }
-                } else {
-                    any_changed = true;
-                    break;
-                }
-            }
+    // Parse files in parallel (rayon thread pool)
+    let all_results: Vec<(String, Vec<Symbol>, Vec<String>)> = files
+        .par_iter()
+        .filter_map(|(abs_path, rel_path)| {
+            let (syms, refs) = parse_file_entry(abs_path, rel_path)?;
+            Some((rel_path.clone(), syms, refs))
+        })
+        .collect();
+
+    let mut symbols: Vec<Symbol> = Vec::new();
+    let mut file_refs: HashMap<String, Vec<String>> = HashMap::new();
+
+    for (file, file_syms, refs) in all_results {
+        symbols.extend(file_syms);
+        file_refs.insert(file, refs);
+    }
+
+    let ranks = compute_ranks(&symbols, &file_refs);
+
+    let file_meta_map: HashMap<PathBuf, (u64, u64)> = files
+        .iter()
+        .filter_map(|(abs, _)| file_meta(abs).map(|m| (abs.clone(), m)))
+        .collect();
+
+    IndexResult {
+        symbols,
+        ranks,
+        file_meta: file_meta_map,
+        file_refs,
+        changed: true,
+    }
+}
+
+fn build_index_incremental(root: &Path, old_cache: &Cache) -> IndexResult {
+    let files = collect_files(root);
+
+    // If old cache has no file_refs (pre-upgrade cache format), full rebuild
+    if old_cache.file_refs.is_empty() && !old_cache.symbols.is_empty() {
+        return build_index(root);
+    }
+
+    // Partition files into unchanged and changed/new
+    let current_rels: std::collections::HashSet<&str> =
+        files.iter().map(|(_, rel)| rel.as_str()).collect();
+    let has_deletions = old_cache
+        .file_refs
+        .keys()
+        .any(|k| !current_rels.contains(k.as_str()));
+
+    let mut changed: Vec<&(PathBuf, String)> = Vec::new();
+    let mut unchanged_rels: std::collections::HashSet<&str> = std::collections::HashSet::new();
+
+    for entry in &files {
+        let (abs_path, rel_path) = entry;
+        let is_unchanged = file_meta(abs_path)
+            .and_then(|meta| {
+                old_cache
+                    .file_meta
+                    .get(abs_path)
+                    .map(|cached| meta == *cached)
+            })
+            .unwrap_or(false)
+            && old_cache.file_refs.contains_key(rel_path.as_str());
+
+        if is_unchanged {
+            unchanged_rels.insert(rel_path.as_str());
+        } else {
+            changed.push(entry);
         }
     }
 
-    if !any_changed {
-        return (old_cache.symbols.clone(), old_cache.ranks.clone());
+    if changed.is_empty() && !has_deletions {
+        // Nothing changed — return cached data
+        let file_meta_map: HashMap<PathBuf, (u64, u64)> = files
+            .iter()
+            .filter_map(|(abs, _)| file_meta(abs).map(|m| (abs.clone(), m)))
+            .collect();
+        return IndexResult {
+            symbols: old_cache.symbols.clone(),
+            ranks: old_cache.ranks.clone(),
+            file_meta: file_meta_map,
+            file_refs: old_cache.file_refs.clone(),
+            changed: false,
+        };
     }
 
-    // Full rebuild if anything changed (incremental per-file is complex and the full build is fast)
-    build_index(root)
+    // Keep symbols and refs from unchanged files
+    let mut symbols: Vec<Symbol> = old_cache
+        .symbols
+        .iter()
+        .filter(|s| unchanged_rels.contains(s.file.as_str()))
+        .cloned()
+        .collect();
+
+    let mut file_refs: HashMap<String, Vec<String>> = old_cache
+        .file_refs
+        .iter()
+        .filter(|(k, _)| unchanged_rels.contains(k.as_str()))
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+
+    // Parse only changed/new files
+    let new_results: Vec<(String, Vec<Symbol>, Vec<String>)> = changed
+        .par_iter()
+        .filter_map(|(abs_path, rel_path)| {
+            let (syms, refs) = parse_file_entry(abs_path, rel_path)?;
+            Some((rel_path.clone(), syms, refs))
+        })
+        .collect();
+
+    for (file, file_syms, refs) in new_results {
+        symbols.extend(file_syms);
+        file_refs.insert(file, refs);
+    }
+
+    // Recompute PageRank on merged data
+    let ranks = compute_ranks(&symbols, &file_refs);
+
+    let file_meta_map: HashMap<PathBuf, (u64, u64)> = files
+        .iter()
+        .filter_map(|(abs, _)| file_meta(abs).map(|m| (abs.clone(), m)))
+        .collect();
+
+    IndexResult {
+        symbols,
+        ranks,
+        file_meta: file_meta_map,
+        file_refs,
+        changed: true,
+    }
 }
 
 // ── Symbol extraction ───────────────────────────────────────────────
@@ -1495,37 +1583,39 @@ fn score_query(symbols: &[Symbol], ranks: &[f64], query_tokens: &[String]) -> Ve
 
 // ── Public API ──────────────────────────────────────────────────────
 
-pub fn search(root: &str, query: &[String]) -> Result<SearchResult> {
-    let root_path = std::fs::canonicalize(root)?;
-
-    let (symbols, ranks) = if let Some(cache) = load_cache(&root_path) {
-        build_index_incremental(&root_path, &cache)
+/// Build (or incrementally update) the symbol index and save the cache if anything changed.
+fn build_and_save(root: &Path) -> IndexResult {
+    let result = if let Some(cache) = load_cache(root) {
+        build_index_incremental(root, &cache)
     } else {
-        build_index(&root_path)
+        build_index(root)
     };
 
-    // Save cache
-    let files = collect_files(&root_path);
-    let file_meta_map: HashMap<PathBuf, (u64, u64)> = files
-        .iter()
-        .filter_map(|(abs, _)| file_meta(abs).map(|m| (abs.clone(), m)))
-        .collect();
+    if result.changed {
+        save_cache(
+            root,
+            &Cache {
+                symbols: result.symbols.clone(),
+                ranks: result.ranks.clone(),
+                file_meta: result.file_meta.clone(),
+                file_refs: result.file_refs.clone(),
+            },
+        );
+    }
 
-    save_cache(
-        &root_path,
-        &Cache {
-            symbols: symbols.clone(),
-            ranks: ranks.clone(),
-            file_meta: file_meta_map,
-        },
-    );
+    result
+}
 
-    let total_symbols = symbols.len();
-    let scored = score_query(&symbols, &ranks, query);
+pub fn search(root: &str, query: &[String]) -> Result<SearchResult> {
+    let root_path = std::fs::canonicalize(root)?;
+    let result = build_and_save(&root_path);
+
+    let total_symbols = result.symbols.len();
+    let scored = score_query(&result.symbols, &result.ranks, query);
     let matches: Vec<(Symbol, f64)> = scored
         .into_iter()
         .take(20)
-        .map(|(i, score)| (symbols[i].clone(), score))
+        .map(|(i, score)| (result.symbols[i].clone(), score))
         .collect();
 
     Ok(SearchResult {
@@ -1536,12 +1626,18 @@ pub fn search(root: &str, query: &[String]) -> Result<SearchResult> {
 
 /// Load all indexed symbols (from cache or fresh build). Used by `why` for dependency lookup.
 pub fn load_symbols(root: &Path) -> Vec<Symbol> {
-    let (symbols, _ranks) = if let Some(cache) = load_cache(root) {
-        build_index_incremental(root, &cache)
-    } else {
-        build_index(root)
-    };
-    symbols
+    let result = build_and_save(root);
+    result.symbols
+}
+
+/// Delete the symbol cache for the given project root.
+pub fn clean_cache(root: &str) -> Result<()> {
+    let root_path = std::fs::canonicalize(root)?;
+    let path = cache_path(&root_path);
+    if path.exists() {
+        std::fs::remove_file(&path)?;
+    }
+    Ok(())
 }
 
 // ── Tests ───────────────────────────────────────────────────────────
@@ -1646,5 +1742,768 @@ mod tests {
         let matched_indices: Vec<usize> = results.iter().map(|(i, _)| *i).collect();
         assert!(matched_indices.contains(&0));
         assert!(matched_indices.contains(&1));
+    }
+
+    // ── signature_line ──────────────────────────────────────────────
+
+    #[test]
+    fn signature_line_truncates_long_lines() {
+        let long = "a".repeat(200);
+        let result = signature_line(&long);
+        assert_eq!(result.len(), 100); // 97 chars + "..."
+        assert!(result.ends_with("..."));
+    }
+
+    #[test]
+    fn signature_line_short_unchanged() {
+        let short = "pub fn foo(x: i32) -> bool";
+        assert_eq!(signature_line(short), short);
+    }
+
+    #[test]
+    fn signature_line_multiline_takes_first() {
+        let multi = "pub fn foo() {\n    body\n}";
+        assert_eq!(signature_line(multi), "pub fn foo() {");
+    }
+
+    // ── split_subwords edge cases ───────────────────────────────────
+
+    #[test]
+    fn split_subwords_kebab_case() {
+        assert_eq!(split_subwords("my-component"), vec!["my", "component"]);
+    }
+
+    #[test]
+    fn split_subwords_empty() {
+        let result: Vec<String> = split_subwords("");
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn split_subwords_leading_underscores() {
+        // Leading separator: first segment is empty, skipped
+        assert_eq!(split_subwords("_private_field"), vec!["private", "field"]);
+    }
+
+    // ── score_query edge cases ──────────────────────────────────────
+
+    #[test]
+    fn score_query_empty_tokens() {
+        let symbols = vec![Symbol {
+            name: "foo".to_string(),
+            kind: SymbolKind::Function,
+            file: "a.rs".to_string(),
+            line: 1,
+            signature: "fn foo()".to_string(),
+            parent: None,
+            keywords: Vec::new(),
+        }];
+        let ranks = vec![0.5];
+        let results = score_query(&symbols, &ranks, &[]);
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn score_query_no_match() {
+        let symbols = vec![Symbol {
+            name: "foo".to_string(),
+            kind: SymbolKind::Function,
+            file: "a.rs".to_string(),
+            line: 1,
+            signature: "fn foo()".to_string(),
+            parent: None,
+            keywords: Vec::new(),
+        }];
+        let ranks = vec![0.5];
+        let results = score_query(&symbols, &ranks, &["zzzzz".to_string()]);
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn score_query_path_prefix_match() {
+        let symbols = vec![Symbol {
+            name: "unrelated".to_string(),
+            kind: SymbolKind::Function,
+            file: "src/context.rs".to_string(),
+            line: 1,
+            signature: "fn unrelated()".to_string(),
+            parent: None,
+            keywords: Vec::new(),
+        }];
+        let ranks = vec![0.1];
+        // "cont" should prefix-match "context" in path
+        let results = score_query(&symbols, &ranks, &["cont".to_string()]);
+        assert!(!results.is_empty(), "path prefix should match");
+    }
+
+    #[test]
+    fn score_query_parent_exact_subword_match() {
+        let symbols = vec![Symbol {
+            name: "do_work".to_string(),
+            kind: SymbolKind::Method,
+            file: "a.rs".to_string(),
+            line: 1,
+            signature: "fn do_work()".to_string(),
+            parent: Some("MyStruct".to_string()),
+            keywords: Vec::new(),
+        }];
+        let ranks = vec![0.1];
+        // "my" should exact-match the parent subword "my" (from split_subwords("MyStruct"))
+        let results = score_query(&symbols, &ranks, &["struct".to_string()]);
+        assert!(
+            !results.is_empty(),
+            "parent exact subword match should work"
+        );
+    }
+
+    #[test]
+    fn score_query_parent_prefix_match() {
+        let symbols = vec![Symbol {
+            name: "do_work".to_string(),
+            kind: SymbolKind::Method,
+            file: "a.rs".to_string(),
+            line: 1,
+            signature: "fn do_work()".to_string(),
+            parent: Some("MyStruct".to_string()),
+            keywords: Vec::new(),
+        }];
+        let ranks = vec![0.1];
+        // "my" should prefix-match parent subword "my"
+        let results = score_query(&symbols, &ranks, &["my".to_string()]);
+        assert!(!results.is_empty(), "parent prefix match should work");
+    }
+
+    #[test]
+    fn score_query_keyword_exact_match() {
+        let symbols = vec![Symbol {
+            name: "README.md".to_string(),
+            kind: SymbolKind::File,
+            file: "README.md".to_string(),
+            line: 1,
+            signature: "# My Project".to_string(),
+            parent: None,
+            keywords: vec!["installation".to_string(), "usage".to_string()],
+        }];
+        let ranks = vec![0.1];
+        let results = score_query(&symbols, &ranks, &["installation".to_string()]);
+        assert!(!results.is_empty(), "keyword exact match should work");
+    }
+
+    #[test]
+    fn score_query_keyword_prefix_match() {
+        let symbols = vec![Symbol {
+            name: "README.md".to_string(),
+            kind: SymbolKind::File,
+            file: "README.md".to_string(),
+            line: 1,
+            signature: "# My Project".to_string(),
+            parent: None,
+            keywords: vec!["installation".to_string()],
+        }];
+        let ranks = vec![0.1];
+        let results = score_query(&symbols, &ranks, &["instal".to_string()]);
+        assert!(!results.is_empty(), "keyword prefix match should work");
+    }
+
+    #[test]
+    fn score_query_keyword_substring_match() {
+        let symbols = vec![Symbol {
+            name: "README.md".to_string(),
+            kind: SymbolKind::File,
+            file: "README.md".to_string(),
+            line: 1,
+            signature: "# My Project".to_string(),
+            parent: None,
+            keywords: vec!["installation".to_string()],
+        }];
+        let ranks = vec![0.1];
+        let results = score_query(&symbols, &ranks, &["stallat".to_string()]);
+        assert!(!results.is_empty(), "keyword substring match should work");
+    }
+
+    #[test]
+    fn score_query_multi_token_all_must_match() {
+        let symbols = vec![Symbol {
+            name: "generate_context".to_string(),
+            kind: SymbolKind::Function,
+            file: "src/context.rs".to_string(),
+            line: 1,
+            signature: "fn generate_context()".to_string(),
+            parent: None,
+            keywords: Vec::new(),
+        }];
+        let ranks = vec![0.1];
+        // Both tokens must match
+        let results = score_query(
+            &symbols,
+            &ranks,
+            &["generate".to_string(), "context".to_string()],
+        );
+        assert!(!results.is_empty());
+        // One token doesn't match
+        let results = score_query(
+            &symbols,
+            &ranks,
+            &["generate".to_string(), "zzzzz".to_string()],
+        );
+        assert!(results.is_empty());
+    }
+
+    // ── is_keyword ──────────────────────────────────────────────────
+
+    #[test]
+    fn is_keyword_rust() {
+        assert!(is_keyword("self", Lang::Rust));
+        assert!(is_keyword("let", Lang::Rust));
+        assert!(!is_keyword("generate", Lang::Rust));
+    }
+
+    #[test]
+    fn is_keyword_python() {
+        assert!(is_keyword("self", Lang::Python));
+        assert!(is_keyword("def", Lang::Python));
+        assert!(is_keyword("None", Lang::Python));
+        assert!(!is_keyword("generate", Lang::Python));
+    }
+
+    #[test]
+    fn is_keyword_javascript() {
+        assert!(is_keyword("this", Lang::JavaScript));
+        assert!(is_keyword("const", Lang::JavaScript));
+        assert!(!is_keyword("myFunc", Lang::JavaScript));
+    }
+
+    #[test]
+    fn is_keyword_typescript() {
+        assert!(is_keyword("async", Lang::TypeScript));
+        assert!(!is_keyword("myFunc", Lang::TypeScript));
+    }
+
+    #[test]
+    fn is_keyword_tsx() {
+        assert!(is_keyword("await", Lang::Tsx));
+        assert!(!is_keyword("Component", Lang::Tsx));
+    }
+
+    #[test]
+    fn is_keyword_go() {
+        assert!(is_keyword("func", Lang::Go));
+        assert!(is_keyword("nil", Lang::Go));
+        assert!(!is_keyword("Handler", Lang::Go));
+    }
+
+    #[test]
+    fn is_keyword_c() {
+        assert!(is_keyword("int", Lang::C));
+        assert!(is_keyword("NULL", Lang::C));
+        assert!(!is_keyword("myFunc", Lang::C));
+    }
+
+    #[test]
+    fn is_keyword_cpp() {
+        assert!(is_keyword("class", Lang::Cpp));
+        assert!(is_keyword("this", Lang::Cpp));
+        assert!(!is_keyword("MyClass", Lang::Cpp));
+    }
+
+    #[test]
+    fn is_keyword_java() {
+        assert!(is_keyword("public", Lang::Java));
+        assert!(is_keyword("abstract", Lang::Java));
+        assert!(!is_keyword("MyClass", Lang::Java));
+    }
+
+    // ── compute_ranks ───────────────────────────────────────────────
+
+    #[test]
+    fn compute_ranks_with_refs() {
+        // fn bar() in a.rs calls "foo", fn foo() in b.rs
+        let symbols = vec![
+            Symbol {
+                name: "bar".to_string(),
+                kind: SymbolKind::Function,
+                file: "a.rs".to_string(),
+                line: 1,
+                signature: "fn bar()".to_string(),
+                parent: None,
+                keywords: Vec::new(),
+            },
+            Symbol {
+                name: "foo".to_string(),
+                kind: SymbolKind::Function,
+                file: "b.rs".to_string(),
+                line: 1,
+                signature: "fn foo()".to_string(),
+                parent: None,
+                keywords: Vec::new(),
+            },
+        ];
+        let mut file_refs = HashMap::new();
+        file_refs.insert("a.rs".to_string(), vec!["foo".to_string()]);
+        file_refs.insert("b.rs".to_string(), vec![]);
+
+        let ranks = compute_ranks(&symbols, &file_refs);
+        assert_eq!(ranks.len(), 2);
+        // foo (target) should have higher rank than bar (source)
+        assert!(ranks[1] > ranks[0], "foo should rank higher than bar");
+    }
+
+    #[test]
+    fn compute_ranks_no_refs() {
+        let symbols = vec![Symbol {
+            name: "lonely".to_string(),
+            kind: SymbolKind::Function,
+            file: "a.rs".to_string(),
+            line: 1,
+            signature: "fn lonely()".to_string(),
+            parent: None,
+            keywords: Vec::new(),
+        }];
+        let file_refs = HashMap::new();
+        let ranks = compute_ranks(&symbols, &file_refs);
+        assert_eq!(ranks.len(), 1);
+    }
+
+    #[test]
+    fn compute_ranks_skips_non_function_sources() {
+        // Only Function/Method kinds are used as source nodes for edges
+        let symbols = vec![
+            Symbol {
+                name: "MyStruct".to_string(),
+                kind: SymbolKind::Struct,
+                file: "a.rs".to_string(),
+                line: 1,
+                signature: "struct MyStruct".to_string(),
+                parent: None,
+                keywords: Vec::new(),
+            },
+            Symbol {
+                name: "foo".to_string(),
+                kind: SymbolKind::Function,
+                file: "b.rs".to_string(),
+                line: 1,
+                signature: "fn foo()".to_string(),
+                parent: None,
+                keywords: Vec::new(),
+            },
+        ];
+        let mut file_refs = HashMap::new();
+        // a.rs references foo, but only has a struct (not function), so no edge
+        file_refs.insert("a.rs".to_string(), vec!["foo".to_string()]);
+
+        let ranks = compute_ranks(&symbols, &file_refs);
+        assert_eq!(ranks.len(), 2);
+        // Without edges, ranks should be roughly equal
+        assert!(
+            (ranks[0] - ranks[1]).abs() < 0.01,
+            "without function sources, ranks should be equal"
+        );
+    }
+
+    #[test]
+    fn compute_ranks_self_ref_no_edge() {
+        // A function referencing itself should not create a self-edge
+        let symbols = vec![Symbol {
+            name: "recurse".to_string(),
+            kind: SymbolKind::Function,
+            file: "a.rs".to_string(),
+            line: 1,
+            signature: "fn recurse()".to_string(),
+            parent: None,
+            keywords: Vec::new(),
+        }];
+        let mut file_refs = HashMap::new();
+        file_refs.insert("a.rs".to_string(), vec!["recurse".to_string()]);
+
+        let ranks = compute_ranks(&symbols, &file_refs);
+        assert_eq!(ranks.len(), 1);
+        // Should still get a valid rank (no self-edge means no boost)
+        assert!(ranks[0] > 0.0);
+    }
+
+    // ── extract_plaintext_refs ──────────────────────────────────────
+
+    #[test]
+    fn extract_plaintext_refs_basic() {
+        let content = "hello world foo_bar baz-qux a";
+        let refs = extract_plaintext_refs(content);
+        assert!(refs.contains(&"hello".to_string()));
+        assert!(refs.contains(&"world".to_string()));
+        assert!(refs.contains(&"foo_bar".to_string()));
+        assert!(refs.contains(&"baz-qux".to_string()));
+        // Single char "a" should be excluded (len <= 1)
+        assert!(!refs.contains(&"a".to_string()));
+    }
+
+    #[test]
+    fn extract_plaintext_refs_deduplicates() {
+        let content = "hello hello hello";
+        let refs = extract_plaintext_refs(content);
+        assert_eq!(refs.iter().filter(|r| *r == "hello").count(), 1);
+    }
+
+    // ── extract_symbols for Rust ────────────────────────────────────
+
+    fn parse_rust(code: &str) -> (Vec<Symbol>, Vec<String>) {
+        let tree = compress::parse_source(code, Lang::Rust).unwrap();
+        let syms = extract_symbols("test.rs", code, Lang::Rust, &tree);
+        let refs = extract_references(code, Lang::Rust, &tree);
+        (syms, refs)
+    }
+
+    #[test]
+    fn extract_rust_trait() {
+        let code = r#"
+trait Drawable {
+    fn draw(&self);
+    fn resize(&self, w: u32, h: u32);
+}
+"#;
+        let (syms, _) = parse_rust(code);
+        let names: Vec<&str> = syms.iter().map(|s| s.name.as_str()).collect();
+        assert!(names.contains(&"Drawable"), "trait should be extracted");
+        let trait_sym = syms.iter().find(|s| s.name == "Drawable").unwrap();
+        assert_eq!(trait_sym.kind, SymbolKind::Trait);
+    }
+
+    #[test]
+    fn extract_rust_trait_with_impl_methods() {
+        // Methods with bodies are extracted from impl blocks
+        let code = r#"
+trait Drawable {
+    fn draw(&self);
+}
+
+struct Circle;
+
+impl Drawable for Circle {
+    fn draw(&self) {
+        println!("drawing");
+    }
+}
+"#;
+        let (syms, _) = parse_rust(code);
+        let names: Vec<&str> = syms.iter().map(|s| s.name.as_str()).collect();
+        assert!(names.contains(&"Drawable"), "trait should be extracted");
+        assert!(names.contains(&"Circle"), "struct should be extracted");
+        assert!(names.contains(&"draw"), "impl method should be extracted");
+    }
+
+    #[test]
+    fn extract_rust_macro() {
+        let code = r#"
+macro_rules! my_macro {
+    ($x:expr) => { $x + 1 };
+}
+"#;
+        let (syms, _) = parse_rust(code);
+        let mac = syms.iter().find(|s| s.name == "my_macro");
+        assert!(mac.is_some(), "macro should be extracted");
+        assert_eq!(mac.unwrap().kind, SymbolKind::Macro);
+    }
+
+    #[test]
+    fn extract_rust_const_and_static() {
+        let code = r#"
+const MAX_SIZE: usize = 100;
+static GLOBAL: i32 = 42;
+"#;
+        let (syms, _) = parse_rust(code);
+        let names: Vec<&str> = syms.iter().map(|s| s.name.as_str()).collect();
+        assert!(names.contains(&"MAX_SIZE"));
+        assert!(names.contains(&"GLOBAL"));
+        for s in &syms {
+            assert_eq!(s.kind, SymbolKind::Const);
+        }
+    }
+
+    #[test]
+    fn extract_rust_type_alias() {
+        let code = "type MyResult = Result<(), String>;\n";
+        let (syms, _) = parse_rust(code);
+        let found = syms.iter().find(|s| s.name == "MyResult");
+        assert!(found.is_some());
+        assert_eq!(found.unwrap().kind, SymbolKind::Type);
+    }
+
+    #[test]
+    fn extract_rust_enum() {
+        let code = r#"
+enum Color {
+    Red,
+    Green,
+    Blue,
+}
+"#;
+        let (syms, _) = parse_rust(code);
+        let found = syms.iter().find(|s| s.name == "Color");
+        assert!(found.is_some());
+        assert_eq!(found.unwrap().kind, SymbolKind::Enum);
+    }
+
+    // ── extract_symbols for Python ──────────────────────────────────
+
+    fn parse_python(code: &str) -> Vec<Symbol> {
+        let tree = compress::parse_source(code, Lang::Python).unwrap();
+        extract_symbols("test.py", code, Lang::Python, &tree)
+    }
+
+    #[test]
+    fn extract_python_decorated_definition() {
+        let code = r#"
+@decorator
+def my_func():
+    pass
+
+@other_decorator
+class MyClass:
+    pass
+"#;
+        let syms = parse_python(code);
+        let names: Vec<&str> = syms.iter().map(|s| s.name.as_str()).collect();
+        assert!(
+            names.contains(&"my_func"),
+            "decorated function should be extracted"
+        );
+        assert!(
+            names.contains(&"MyClass"),
+            "decorated class should be extracted"
+        );
+    }
+
+    // ── extract_symbols for Go ──────────────────────────────────────
+
+    fn parse_go(code: &str) -> Vec<Symbol> {
+        let tree = compress::parse_source(code, Lang::Go).unwrap();
+        extract_symbols("test.go", code, Lang::Go, &tree)
+    }
+
+    #[test]
+    fn extract_go_function_and_type() {
+        let code = r#"
+package main
+
+func Hello() {}
+
+type MyStruct struct {
+    Name string
+}
+"#;
+        let syms = parse_go(code);
+        let names: Vec<&str> = syms.iter().map(|s| s.name.as_str()).collect();
+        assert!(names.contains(&"Hello"), "Go function should be extracted");
+        assert!(names.contains(&"MyStruct"), "Go struct should be extracted");
+    }
+
+    // ── extract_symbols for Java ────────────────────────────────────
+
+    fn parse_java(code: &str) -> Vec<Symbol> {
+        let tree = compress::parse_source(code, Lang::Java).unwrap();
+        extract_symbols("Test.java", code, Lang::Java, &tree)
+    }
+
+    #[test]
+    fn extract_java_interface() {
+        let code = r#"
+interface Drawable {
+    void draw();
+}
+"#;
+        let syms = parse_java(code);
+        let iface = syms.iter().find(|s| s.name == "Drawable");
+        assert!(iface.is_some(), "Java interface should be extracted");
+        assert_eq!(iface.unwrap().kind, SymbolKind::Interface);
+    }
+
+    #[test]
+    fn extract_java_enum() {
+        let code = r#"
+enum Direction {
+    NORTH, SOUTH, EAST, WEST
+}
+"#;
+        let syms = parse_java(code);
+        let found = syms.iter().find(|s| s.name == "Direction");
+        assert!(found.is_some(), "Java enum should be extracted");
+        assert_eq!(found.unwrap().kind, SymbolKind::Enum);
+    }
+
+    // ── extract_symbols for JS/TS ───────────────────────────────────
+
+    fn parse_js(code: &str) -> Vec<Symbol> {
+        let tree = compress::parse_source(code, Lang::JavaScript).unwrap();
+        extract_symbols("test.js", code, Lang::JavaScript, &tree)
+    }
+
+    #[test]
+    fn extract_js_enum_declaration() {
+        // TypeScript enum (also parsed in JS mode for tree-sitter)
+        let code = r#"
+function hello() {}
+"#;
+        let syms = parse_js(code);
+        let found = syms.iter().find(|s| s.name == "hello");
+        assert!(found.is_some());
+        assert_eq!(found.unwrap().kind, SymbolKind::Function);
+    }
+
+    // ── cache round-trip ────────────────────────────────────────────
+
+    #[test]
+    fn cache_serialize_deserialize_roundtrip() {
+        let cache = Cache {
+            symbols: vec![Symbol {
+                name: "test_fn".to_string(),
+                kind: SymbolKind::Function,
+                file: "src/lib.rs".to_string(),
+                line: 10,
+                signature: "fn test_fn()".to_string(),
+                parent: None,
+                keywords: vec!["helper".to_string()],
+            }],
+            ranks: vec![0.42],
+            file_meta: {
+                let mut m = HashMap::new();
+                m.insert(PathBuf::from("/tmp/test.rs"), (1234u64, 5678u64));
+                m
+            },
+            file_refs: {
+                let mut m = HashMap::new();
+                m.insert("src/lib.rs".to_string(), vec!["foo".to_string()]);
+                m
+            },
+        };
+
+        let data = bincode::serialize(&cache).expect("serialize");
+        let restored: Cache = bincode::deserialize(&data).expect("deserialize");
+
+        assert_eq!(restored.symbols.len(), 1);
+        assert_eq!(restored.symbols[0].name, "test_fn");
+        assert_eq!(restored.symbols[0].keywords, vec!["helper"]);
+        assert_eq!(restored.ranks, vec![0.42]);
+        assert_eq!(
+            restored.file_meta.get(&PathBuf::from("/tmp/test.rs")),
+            Some(&(1234u64, 5678u64))
+        );
+        assert_eq!(
+            restored.file_refs.get("src/lib.rs"),
+            Some(&vec!["foo".to_string()])
+        );
+    }
+
+    // ── save_cache / load_cache round-trip ───────────────────────────
+
+    #[test]
+    fn save_and_load_cache_via_filesystem() {
+        let tmp = std::env::temp_dir().join("supp-test-cache-roundtrip");
+        let _ = std::fs::create_dir_all(&tmp);
+
+        // Write a cache file manually to the expected path
+        let cp = cache_path(&tmp);
+        if let Some(parent) = cp.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+
+        let cache = Cache {
+            symbols: vec![Symbol {
+                name: "hello".to_string(),
+                kind: SymbolKind::Function,
+                file: "main.rs".to_string(),
+                line: 1,
+                signature: "fn hello()".to_string(),
+                parent: None,
+                keywords: Vec::new(),
+            }],
+            ranks: vec![0.5],
+            file_meta: HashMap::new(),
+            file_refs: HashMap::new(),
+        };
+
+        save_cache(&tmp, &cache);
+        let loaded = load_cache(&tmp);
+        assert!(loaded.is_some(), "cache should load after save");
+        let loaded = loaded.unwrap();
+        assert_eq!(loaded.symbols.len(), 1);
+        assert_eq!(loaded.symbols[0].name, "hello");
+
+        // Cleanup
+        let _ = std::fs::remove_file(&cp);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    // ── clean_cache ─────────────────────────────────────────────────
+
+    #[test]
+    fn clean_cache_removes_file() {
+        let tmp = std::env::temp_dir().join("supp-test-clean-cache");
+        let _ = std::fs::create_dir_all(&tmp);
+
+        let cache = Cache {
+            symbols: Vec::new(),
+            ranks: Vec::new(),
+            file_meta: HashMap::new(),
+            file_refs: HashMap::new(),
+        };
+        save_cache(&tmp, &cache);
+
+        let cp = cache_path(&tmp);
+        assert!(cp.exists(), "cache file should exist after save");
+
+        // clean_cache expects a canonicalized string
+        let result = clean_cache(tmp.to_str().unwrap());
+        assert!(result.is_ok());
+        assert!(!cp.exists(), "cache file should be removed after clean");
+
+        // Cleaning again when no file exists should also succeed
+        let result = clean_cache(tmp.to_str().unwrap());
+        assert!(result.is_ok());
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    // ── SymbolKind::tag ─────────────────────────────────────────────
+
+    #[test]
+    fn symbol_kind_tags() {
+        assert_eq!(SymbolKind::Function.tag(), "fn");
+        assert_eq!(SymbolKind::Struct.tag(), "st");
+        assert_eq!(SymbolKind::Enum.tag(), "en");
+        assert_eq!(SymbolKind::Trait.tag(), "tr");
+        assert_eq!(SymbolKind::Class.tag(), "cl");
+        assert_eq!(SymbolKind::Interface.tag(), "if");
+        assert_eq!(SymbolKind::Method.tag(), "me");
+        assert_eq!(SymbolKind::Type.tag(), "ty");
+        assert_eq!(SymbolKind::Const.tag(), "co");
+        assert_eq!(SymbolKind::Macro.tag(), "ma");
+        assert_eq!(SymbolKind::File.tag(), "fi");
+    }
+
+    // ── pagerank with disconnected nodes ────────────────────────────
+
+    #[test]
+    fn pagerank_disconnected() {
+        // No edges at all among 3 nodes
+        let edges = vec![vec![], vec![], vec![]];
+        let ranks = pagerank(&edges, 3, 20, 0.85);
+        // All ranks should be equal to each other (converges to (1-d)/n)
+        assert!(
+            (ranks[0] - ranks[1]).abs() < 0.001 && (ranks[1] - ranks[2]).abs() < 0.001,
+            "disconnected nodes should have equal rank: {:?}",
+            ranks
+        );
+    }
+
+    // ── is_function_node ────────────────────────────────────────────
+
+    #[test]
+    fn is_function_node_matches() {
+        assert!(is_function_node("function_item", Lang::Rust));
+        assert!(is_function_node("function_definition", Lang::Python));
+        assert!(is_function_node("function_declaration", Lang::Go));
+        assert!(is_function_node("method_declaration", Lang::Java));
+        assert!(is_function_node("method_definition", Lang::JavaScript));
+        assert!(is_function_node("constructor_declaration", Lang::Java));
+        assert!(!is_function_node("struct_item", Lang::Rust));
+        assert!(!is_function_node("class_definition", Lang::Python));
     }
 }

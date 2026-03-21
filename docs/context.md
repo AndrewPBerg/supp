@@ -45,7 +45,7 @@ supp pick
   ────────────────────────────────────────
 
   ✓ Copied to clipboard (4.1 KB)
-  ≈ ~1,024 tokens (cl100k est.)
+  ≈ ~1,024 tokens (est.)
   Done in 12ms
 ```
 
