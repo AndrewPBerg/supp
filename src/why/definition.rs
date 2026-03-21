@@ -191,10 +191,7 @@ fn extract_definition_by_lines(content: &str, sym: &Symbol) -> String {
 }
 
 /// Find the line span (start, end) of a symbol's definition for exclusion.
-pub(super) fn find_definition_span(
-    root: &std::path::Path,
-    sym: &Symbol,
-) -> Option<(usize, usize)> {
+pub(super) fn find_definition_span(root: &std::path::Path, sym: &Symbol) -> Option<(usize, usize)> {
     let abs = root.join(&sym.file);
     let content = std::fs::read_to_string(&abs).ok()?;
     let lang = compress::detect_lang(&sym.file)?;

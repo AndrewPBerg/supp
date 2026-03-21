@@ -257,13 +257,9 @@ impl SuppServer {
             let config = Config::load();
             let mode = parse_mode(params.mode.as_deref());
             let depth = params.depth.unwrap_or(config.global.depth);
-            let result = crate::context::generate_context(
-                &params.paths,
-                depth,
-                params.regex.as_deref(),
-                mode,
-            )
-            .map_err(|e: anyhow::Error| err(e.to_string()))?;
+            let result =
+                crate::ctx::analyze(".", &params.paths, depth, params.regex.as_deref(), mode)
+                    .map_err(|e: anyhow::Error| err(e.to_string()))?;
             Ok(CallToolResult::success(vec![Content::text(result.plain)]))
         })
         .await
@@ -274,11 +270,10 @@ impl SuppServer {
 #[tool_handler]
 impl ServerHandler for SuppServer {
     fn get_info(&self) -> ServerInfo {
-        ServerInfo {
-            capabilities: ServerCapabilities::builder().enable_tools().build(),
-            instructions: Some("supp: structured code context for LLMs — diffs, file analysis, symbol search, tree views".to_string()),
-            ..Default::default()
-        }
+        let mut info = ServerInfo::default();
+        info.capabilities = ServerCapabilities::builder().enable_tools().build();
+        info.instructions = Some("supp: structured code context for LLMs — diffs, file analysis, symbol search, tree views".to_string());
+        info
     }
 }
 

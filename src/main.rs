@@ -1,7 +1,6 @@
 mod cli;
 mod compress;
 mod config;
-mod context;
 mod ctx;
 mod git;
 mod mcp;
@@ -115,9 +114,9 @@ fn main() -> anyhow::Result<()> {
             let pick_start = std::time::Instant::now();
             let depth = cli.resolve_depth(&config);
             let mode = picked_mode.unwrap_or_else(|| cli.resolve_mode(&config));
-            let result = context::generate_context(&selected, depth, cli.regex.as_deref(), mode)?;
+            let result = ctx::analyze(".", &selected, depth, cli.regex.as_deref(), mode)?;
             println!("{}", selected.join(" "));
-            styles::print_pick_stats(result, no_copy, pick_start, text_tx, token_handle);
+            styles::print_pick_stats(&result, no_copy, pick_start, text_tx, token_handle);
             return Ok(());
         }
         Some(Commands::Tree {
@@ -177,8 +176,8 @@ fn main() -> anyhow::Result<()> {
                 styles::print_ctx_result(&result, no_copy, start, text_tx, token_handle);
             } else {
                 let depth = cli.resolve_depth(&config);
-                let result = context::generate_context(&paths, depth, cli.regex.as_deref(), mode)?;
-                styles::print_context_result(result, no_copy, start, text_tx, token_handle);
+                let result = ctx::analyze(".", &paths, depth, cli.regex.as_deref(), mode)?;
+                styles::print_context_result(&result, no_copy, start, text_tx, token_handle);
             }
         }
         Some(

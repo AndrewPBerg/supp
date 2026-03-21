@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use crate::context::ContextResult;
+use crate::ctx::AnalysisResult;
 use crate::git::{DeltaStatus, DiffResult, FileEntry, FileStatus};
 use crate::tree::TreeResult;
 use colored::Colorize;
@@ -876,7 +876,7 @@ pub fn print_ctx_result(
 // ── Context display ─────────────────────────────────────────────
 
 pub fn print_context_result(
-    result: ContextResult,
+    result: &AnalysisResult,
     no_copy: bool,
     start: std::time::Instant,
     token_tx: std::sync::mpsc::Sender<String>,
@@ -910,7 +910,7 @@ pub fn print_context_result(
 // ── Pick display ────────────────────────────────────────────────
 
 pub fn print_pick_stats(
-    result: ContextResult,
+    result: &AnalysisResult,
     no_copy: bool,
     start: std::time::Instant,
     token_tx: std::sync::mpsc::Sender<String>,
