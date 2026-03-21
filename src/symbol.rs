@@ -58,6 +58,7 @@ pub struct Symbol {
 }
 
 pub struct SearchResult {
+    // add comments here
     pub matches: Vec<(Symbol, f64)>,
     pub total_symbols: usize,
 }
@@ -225,10 +226,7 @@ fn build_index(root: &Path) -> (Vec<Symbol>, Vec<f64>) {
             .map(|v| {
                 v.iter()
                     .filter(|&&i| {
-                        matches!(
-                            symbols[i].kind,
-                            SymbolKind::Function | SymbolKind::Method
-                        )
+                        matches!(symbols[i].kind, SymbolKind::Function | SymbolKind::Method)
                     })
                     .copied()
                     .collect()
@@ -289,12 +287,7 @@ fn build_index_incremental(root: &Path, old_cache: &Cache) -> (Vec<Symbol>, Vec<
 
 // ── Symbol extraction ───────────────────────────────────────────────
 
-fn extract_symbols(
-    file: &str,
-    content: &str,
-    lang: Lang,
-    tree: &tree_sitter::Tree,
-) -> Vec<Symbol> {
+fn extract_symbols(file: &str, content: &str, lang: Lang, tree: &tree_sitter::Tree) -> Vec<Symbol> {
     let mut symbols = Vec::new();
     let root = tree.root_node();
     let mut cursor = root.walk();
@@ -329,7 +322,9 @@ fn extract_node_symbols(
             extract_js_symbols(file, content, node, kind, text, symbols, parent, lang)
         }
         Lang::Go => extract_go_symbols(file, content, node, kind, text, symbols, parent),
-        Lang::C | Lang::Cpp => extract_c_symbols(file, content, node, kind, text, symbols, parent, lang),
+        Lang::C | Lang::Cpp => {
+            extract_c_symbols(file, content, node, kind, text, symbols, parent, lang)
+        }
         Lang::Java => extract_java_symbols(file, content, node, kind, text, symbols, parent),
     }
 }
@@ -530,7 +525,14 @@ fn extract_python_symbols(
                     keywords: Vec::new(),
                 });
                 if let Some(body) = node.child_by_field_name("body") {
-                    recurse_children(file, content, Lang::Python, body, symbols, Some(&class_name));
+                    recurse_children(
+                        file,
+                        content,
+                        Lang::Python,
+                        body,
+                        symbols,
+                        Some(&class_name),
+                    );
                 }
             }
         }
@@ -549,7 +551,55 @@ fn extract_python_symbols(
                 }
             }
         }
+        // Module-level assignments: `model = OpenAIResponsesModel(...)` or
+        // type-annotated: `main_agent: Agent[...] = Agent(...)`
+        "expression_statement" if parent.is_none() => {
+            extract_python_assignment(file, content, node, symbols);
+        }
         _ => {}
+    }
+}
+
+fn extract_python_assignment(
+    file: &str,
+    content: &str,
+    node: tree_sitter::Node,
+    symbols: &mut Vec<Symbol>,
+) {
+    let mut cursor = node.walk();
+    if !cursor.goto_first_child() {
+        return;
+    }
+    loop {
+        let child = cursor.node();
+        if child.kind() == "assignment" {
+            if let Some(left) = child.child_by_field_name("left") {
+                if left.kind() == "identifier" {
+                    let name = compress::node_text(content, left).to_string();
+                    // Skip dunder names and _private (but keep __all__)
+                    if name.starts_with("__") && name.ends_with("__") && name != "__all__" {
+                        return;
+                    }
+                    if name.starts_with('_') {
+                        return;
+                    }
+                    // Build signature from the full assignment text
+                    let sig = signature_line(compress::node_text(content, child));
+                    symbols.push(Symbol {
+                        name,
+                        kind: SymbolKind::Const,
+                        file: file.to_string(),
+                        line: node.start_position().row + 1,
+                        signature: sig,
+                        parent: None,
+                        keywords: Vec::new(),
+                    });
+                }
+            }
+        }
+        if !cursor.goto_next_sibling() {
+            break;
+        }
     }
 }
 
@@ -693,13 +743,11 @@ fn extract_go_symbols(
         "method_declaration" => {
             if let Some(name) = name_from_field(node, content) {
                 // Try to get receiver type
-                let receiver = node
-                    .child_by_field_name("receiver")
-                    .and_then(|r| {
-                        // Walk to find the type identifier
-                        let mut cursor = r.walk();
-                        find_type_identifier(&mut cursor, content)
-                    });
+                let receiver = node.child_by_field_name("receiver").and_then(|r| {
+                    // Walk to find the type identifier
+                    let mut cursor = r.walk();
+                    find_type_identifier(&mut cursor, content)
+                });
                 symbols.push(Symbol {
                     name,
                     kind: SymbolKind::Method,
@@ -975,11 +1023,7 @@ fn recurse_children(
 
 // ── Reference extraction ────────────────────────────────────────────
 
-fn extract_references(
-    content: &str,
-    lang: Lang,
-    tree: &tree_sitter::Tree,
-) -> Vec<String> {
+fn extract_references(content: &str, lang: Lang, tree: &tree_sitter::Tree) -> Vec<String> {
     let mut refs = Vec::new();
     let root = tree.root_node();
     collect_identifiers_in_bodies(content, lang, root, &mut refs, false);
@@ -1052,44 +1096,164 @@ fn is_function_node(kind: &str, _lang: Lang) -> bool {
     )
 }
 
-fn is_keyword(s: &str, lang: Lang) -> bool {
+pub fn is_keyword(s: &str, lang: Lang) -> bool {
     match lang {
         Lang::Rust => matches!(
             s,
-            "self" | "Self" | "super" | "crate" | "let" | "mut" | "ref" | "if" | "else"
-                | "match" | "for" | "while" | "loop" | "return" | "break" | "continue"
-                | "fn" | "pub" | "struct" | "enum" | "impl" | "trait" | "use" | "mod"
-                | "where" | "as" | "in" | "true" | "false" | "Some" | "None" | "Ok" | "Err"
+            "self"
+                | "Self"
+                | "super"
+                | "crate"
+                | "let"
+                | "mut"
+                | "ref"
+                | "if"
+                | "else"
+                | "match"
+                | "for"
+                | "while"
+                | "loop"
+                | "return"
+                | "break"
+                | "continue"
+                | "fn"
+                | "pub"
+                | "struct"
+                | "enum"
+                | "impl"
+                | "trait"
+                | "use"
+                | "mod"
+                | "where"
+                | "as"
+                | "in"
+                | "true"
+                | "false"
+                | "Some"
+                | "None"
+                | "Ok"
+                | "Err"
         ),
         Lang::Python => matches!(
             s,
-            "self" | "cls" | "if" | "else" | "elif" | "for" | "while" | "return"
-                | "def" | "class" | "import" | "from" | "as" | "in" | "not" | "and" | "or"
-                | "True" | "False" | "None" | "pass" | "break" | "continue" | "with"
+            "self"
+                | "cls"
+                | "if"
+                | "else"
+                | "elif"
+                | "for"
+                | "while"
+                | "return"
+                | "def"
+                | "class"
+                | "import"
+                | "from"
+                | "as"
+                | "in"
+                | "not"
+                | "and"
+                | "or"
+                | "True"
+                | "False"
+                | "None"
+                | "pass"
+                | "break"
+                | "continue"
+                | "with"
         ),
         Lang::JavaScript | Lang::TypeScript | Lang::Tsx => matches!(
             s,
-            "this" | "if" | "else" | "for" | "while" | "return" | "function" | "class"
-                | "const" | "let" | "var" | "import" | "export" | "from" | "new" | "typeof"
-                | "instanceof" | "true" | "false" | "null" | "undefined" | "async" | "await"
+            "this"
+                | "if"
+                | "else"
+                | "for"
+                | "while"
+                | "return"
+                | "function"
+                | "class"
+                | "const"
+                | "let"
+                | "var"
+                | "import"
+                | "export"
+                | "from"
+                | "new"
+                | "typeof"
+                | "instanceof"
+                | "true"
+                | "false"
+                | "null"
+                | "undefined"
+                | "async"
+                | "await"
         ),
         Lang::Go => matches!(
             s,
-            "if" | "else" | "for" | "return" | "func" | "type" | "struct" | "interface"
-                | "package" | "import" | "var" | "const" | "range" | "defer" | "go"
-                | "true" | "false" | "nil" | "err"
+            "if" | "else"
+                | "for"
+                | "return"
+                | "func"
+                | "type"
+                | "struct"
+                | "interface"
+                | "package"
+                | "import"
+                | "var"
+                | "const"
+                | "range"
+                | "defer"
+                | "go"
+                | "true"
+                | "false"
+                | "nil"
+                | "err"
         ),
         Lang::C | Lang::Cpp => matches!(
             s,
-            "if" | "else" | "for" | "while" | "return" | "int" | "void" | "char"
-                | "float" | "double" | "struct" | "enum" | "typedef" | "sizeof"
-                | "NULL" | "true" | "false" | "this" | "class" | "public" | "private"
+            "if" | "else"
+                | "for"
+                | "while"
+                | "return"
+                | "int"
+                | "void"
+                | "char"
+                | "float"
+                | "double"
+                | "struct"
+                | "enum"
+                | "typedef"
+                | "sizeof"
+                | "NULL"
+                | "true"
+                | "false"
+                | "this"
+                | "class"
+                | "public"
+                | "private"
         ),
         Lang::Java => matches!(
             s,
-            "this" | "if" | "else" | "for" | "while" | "return" | "class" | "interface"
-                | "new" | "public" | "private" | "protected" | "static" | "void" | "int"
-                | "boolean" | "true" | "false" | "null" | "final" | "abstract"
+            "this"
+                | "if"
+                | "else"
+                | "for"
+                | "while"
+                | "return"
+                | "class"
+                | "interface"
+                | "new"
+                | "public"
+                | "private"
+                | "protected"
+                | "static"
+                | "void"
+                | "int"
+                | "boolean"
+                | "true"
+                | "false"
+                | "null"
+                | "final"
+                | "abstract"
         ),
     }
 }
@@ -1137,7 +1301,10 @@ pub fn split_subwords(name: &str) -> Vec<String> {
                 words.push(current.to_lowercase());
                 current.clear();
             }
-        } else if ch.is_uppercase() && !current.is_empty() && current.chars().last().is_some_and(|c| c.is_lowercase()) {
+        } else if ch.is_uppercase()
+            && !current.is_empty()
+            && current.chars().last().is_some_and(|c| c.is_lowercase())
+        {
             words.push(current.to_lowercase());
             current.clear();
             current.push(ch);
@@ -1298,6 +1465,16 @@ pub fn search(root: &str, query: &[String]) -> Result<SearchResult> {
     })
 }
 
+/// Load all indexed symbols (from cache or fresh build). Used by `why` for dependency lookup.
+pub fn load_symbols(root: &Path) -> Vec<Symbol> {
+    let (symbols, _ranks) = if let Some(cache) = load_cache(root) {
+        build_index_incremental(root, &cache)
+    } else {
+        build_index(root)
+    };
+    symbols
+}
+
 // ── Tests ───────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -1306,7 +1483,10 @@ mod tests {
 
     #[test]
     fn split_subwords_snake_case() {
-        assert_eq!(split_subwords("generate_context"), vec!["generate", "context"]);
+        assert_eq!(
+            split_subwords("generate_context"),
+            vec!["generate", "context"]
+        );
     }
 
     #[test]

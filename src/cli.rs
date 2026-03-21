@@ -94,6 +94,12 @@ pub enum Commands {
         /// Search query (free-form text, split into tokens)
         query: Vec<String>,
     },
+    /// Deep-dive a symbol: full definition, doc comments, call sites, dependencies
+    #[command(alias = "w")]
+    Why {
+        /// Symbol name to look up (exact or fuzzy match)
+        query: Vec<String>,
+    },
     /// Interactively pick files with fzf for context generation
     #[command(alias = "p")]
     Pick {

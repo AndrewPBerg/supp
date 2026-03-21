@@ -2041,6 +2041,7 @@ dependencies = [
  "ignore",
  "regex",
  "serde",
+ "strsim",
  "tempfile",
  "tiktoken-rs",
  "tree-sitter",

@@ -7,6 +7,7 @@ mod pick;
 mod styles;
 mod symbol;
 mod tree;
+mod why;
 
 use clap::Parser;
 
@@ -69,6 +70,11 @@ fn main() -> anyhow::Result<()> {
         Some(Commands::Sym { ref query }) => {
             let result = symbol::search(".", query)?;
             styles::print_sym_results(&result, no_copy, start);
+            return Ok(());
+        }
+        Some(Commands::Why { ref query }) => {
+            let result = why::explain(".", query)?;
+            styles::print_why_result(&result, no_copy, start);
             return Ok(());
         }
         Some(Commands::Pick { ref path, single }) => {

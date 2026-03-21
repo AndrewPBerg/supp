@@ -555,6 +555,173 @@ pub fn print_sym_results(result: &crate::symbol::SearchResult, no_copy: bool, st
     println!();
 }
 
+// ── Why display ─────────────────────────────────────────────────
+
+fn color_kind_tag(kind: crate::symbol::SymbolKind) -> String {
+    let tag = kind.tag();
+    match kind {
+        crate::symbol::SymbolKind::Function => tag.cyan().bold().to_string(),
+        crate::symbol::SymbolKind::Struct => tag.yellow().bold().to_string(),
+        crate::symbol::SymbolKind::Enum => tag.green().bold().to_string(),
+        crate::symbol::SymbolKind::Trait => tag.magenta().bold().to_string(),
+        crate::symbol::SymbolKind::Class => tag.yellow().bold().to_string(),
+        crate::symbol::SymbolKind::Interface => tag.magenta().bold().to_string(),
+        crate::symbol::SymbolKind::Method => tag.cyan().to_string(),
+        crate::symbol::SymbolKind::Type => tag.blue().to_string(),
+        crate::symbol::SymbolKind::Const => tag.red().to_string(),
+        crate::symbol::SymbolKind::Macro => tag.red().bold().to_string(),
+        crate::symbol::SymbolKind::File => tag.dimmed().to_string(),
+    }
+}
+
+pub fn print_why_result(result: &crate::why::WhyResult, no_copy: bool, start: std::time::Instant) {
+    println!();
+
+    let sym = &result.symbol;
+    let tag_colored = color_kind_tag(sym.kind);
+
+    let display_name = if let Some(ref parent) = sym.parent {
+        format!("{}::{}", parent.dimmed(), sym.name.bold())
+    } else {
+        sym.name.bold().to_string()
+    };
+    let location = format!("{}:{}", sym.file, sym.line);
+
+    println!("  {} {} {}  {}", "supp why".bold().cyan(), tag_colored, display_name, location.dimmed());
+    println!("  {}", "─".repeat(40).dimmed());
+
+    // Doc comment
+    if let Some(ref doc) = result.doc_comment {
+        println!();
+        for line in doc.lines() {
+            println!("  {}", line.dimmed());
+        }
+    }
+
+    // Hierarchy (parents/children)
+    if let Some(ref h) = result.hierarchy {
+        println!();
+        if !h.parents.is_empty() {
+            println!("  {}", "Parents".bold());
+            for p in &h.parents {
+                if let Some((ref file, line)) = p.location {
+                    let loc = format!("{}:{}", file, line);
+                    let module_hint = p.external_module.as_ref()
+                        .map(|m| format!("  ({})", m).dimmed().to_string())
+                        .unwrap_or_default();
+                    println!("    {} {}  {}{}", "^".dimmed(), p.name.bold(), loc.dimmed(), module_hint);
+                } else {
+                    let module = p.external_module.as_deref().unwrap_or("external");
+                    println!("    {} {}  {}", "^".dimmed(), p.name.bold(), format!("({})", module).dimmed());
+                }
+            }
+        }
+        if !h.children.is_empty() {
+            println!("  {}", "Children".bold());
+            for c in &h.children {
+                if let Some((ref file, line)) = c.location {
+                    let loc = format!("{}:{}", file, line);
+                    println!("    {} {}  {}", "v".dimmed(), c.name.bold(), loc.dimmed());
+                } else {
+                    println!("    {} {}", "v".dimmed(), c.name.bold());
+                }
+            }
+        }
+    }
+
+    // Definition preview (first ~25 lines, full in clipboard)
+    println!();
+    let def_lines: Vec<&str> = result.full_definition.lines().collect();
+    let show_lines = def_lines.len().min(25);
+    for line in &def_lines[..show_lines] {
+        println!("  {}", line);
+    }
+    if def_lines.len() > show_lines {
+        println!("  {} {}", "...".dimmed(), format!("({} more lines)", def_lines.len() - show_lines).dimmed());
+    }
+
+    // Call sites
+    if !result.call_sites.is_empty() {
+        println!();
+        println!(
+            "  {} {}",
+            "Referenced in".bold(),
+            format!("{} location{}", result.call_sites.len(), if result.call_sites.len() == 1 { "" } else { "s" }).dimmed()
+        );
+        let show_count = result.call_sites.len().min(10);
+        for site in &result.call_sites[..show_count] {
+            let loc = format!("{}:{}", site.file, site.line);
+            let caller_str = site
+                .caller
+                .as_ref()
+                .map(|c| format!(" in {}", c.cyan()))
+                .unwrap_or_default();
+            println!("    {}{}  {}", loc.dimmed(), caller_str, site.context.dimmed());
+        }
+        if result.call_sites.len() > show_count {
+            println!("    {}", format!("... and {} more", result.call_sites.len() - show_count).dimmed());
+        }
+    }
+
+    // Dependencies
+    if !result.dependencies.is_empty() {
+        println!();
+        println!(
+            "  {} {}",
+            "Depends on".bold(),
+            format!("{} symbol{}", result.dependencies.len(), if result.dependencies.len() == 1 { "" } else { "s" }).dimmed()
+        );
+        let show_count = result.dependencies.len().min(15);
+        for dep in &result.dependencies[..show_count] {
+            let tag = dep.kind.map(color_kind_tag).unwrap_or_else(|| "--".dimmed().to_string());
+            let loc = if let Some((ref file, line)) = dep.location {
+                format!("{}:{}", file, line).dimmed().to_string()
+            } else if let Some(ref module) = dep.import_from {
+                format!("({})", module).dimmed().to_string()
+            } else {
+                "(external)".dimmed().to_string()
+            };
+            println!("    {} {}  {}", tag, dep.name.bold(), loc);
+        }
+        if result.dependencies.len() > show_count {
+            println!("    {}", format!("... and {} more", result.dependencies.len() - show_count).dimmed());
+        }
+    }
+
+    println!();
+
+    // Footer with clipboard
+    if !result.plain.is_empty() {
+        if no_copy {
+            println!(
+                "  {} {}",
+                "–".dimmed(),
+                format!("({}, not copied)", format_size(result.plain.len())).dimmed(),
+            );
+        } else {
+            match copy_to_clipboard(&result.plain) {
+                Ok(()) => {
+                    println!(
+                        "  {} {} {}",
+                        "✓".green().bold(),
+                        "Copied to clipboard".green(),
+                        format!("({})", format_size(result.plain.len())).dimmed(),
+                    );
+                }
+                Err(e) => {
+                    println!(
+                        "  {} {}",
+                        "✗".red().bold(),
+                        format!("Clipboard error: {}", e).red(),
+                    );
+                }
+            }
+        }
+    }
+    println!("  {}", format!("Done in {}", format_elapsed(start.elapsed())).dimmed());
+    println!();
+}
+
 // ── Context display ─────────────────────────────────────────────
 
 pub fn print_context_result(result: ContextResult, no_copy: bool, start: std::time::Instant, token_handle: std::thread::JoinHandle<Option<usize>>) {
