@@ -15,7 +15,7 @@ pub struct Cli {
     pub no_color: bool,
 
     /// Output as JSON (machine-readable)
-    #[arg(long, global = true)]
+    #[arg(short = 'j', long, global = true)]
     pub json: bool,
 
     /// Regex pattern to filter file paths (e.g. "src/.*\.rs$")
