@@ -55,7 +55,9 @@ fn build_fzf_args(multi: bool, preview_lines: usize) -> Vec<String> {
         ]);
     }
     args.push("--preview".into());
-    args.push(format!("head -{preview_lines} {{}}"));
+    args.push(format!(
+        r#"case {{}} in "[hist "*)  echo {{}} | sed 's/\[hist [0-9]*\] //' | tr ', ' '\n' ;; *) head -{preview_lines} {{}} ;; esac"#
+    ));
     args
 }
 
@@ -374,7 +376,7 @@ mod tests {
         let args = build_fzf_args(false, 50);
         assert!(!args.contains(&"--multi".to_string()));
         assert!(args.contains(&"--preview".to_string()));
-        assert!(args.contains(&"head -50 {}".to_string()));
+        assert!(args.iter().any(|a| a.contains("head -50")));
     }
 
     #[test]
