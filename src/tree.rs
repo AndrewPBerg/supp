@@ -48,6 +48,11 @@ pub fn build_tree(
             continue;
         }
 
+        // Always skip __pycache__ directories and their contents
+        if rel.components().any(|c| c.as_os_str() == "__pycache__") {
+            continue;
+        }
+
         let is_dir = path.is_dir();
         let rel_str = rel.to_string_lossy();
 
@@ -72,7 +77,8 @@ pub fn build_tree(
             None
         };
 
-        let components: Vec<String> = rel.components()
+        let components: Vec<String> = rel
+            .components()
             .map(|c| c.as_os_str().to_string_lossy().into_owned())
             .collect();
 
@@ -91,15 +97,22 @@ pub fn build_tree(
             if !*is_dir {
                 return true;
             }
-            file_paths.iter().any(|fp| {
-                fp.len() > comps.len() && fp[..comps.len()] == comps[..]
-            })
+            file_paths
+                .iter()
+                .any(|fp| fp.len() > comps.len() && fp[..comps.len()] == comps[..])
         });
     }
 
     // Build tree structure
     let mut root_node = TreeNode {
-        name: format!("{}/", if root == "." { "." } else { root.trim_end_matches('/') }),
+        name: format!(
+            "{}/",
+            if root == "." {
+                "."
+            } else {
+                root.trim_end_matches('/')
+            }
+        ),
         is_dir: true,
         status: None,
         children: Vec::new(),
@@ -120,12 +133,32 @@ pub fn build_tree(
     display.push_str(&format!("{}\n", root_node.name.bold()));
     plain.push_str(&format!("{}\n", root_node.name));
 
-    render(&root_node.children, "", &mut display, &mut plain, &mut file_count, &mut dir_count, &mut status_counts);
+    render(
+        &root_node.children,
+        "",
+        &mut display,
+        &mut plain,
+        &mut file_count,
+        &mut dir_count,
+        &mut status_counts,
+    );
 
-    Ok(TreeResult { display, plain, file_count, dir_count, status_counts })
+    Ok(TreeResult {
+        display,
+        plain,
+        file_count,
+        dir_count,
+        status_counts,
+    })
 }
 
-fn insert_node(parent: &mut TreeNode, components: &[String], depth: usize, is_dir: bool, status: Option<FileStatus>) {
+fn insert_node(
+    parent: &mut TreeNode,
+    components: &[String],
+    depth: usize,
+    is_dir: bool,
+    status: Option<FileStatus>,
+) {
     if depth >= components.len() {
         return;
     }
@@ -148,7 +181,13 @@ fn insert_node(parent: &mut TreeNode, components: &[String], depth: usize, is_di
     };
 
     if !is_last {
-        insert_node(&mut parent.children[idx], components, depth + 1, is_dir, status);
+        insert_node(
+            &mut parent.children[idx],
+            components,
+            depth + 1,
+            is_dir,
+            status,
+        );
     }
 }
 
@@ -179,7 +218,15 @@ fn render(
                 format!("{}/", child.name).bold()
             ));
             plain.push_str(&format!("{}{}{}/\n", prefix, connector, child.name));
-            render(&child.children, &child_prefix, display, plain, file_count, dir_count, status_counts);
+            render(
+                &child.children,
+                &child_prefix,
+                display,
+                plain,
+                file_count,
+                dir_count,
+                status_counts,
+            );
         } else {
             *file_count += 1;
             if let Some(st) = child.status {
@@ -209,8 +256,8 @@ fn render(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::TempDir;
     use std::fs;
+    use tempfile::TempDir;
 
     fn setup_tree(files: &[&str]) -> TempDir {
         let dir = TempDir::new().unwrap();
@@ -333,7 +380,8 @@ mod tests {
             None,
             None,
             Some((&statuses, "")),
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(result.status_counts.get(&FileStatus::Modified), Some(&1));
         assert_eq!(result.status_counts.get(&FileStatus::Added), Some(&1));
     }

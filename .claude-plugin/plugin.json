@@ -1,0 +1,16 @@
+{
+  "name": "supp",
+  "version": "0.1.0",
+  "description": "Code-aware context tool for LLMs — diffs, symbol search, tree views, and file analysis",
+  "author": {
+    "name": "AndrewPBerg",
+    "url": "https://github.com/AndrewPBerg/supp"
+  },
+  "repository": "https://github.com/AndrewPBerg/supp",
+  "keywords": ["context", "llm", "git", "symbols", "rust"],
+  "license": "MIT",
+  "components": {
+    "skills": ["skills/"],
+    "mcpServers": [".mcp.json"]
+  }
+}

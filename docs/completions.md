@@ -31,7 +31,7 @@ supp completions fish > ~/.config/fish/completions/supp.fish
 
 ## fzf Integration
 
-The `pick` subcommand launches [fzf](https://github.com/junegunn/fzf) for interactive file selection and prints the selected paths to stdout. This makes it composable with other commands.
+The `pick` subcommand (alias `p`) launches [fzf](https://github.com/junegunn/fzf) for interactive file selection, generates context from the selected files, and copies it to the clipboard.
 
 ### Usage
 
@@ -43,20 +43,23 @@ supp pick [PATH] [OPTIONS]
 
 | Flag | Short | Description |
 |------|-------|-------------|
-| `--single` | `-s` | Select only one file (disables multi-select) |
+| `--single` | `-1` | Select a single file (skips confirmation and accumulation) |
 | `--regex` | `-r` | Regex pattern to pre-filter the file list |
+
+### Behavior
+
+By default, `pick` opens fzf in multi-select mode. After selecting files, you enter an interactive loop where you can confirm, add more files, or clear. Once confirmed, context is generated and copied to the clipboard.
+
+With `--single` (`-1`), fzf opens in single-select mode and immediately generates context — no confirmation step.
 
 ### Examples
 
 ```bash
-# Pick files, then generate context
-supp $(supp pick)
+# Interactive multi-select with confirm loop
+supp pick
 
-# Pick files, print context without clipboard
-supp $(supp pick) -n
-
-# Pick a single file, prints its path
-supp pick --single
+# Single file, no confirmation
+supp pick -1
 
 # Pick from a specific directory
 supp pick src/
@@ -64,6 +67,32 @@ supp pick src/
 # Pre-filter to only Rust files
 supp -r '\.rs$' pick
 ```
+
+### Keybindings
+
+| Key | Action |
+|-----|--------|
+| `ctrl-space` | Toggle selection on current item |
+| `enter` | Toggle all visible (filtered) items — press again to deselect all |
+| `tab` | Confirm selection and proceed |
+| `esc` | Cancel and exit |
+
+### fzf search syntax
+
+fzf supports powerful inline search patterns. Combine them with spaces (AND logic):
+
+| Pattern | Meaning |
+|---------|---------|
+| `agent` | Fuzzy match "agent" |
+| `'agent` | Exact match "agent" |
+| `^src/` | Starts with "src/" |
+| `.py$` | Ends with ".py" |
+| `!migration` | Does NOT contain "migration" |
+| `agent !migration` | Contains "agent" AND NOT "migration" |
+| `agent !migration !test` | Contains "agent", excludes "migration" and "test" |
+| `'agents/ .py$` | Exact "agents/" AND ends with ".py" |
+
+**Tip:** Type a query to filter, then press `enter` to select all visible matches at once.
 
 ### Requirements
 

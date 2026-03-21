@@ -3,6 +3,9 @@ use clap::{CommandFactory, Parser, Subcommand};
 #[derive(Parser)]
 #[command(subcommand_negates_reqs = true)]
 pub struct Cli {
+    /// Print version and check for updates
+    #[arg(long = "version")]
+    pub version_flag: bool,
     /// Skip copying to clipboard and just show the stats
     #[arg(short = 'n', long = "no-copy", aliases = &["no"], global = true)]
     pub no_copy: bool,
@@ -19,16 +22,16 @@ pub struct Cli {
     pub paths: Vec<String>,
 
     /// Strip comments and collapse blank lines
-    #[arg(short = 'S', long, global = true)]
+    #[arg(long, global = true)]
     pub slim: bool,
 
     /// Extract only signatures and definitions (codemap)
-    #[arg(short = 'M', long, global = true, conflicts_with = "slim")]
+    #[arg(short = 'm', long, global = true, conflicts_with = "slim")]
     pub map: bool,
 
     /// Tree depth in context header (default: 2)
-    #[arg(short = 'd', long = "depth", default_value = "2")]
-    pub depth: usize,
+    #[arg(short = 'd', long = "depth")]
+    pub depth: Option<usize>,
 
     #[command(subcommand)]
     pub command: Option<Commands>,
@@ -40,38 +43,33 @@ pub enum Commands {
         /// Path or registered repo name (defaults to '.')
         path: Option<String>,
 
-        /// Only diff staged (cached) files
-        #[arg(short = 'c', long)]
-        cached: bool,
-
-        /// Only diff untracked files
+        /// Untracked files only
         #[arg(short = 'u', long)]
         untracked: bool,
 
-        /// Only diff local (unstaged) changes
+        /// Unstaged changes to tracked files
+        #[arg(short = 't', long)]
+        tracked: bool,
+
+        /// Staged changes only
+        #[arg(short = 's', long)]
+        staged: bool,
+
+        /// All local changes vs self branch remote
         #[arg(short = 'l', long)]
         local: bool,
 
-        /// Branch to target for remote comparison (default: current branch)
-        #[arg(short = 'b', long)]
-        branch: Option<String>,
-
-        /// Combine all local changes (untracked + staged + unstaged)
+        /// All branch changes vs remote default main (default behavior)
         #[arg(short = 'a', long)]
         all: bool,
 
-        /// Compare current branch against its own remote (origin/<branch>)
-        #[arg(short = 's', long)]
-        self_branch: bool,
+        /// Branch to compare to (used with -a)
+        #[arg(short = 'b', long)]
+        branch: Option<String>,
 
         /// Number of context lines in unified diff output
         #[arg(short = 'U', long = "unified")]
         context_lines: Option<u32>,
-
-        /// Glob pattern to filter files (e.g. "*.rs")
-        #[arg(short = 'f', long = "filter")]
-        filter: Option<String>,
-
     },
     Tree {
         /// Directory to display (defaults to ".")
@@ -88,20 +86,63 @@ pub enum Commands {
         /// Shell to generate completions for
         shell: clap_complete::Shell,
     },
+    /// Search symbols by name with PageRank-powered ranking
+    #[command(alias = "s")]
+    Sym {
+        /// Search query (free-form text, split into tokens)
+        query: Vec<String>,
+    },
+    /// Deep-dive a symbol: full definition, doc comments, call sites, dependencies
+    #[command(alias = "w")]
+    Why {
+        /// Symbol name to look up (exact or fuzzy match)
+        query: Vec<String>,
+    },
+    /// Start MCP (Model Context Protocol) server over stdio
+    Mcp,
     /// Interactively pick files with fzf for context generation
     #[command(alias = "p")]
     Pick {
         /// Root directory to search (defaults to ".")
         path: Option<String>,
-        /// Select only a single file (no --multi)
-        #[arg(short = 's', long)]
+        /// Select only a single file (skips confirmation and accumulation)
+        #[arg(short = '1', long)]
         single: bool,
     },
+    /// Show version and check for updates
+    #[command(alias = "v")]
+    Version,
+    /// Update supp to the latest release
+    Update,
+    /// Remove supp from your system
+    Uninstall,
 }
 
 impl Cli {
-    pub fn resolve_mode(&self) -> crate::compress::Mode {
-        if self.map { crate::compress::Mode::Map } else if self.slim { crate::compress::Mode::Slim } else { crate::compress::Mode::Full }
+    pub fn resolve_depth(&self, config: &crate::config::Config) -> usize {
+        self.depth.unwrap_or(config.global.depth)
+    }
+
+    pub fn resolve_no_copy(&self, config: &crate::config::Config) -> bool {
+        self.no_copy || config.global.no_copy
+    }
+
+    pub fn resolve_no_color(&self, config: &crate::config::Config) -> bool {
+        self.no_color || config.global.no_color
+    }
+
+    pub fn resolve_mode(&self, config: &crate::config::Config) -> crate::compress::Mode {
+        if self.map {
+            crate::compress::Mode::Map
+        } else if self.slim {
+            crate::compress::Mode::Slim
+        } else {
+            match config.global.mode.as_str() {
+                "slim" => crate::compress::Mode::Slim,
+                "map" => crate::compress::Mode::Map,
+                _ => crate::compress::Mode::Full,
+            }
+        }
     }
 
     pub fn generate_completions(shell: clap_complete::Shell) {
@@ -151,14 +192,14 @@ mod tests {
     fn context_depth_flag() {
         let cli = parse(&["supp", "-d", "3", "src/"]).unwrap();
         assert!(cli.command.is_none());
-        assert_eq!(cli.depth, 3);
+        assert_eq!(cli.depth, Some(3));
         assert_eq!(cli.paths, vec!["src/"]);
     }
 
     #[test]
     fn context_default_depth() {
         let cli = parse(&["supp", "src/"]).unwrap();
-        assert_eq!(cli.depth, 2);
+        assert_eq!(cli.depth, None);
     }
 
     // ── Global flags ─────────────────────────────────────────────
@@ -190,19 +231,28 @@ mod tests {
     // ── Diff flags ───────────────────────────────────────────────
 
     #[test]
-    fn diff_cached() {
-        let cli = parse(&["supp", "diff", "-c"]).unwrap();
+    fn diff_untracked() {
+        let cli = parse(&["supp", "diff", "-u"]).unwrap();
         match cli.command {
-            Some(Commands::Diff { cached, .. }) => assert!(cached),
+            Some(Commands::Diff { untracked, .. }) => assert!(untracked),
             _ => panic!("expected diff"),
         }
     }
 
     #[test]
-    fn diff_untracked() {
-        let cli = parse(&["supp", "diff", "-u"]).unwrap();
+    fn diff_tracked() {
+        let cli = parse(&["supp", "diff", "-t"]).unwrap();
         match cli.command {
-            Some(Commands::Diff { untracked, .. }) => assert!(untracked),
+            Some(Commands::Diff { tracked, .. }) => assert!(tracked),
+            _ => panic!("expected diff"),
+        }
+    }
+
+    #[test]
+    fn diff_staged() {
+        let cli = parse(&["supp", "diff", "-s"]).unwrap();
+        match cli.command {
+            Some(Commands::Diff { staged, .. }) => assert!(staged),
             _ => panic!("expected diff"),
         }
     }
@@ -226,15 +276,6 @@ mod tests {
     }
 
     #[test]
-    fn diff_self_branch() {
-        let cli = parse(&["supp", "diff", "-s"]).unwrap();
-        match cli.command {
-            Some(Commands::Diff { self_branch, .. }) => assert!(self_branch),
-            _ => panic!("expected diff"),
-        }
-    }
-
-    #[test]
     fn diff_branch() {
         let cli = parse(&["supp", "diff", "-b", "develop"]).unwrap();
         match cli.command {
@@ -248,15 +289,6 @@ mod tests {
         let cli = parse(&["supp", "diff", "-U", "5"]).unwrap();
         match cli.command {
             Some(Commands::Diff { context_lines, .. }) => assert_eq!(context_lines, Some(5)),
-            _ => panic!("expected diff"),
-        }
-    }
-
-    #[test]
-    fn diff_filter() {
-        let cli = parse(&["supp", "diff", "-f", "*.rs"]).unwrap();
-        match cli.command {
-            Some(Commands::Diff { filter, .. }) => assert_eq!(filter.as_deref(), Some("*.rs")),
             _ => panic!("expected diff"),
         }
     }
@@ -339,6 +371,32 @@ mod tests {
         }
     }
 
+    // ── Version / Update / Uninstall ────────────────────────────
+
+    #[test]
+    fn version_subcommand() {
+        let cli = parse(&["supp", "version"]).unwrap();
+        assert!(matches!(cli.command, Some(Commands::Version)));
+    }
+
+    #[test]
+    fn version_alias() {
+        let cli = parse(&["supp", "v"]).unwrap();
+        assert!(matches!(cli.command, Some(Commands::Version)));
+    }
+
+    #[test]
+    fn update_subcommand() {
+        let cli = parse(&["supp", "update"]).unwrap();
+        assert!(matches!(cli.command, Some(Commands::Update)));
+    }
+
+    #[test]
+    fn uninstall_subcommand() {
+        let cli = parse(&["supp", "uninstall"]).unwrap();
+        assert!(matches!(cli.command, Some(Commands::Uninstall)));
+    }
+
     // ── Compression flags ────────────────────────────────────────
 
     #[test]
@@ -377,13 +435,13 @@ mod tests {
 
     #[test]
     fn combined_global_and_diff_flags() {
-        let cli = parse(&["supp", "diff", "-n", "--no-color", "-c", "-f", "*.rs"]).unwrap();
+        let cli = parse(&["supp", "diff", "-n", "--no-color", "-s", "-r", r"\.rs$"]).unwrap();
         assert!(cli.no_copy);
         assert!(cli.no_color);
+        assert_eq!(cli.regex.as_deref(), Some(r"\.rs$"));
         match cli.command {
-            Some(Commands::Diff { cached, filter, .. }) => {
-                assert!(cached);
-                assert_eq!(filter.as_deref(), Some("*.rs"));
+            Some(Commands::Diff { staged, .. }) => {
+                assert!(staged);
             }
             _ => panic!("expected diff"),
         }

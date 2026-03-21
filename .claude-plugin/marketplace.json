@@ -1,0 +1,10 @@
+{
+  "name": "supp-marketplace",
+  "plugins": [
+    {
+      "name": "supp",
+      "source": "./",
+      "description": "Code-aware supplemental context tool for LLMs"
+    }
+  ]
+}

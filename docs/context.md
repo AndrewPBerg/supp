@@ -13,8 +13,11 @@ supp [-n] <paths...> [OPTIONS]
 | Flag | Short | Description |
 |------|-------|-------------|
 | `--no-copy` | `-n` | Print context only, skip clipboard copy |
+| `--no-color` | | Disable colored output |
 | `--regex` | `-r` | Regex pattern to filter file paths |
-| `--depth` | `-d` | Tree depth in context header (default: 2) |
+| `--depth` | `-d` | Tree depth in context header (default: 2, configurable) |
+| `--slim` | | Strip comments and collapse blank lines |
+| `--map` | `-m` | Extract only signatures and definitions (codemap) |
 
 ## Examples
 
@@ -32,7 +35,7 @@ supp src/ -r '\.rs$'
 supp src/main.rs -n
 
 # Pick files interactively, then generate context
-supp $(supp pick)
+supp pick
 ```
 
 ## Example output

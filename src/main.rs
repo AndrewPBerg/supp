@@ -1,25 +1,80 @@
 mod cli;
 mod compress;
-mod context;
+mod config;
+mod ctx;
 mod git;
+mod mcp;
 mod pick;
+mod self_update;
 mod styles;
+mod symbol;
 mod tree;
+mod why;
 
 use clap::Parser;
+use colored::Colorize;
 
 use cli::Cli;
 use cli::Commands;
+use config::Config;
 use git::{DiffOptions, get_diff};
 
 fn main() -> anyhow::Result<()> {
     let start = std::time::Instant::now();
     let cli = Cli::parse();
+    let config = Config::load();
 
-    if cli.no_color {
+    if cli.version_flag {
+        self_update::print_version();
+        return Ok(());
+    }
+
+    if cli.resolve_no_color(&config) {
         colored::control::set_override(false);
     }
 
+    let no_copy = cli.resolve_no_copy(&config);
+    let max_untracked_size = config.limits.max_untracked_file_size_mb * 1024 * 1024;
+
+    // Commands that don't need token counting — handle early without spawning the thread
+    match cli.command {
+        Some(Commands::Completions { shell }) => {
+            Cli::generate_completions(shell);
+            return Ok(());
+        }
+        Some(Commands::Sym { ref query }) => {
+            let result = symbol::search(".", query)?;
+            styles::print_sym_results(&result, no_copy, start);
+            return Ok(());
+        }
+        Some(Commands::Why { ref query }) => {
+            let result = why::explain(".", query)?;
+            styles::print_why_result(&result, no_copy, start);
+            return Ok(());
+        }
+        Some(Commands::Mcp) => {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?
+                .block_on(mcp::run())?;
+            return Ok(());
+        }
+        Some(Commands::Version) => {
+            self_update::print_version();
+            return Ok(());
+        }
+        Some(Commands::Update) => {
+            self_update::self_update()?;
+            return Ok(());
+        }
+        Some(Commands::Uninstall) => {
+            self_update::uninstall()?;
+            return Ok(());
+        }
+        _ => {}
+    }
+
+    // Spawn token-counting thread only for commands that use it
     let (text_tx, text_rx) = std::sync::mpsc::channel::<String>();
     let token_handle = std::thread::spawn(move || {
         let bpe = tiktoken_rs::cl100k_base().ok()?;
@@ -30,49 +85,63 @@ fn main() -> anyhow::Result<()> {
     match cli.command {
         Some(Commands::Diff {
             path,
-            cached,
             untracked,
+            tracked,
+            staged,
             local,
-            branch,
             all,
-            self_branch,
+            branch,
             context_lines,
-            filter,
         }) => {
             let repo_path = path.as_deref().unwrap_or(".");
             let opts = DiffOptions {
-                cached,
                 untracked,
+                tracked,
+                staged,
                 local,
-                branch,
                 all,
-                self_branch,
-                context_lines,
-                filter,
-                regex: cli.regex,
+                branch,
+                context_lines: context_lines.or(Some(config.diff.context_lines)),
+                max_untracked_size,
             };
-            let result = get_diff(repo_path, opts)?;
-            let _ = text_tx.send(result.text.clone());
-            styles::print_diff_result(result, cli.no_copy, start, token_handle);
-        }
-        Some(Commands::Completions { shell }) => {
-            Cli::generate_completions(shell);
-            return Ok(());
+            let result = get_diff(repo_path, opts, cli.regex.as_deref())?;
+            styles::print_diff_result(result, no_copy, start, text_tx, token_handle);
         }
         Some(Commands::Pick { ref path, single }) => {
             let root = path.as_deref().unwrap_or(".");
-            let selected = pick::run_fzf(root, !single, cli.regex.as_deref())?;
-            if selected.is_empty() {
-                return Ok(());
-            }
+            let mut picked_mode = None;
+            let selected = if single {
+                let s =
+                    pick::run_fzf(root, false, cli.regex.as_deref(), config.pick.preview_lines)?;
+                if s.is_empty() {
+                    return Ok(());
+                }
+                s
+            } else {
+                let (f, mode_override) = pick::interactive_pick_loop(
+                    root,
+                    cli.regex.as_deref(),
+                    config.pick.preview_lines,
+                )?;
+                if f.is_empty() {
+                    return Ok(());
+                }
+                picked_mode = mode_override;
+                f
+            };
             let pick_start = std::time::Instant::now();
-            let result = context::generate_context(&selected, cli.depth, cli.regex.as_deref(), cli.resolve_mode())?;
-            let _ = text_tx.send(result.plain.clone());
+            let depth = cli.resolve_depth(&config);
+            let mode = picked_mode.unwrap_or_else(|| cli.resolve_mode(&config));
+            let result = ctx::analyze(".", &selected, depth, cli.regex.as_deref(), mode)?;
             println!("{}", selected.join(" "));
-            styles::print_pick_stats(result, cli.no_copy, pick_start, token_handle);
+            styles::print_pick_stats(&result, no_copy, pick_start, text_tx, token_handle);
             return Ok(());
         }
-        Some(Commands::Tree { path, depth, no_git }) => {
+        Some(Commands::Tree {
+            path,
+            depth,
+            no_git,
+        }) => {
             let root = path.as_deref().unwrap_or(".");
 
             let statuses = if no_git {
@@ -81,18 +150,64 @@ fn main() -> anyhow::Result<()> {
                 git::get_status_map(root)?
             };
 
-            let status_ref = statuses.as_ref().map(|(map, prefix)| (map, prefix.as_str()));
+            let status_ref = statuses
+                .as_ref()
+                .map(|(map, prefix)| (map, prefix.as_str()));
             let result = tree::build_tree(root, depth, cli.regex.as_deref(), status_ref)?;
-            let _ = text_tx.send(result.plain.clone());
-            styles::print_tree_result(result, root, cli.no_copy, start, token_handle);
+            styles::print_tree_result(result, root, no_copy, start, text_tx, token_handle);
         }
         None => {
-            if cli.paths.is_empty() {
-                anyhow::bail!("no paths provided. Usage: supp <paths...> or supp <subcommand>");
+            let mode = cli.resolve_mode(&config);
+            // Expand any "p" tokens via fzf before processing
+            let has_p = cli.paths.iter().any(|p| p == "p");
+            let paths = if has_p {
+                let expanded = pick::expand_p_tokens(
+                    &cli.paths,
+                    cli.regex.as_deref(),
+                    config.pick.preview_lines,
+                )?;
+                if !expanded.is_empty() {
+                    // Print resolved command so user can copy/rerun without fzf
+                    eprintln!("{}", format!("supp {}", expanded.join(" ")).dimmed());
+                }
+                expanded
+            } else {
+                cli.paths.clone()
+            };
+
+            if paths.is_empty() {
+                if has_p {
+                    return Ok(());
+                }
+                let selected =
+                    pick::run_fzf(".", false, cli.regex.as_deref(), config.pick.preview_lines)?;
+                if selected.is_empty() {
+                    return Ok(());
+                }
+                let file = selected.into_iter().next().unwrap();
+                let depth = cli.resolve_depth(&config);
+                let result = ctx::analyze(".", &[file], depth, cli.regex.as_deref(), mode)?;
+                styles::print_ctx_result(&result, no_copy, start, text_tx, token_handle);
+            } else if paths.len() == 1 && std::path::Path::new(&paths[0]).is_file() {
+                let depth = cli.resolve_depth(&config);
+                let result = ctx::analyze(".", &paths, depth, cli.regex.as_deref(), mode)?;
+                styles::print_ctx_result(&result, no_copy, start, text_tx, token_handle);
+            } else {
+                let depth = cli.resolve_depth(&config);
+                let result = ctx::analyze(".", &paths, depth, cli.regex.as_deref(), mode)?;
+                styles::print_context_result(&result, no_copy, start, text_tx, token_handle);
             }
-            let result = context::generate_context(&cli.paths, cli.depth, cli.regex.as_deref(), cli.resolve_mode())?;
-            let _ = text_tx.send(result.plain.clone());
-            styles::print_context_result(result, cli.no_copy, start, token_handle);
+        }
+        Some(
+            Commands::Completions { .. }
+            | Commands::Sym { .. }
+            | Commands::Why { .. }
+            | Commands::Mcp
+            | Commands::Version
+            | Commands::Update
+            | Commands::Uninstall,
+        ) => {
+            unreachable!()
         }
     }
     Ok(())

@@ -13,6 +13,7 @@ supp [-n] tree [PATH] [OPTIONS]
 | Flag | Short | Description |
 |------|-------|-------------|
 | `--no-copy` | `-n` | Show tree only, skip clipboard copy |
+| `--no-color` | | Disable colored output |
 | `--regex` | `-r` | Regex pattern to filter file paths |
 
 ## Options
