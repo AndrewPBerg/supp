@@ -270,7 +270,7 @@ pub(crate) fn format_number(n: usize) -> String {
     result.chars().rev().collect()
 }
 
-pub fn print_diff_result(result: DiffResult, no_copy: bool, start: std::time::Instant, token_handle: std::thread::JoinHandle<Option<usize>>) {
+pub fn print_diff_result(result: DiffResult, no_copy: bool, start: std::time::Instant, token_tx: std::sync::mpsc::Sender<String>, token_handle: std::thread::JoinHandle<Option<usize>>) {
     let now = chrono::Local::now().format("%Y-%m-%d %H:%M").to_string();
 
     let mut meta_parts: Vec<String> = Vec::new();
@@ -314,12 +314,12 @@ pub fn print_diff_result(result: DiffResult, no_copy: bool, start: std::time::In
     clipboard_header.push_str("\n---\n\n");
     let clipboard_text = format!("{}{}", clipboard_header, result.text);
 
-    print_footer(&clipboard_text, no_copy, start, token_handle, None, false);
+    print_footer(&clipboard_text, no_copy, start, token_tx, token_handle, None, false);
 }
 
 // ── Tree display ───────────────────────────────────────────────────
 
-pub fn print_tree_result(result: TreeResult, root: &str, no_copy: bool, start: std::time::Instant, token_handle: std::thread::JoinHandle<Option<usize>>) {
+pub fn print_tree_result(result: TreeResult, root: &str, no_copy: bool, start: std::time::Instant, token_tx: std::sync::mpsc::Sender<String>, token_handle: std::thread::JoinHandle<Option<usize>>) {
     println!();
     println!("  {}  {}", "supp tree".bold().cyan(), root.dimmed());
     println!("  {}", "─".repeat(40).dimmed());
@@ -372,7 +372,7 @@ pub fn print_tree_result(result: TreeResult, root: &str, no_copy: bool, start: s
     }
     println!();
 
-    print_footer(&result.plain, no_copy, start, token_handle, None, false);
+    print_footer(&result.plain, no_copy, start, token_tx, token_handle, None, false);
 }
 
 // ── Shared footer (clipboard, compression, tokens, timing) ──────
@@ -381,10 +381,13 @@ fn print_footer(
     text: &str,
     no_copy: bool,
     start: std::time::Instant,
+    token_tx: std::sync::mpsc::Sender<String>,
     token_handle: std::thread::JoinHandle<Option<usize>>,
     original_bytes: Option<(usize, usize)>,
     use_stderr: bool,
 ) {
+    // Send final clipboard text so token count reflects what's actually copied
+    let _ = token_tx.send(text.to_string());
     macro_rules! out {
         ($($arg:tt)*) => {
             if use_stderr { eprintln!($($arg)*); } else { println!($($arg)*); }
@@ -691,7 +694,7 @@ pub fn print_why_result(result: &crate::why::WhyResult, no_copy: bool, start: st
 
 // ── Ctx display ─────────────────────────────────────────────────
 
-pub fn print_ctx_result(result: &crate::ctx::CtxResult, no_copy: bool, start: std::time::Instant, token_handle: std::thread::JoinHandle<Option<usize>>) {
+pub fn print_ctx_result(result: &crate::ctx::CtxResult, no_copy: bool, start: std::time::Instant, token_tx: std::sync::mpsc::Sender<String>, token_handle: std::thread::JoinHandle<Option<usize>>) {
     println!();
     println!(
         "  {}  {}  {} dep{}, {} reference{}",
@@ -709,31 +712,31 @@ pub fn print_ctx_result(result: &crate::ctx::CtxResult, no_copy: bool, start: st
     println!("  {} lines in target", result.target_lines.to_string().bold());
     println!();
 
-    print_footer(&result.plain, no_copy, start, token_handle, None, false);
+    print_footer(&result.plain, no_copy, start, token_tx, token_handle, None, false);
 }
 
 // ── Context display ─────────────────────────────────────────────
 
-pub fn print_context_result(result: ContextResult, no_copy: bool, start: std::time::Instant, token_handle: std::thread::JoinHandle<Option<usize>>) {
+pub fn print_context_result(result: ContextResult, no_copy: bool, start: std::time::Instant, token_tx: std::sync::mpsc::Sender<String>, token_handle: std::thread::JoinHandle<Option<usize>>) {
     println!();
     println!("  {}  {} file{}, {} line{}, {}", "supp".bold().cyan(), result.file_count, if result.file_count == 1 { "" } else { "s" }, result.total_lines, if result.total_lines == 1 { "" } else { "s" }, format_size(result.total_bytes).dimmed());
     println!("  {}", "─".repeat(40).dimmed());
     println!();
 
     let compression = Some((result.original_bytes, result.total_bytes));
-    print_footer(&result.plain, no_copy, start, token_handle, compression, false);
+    print_footer(&result.plain, no_copy, start, token_tx, token_handle, compression, false);
 }
 
 // ── Pick display ────────────────────────────────────────────────
 
-pub fn print_pick_stats(result: ContextResult, no_copy: bool, start: std::time::Instant, token_handle: std::thread::JoinHandle<Option<usize>>) {
+pub fn print_pick_stats(result: ContextResult, no_copy: bool, start: std::time::Instant, token_tx: std::sync::mpsc::Sender<String>, token_handle: std::thread::JoinHandle<Option<usize>>) {
     eprintln!();
     eprintln!("  {}  {} file{}, {} line{}, {}", "pick".bold().cyan(), result.file_count, if result.file_count == 1 { "" } else { "s" }, result.total_lines, if result.total_lines == 1 { "" } else { "s" }, format_size(result.total_bytes).dimmed());
     eprintln!("  {}", "─".repeat(40).dimmed());
     eprintln!();
 
     let compression = Some((result.original_bytes, result.total_bytes));
-    print_footer(&result.plain, no_copy, start, token_handle, compression, true);
+    print_footer(&result.plain, no_copy, start, token_tx, token_handle, compression, true);
 }
 
 #[cfg(test)]

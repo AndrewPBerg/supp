@@ -1070,7 +1070,7 @@ fn collect_all_identifiers(
 
 // ── Hierarchy extraction ────────────────────────────────────────────
 
-fn extract_hierarchy(
+pub(crate) fn extract_hierarchy(
     _root: &Path,
     sym: &Symbol,
     content: &str,

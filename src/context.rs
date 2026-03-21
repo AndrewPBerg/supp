@@ -71,7 +71,6 @@ pub fn generate_context(
     }
 
     // Concurrent reads: (path, compressed_content, original_content)
-    let need_originals = mode != Mode::Full;
     let results: Mutex<Vec<(String, String, String)>> = Mutex::new(Vec::new());
     std::thread::scope(|s| {
         for fp in &file_paths {
@@ -80,8 +79,7 @@ pub fn generate_context(
             s.spawn(move || {
                 if let Ok(content) = std::fs::read_to_string(&fp) {
                     let compressed = compress::compress(&content, &fp, mode);
-                    let original = if need_originals { content } else { String::new() };
-                    results.lock().unwrap().push((fp, compressed, original));
+                    results.lock().unwrap().push((fp, compressed, content));
                 }
             });
         }
@@ -97,11 +95,9 @@ pub fn generate_context(
     read_files.sort_by_key(|(p, _, _)| order.get(p.as_str()).copied().unwrap_or(usize::MAX));
 
     let file_count = read_files.len();
-    let original_bytes: usize = read_files.iter().map(|(_, _, orig)| if orig.is_empty() { 0 } else { orig.len() }).sum();
+    let original_bytes: usize = read_files.iter().map(|(_, _, orig)| orig.len()).sum();
     let total_bytes: usize = read_files.iter().map(|(_, c, _)| c.len()).sum();
     let total_lines: usize = read_files.iter().map(|(_, c, _)| c.lines().count()).sum();
-    // In full mode, original_bytes == total_bytes (content == compressed)
-    let original_bytes = if need_originals { original_bytes } else { total_bytes };
 
     // Assemble plain output
     let mut plain = String::new();
@@ -230,22 +226,93 @@ pub fn generate_context(
             }
         }
 
-        // Import / dependency analysis per included file (reuse already-read content)
+        // Hierarchy: inheritance / implements for classes, structs, traits
+        let mut hierarchy_entries: Vec<(String, String)> = Vec::new();
+        for (path, _, original) in &read_files {
+            let rel = path.as_str();
+            let imports = why::extract_file_imports(original, rel, &root_path);
+
+            // Check each class/struct/trait symbol in this file
+            let file_syms: Vec<_> = included_symbols
+                .iter()
+                .filter(|s| {
+                    matches!(
+                        s.kind,
+                        SymbolKind::Class
+                            | SymbolKind::Struct
+                            | SymbolKind::Trait
+                            | SymbolKind::Interface
+                    ) && (path.ends_with(&s.file) || s.file.ends_with(rel))
+                })
+                .collect();
+
+            for sym in &file_syms {
+                if let Some(h) = why::extract_hierarchy(
+                    &root_path,
+                    sym,
+                    original,
+                    &all_symbols,
+                    &imports,
+                ) {
+                    let mut lines = Vec::new();
+                    for p in &h.parents {
+                        let loc = if let Some((ref file, line)) = p.location {
+                            format!("{}:{}", file, line)
+                        } else {
+                            p.external_module
+                                .as_ref()
+                                .map(|m| format!("({} — external)", m))
+                                .unwrap_or_else(|| "(external)".to_string())
+                        };
+                        lines.push(format!("  ^ {}  {}", p.name, loc));
+                    }
+                    for c in &h.children {
+                        let loc = if let Some((ref file, line)) = c.location {
+                            format!("{}:{}", file, line)
+                        } else {
+                            "(external)".to_string()
+                        };
+                        lines.push(format!("  v {}  {}", c.name, loc));
+                    }
+                    if !lines.is_empty() {
+                        let display = if let Some(ref parent) = sym.parent {
+                            format!("{}::{}", parent, sym.name)
+                        } else {
+                            sym.name.clone()
+                        };
+                        let mut entry = format!("[{}] {}\n", sym.kind.tag(), display);
+                        for l in &lines {
+                            entry.push_str(&format!("{}\n", l));
+                        }
+                        hierarchy_entries.push((path.clone(), entry));
+                    }
+                }
+            }
+        }
+
+        if !hierarchy_entries.is_empty() {
+            plain.push_str("\n--- HIERARCHY ---\n");
+            let mut current_file = "";
+            for (file, entry) in &hierarchy_entries {
+                if file.as_str() != current_file {
+                    plain.push_str(&format!("\n## {}\n", file));
+                    current_file = file;
+                }
+                plain.push_str(entry);
+            }
+        }
+
+        // Import / dependency analysis per included file
         let mut all_imports: Vec<(String, Vec<(String, String, Option<String>)>)> = Vec::new();
         for (path, _, original) in &read_files {
-            if original.is_empty() {
-                continue;
-            }
-            let content = original;
             let rel = path.as_str();
-            let imports = why::extract_file_imports(&content, rel, &root_path);
+            let imports = why::extract_file_imports(original, rel, &root_path);
             if imports.is_empty() {
                 continue;
             }
 
             let mut resolved: Vec<(String, String, Option<String>)> = Vec::new();
             for (name, module) in &imports {
-                // Try symbol index
                 if let Some(sym) = all_symbols.iter().find(|s| s.name == *name && s.file != rel) {
                     resolved.push((
                         name.clone(),

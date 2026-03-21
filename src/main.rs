@@ -81,8 +81,7 @@ fn main() -> anyhow::Result<()> {
                 max_untracked_size,
             };
             let result = get_diff(repo_path, opts, cli.regex.as_deref())?;
-            let _ = text_tx.send(result.text.clone());
-            styles::print_diff_result(result, no_copy, start, token_handle);
+            styles::print_diff_result(result, no_copy, start, text_tx, token_handle);
         }
         Some(Commands::Pick { ref path, single }) => {
             let root = path.as_deref().unwrap_or(".");
@@ -94,9 +93,8 @@ fn main() -> anyhow::Result<()> {
             let depth = cli.resolve_depth(&config);
             let mode = cli.resolve_mode(&config);
             let result = context::generate_context(&selected, depth, cli.regex.as_deref(), mode)?;
-            let _ = text_tx.send(result.plain.clone());
             println!("{}", selected.join(" "));
-            styles::print_pick_stats(result, no_copy, pick_start, token_handle);
+            styles::print_pick_stats(result, no_copy, pick_start, text_tx, token_handle);
             return Ok(());
         }
         Some(Commands::Tree { path, depth, no_git }) => {
@@ -110,8 +108,7 @@ fn main() -> anyhow::Result<()> {
 
             let status_ref = statuses.as_ref().map(|(map, prefix)| (map, prefix.as_str()));
             let result = tree::build_tree(root, depth, cli.regex.as_deref(), status_ref)?;
-            let _ = text_tx.send(result.plain.clone());
-            styles::print_tree_result(result, root, no_copy, start, token_handle);
+            styles::print_tree_result(result, root, no_copy, start, text_tx, token_handle);
         }
         None => {
             let mode = cli.resolve_mode(&config);
@@ -122,17 +119,14 @@ fn main() -> anyhow::Result<()> {
                 }
                 let file = selected.into_iter().next().unwrap();
                 let result = ctx::analyze(".", &file, mode)?;
-                let _ = text_tx.send(result.plain.clone());
-                styles::print_ctx_result(&result, no_copy, start, token_handle);
+                styles::print_ctx_result(&result, no_copy, start, text_tx, token_handle);
             } else if cli.paths.len() == 1 && std::path::Path::new(&cli.paths[0]).is_file() {
                 let result = ctx::analyze(".", &cli.paths[0], mode)?;
-                let _ = text_tx.send(result.plain.clone());
-                styles::print_ctx_result(&result, no_copy, start, token_handle);
+                styles::print_ctx_result(&result, no_copy, start, text_tx, token_handle);
             } else {
                 let depth = cli.resolve_depth(&config);
                 let result = context::generate_context(&cli.paths, depth, cli.regex.as_deref(), mode)?;
-                let _ = text_tx.send(result.plain.clone());
-                styles::print_context_result(result, no_copy, start, token_handle);
+                styles::print_context_result(result, no_copy, start, text_tx, token_handle);
             }
         }
         Some(Commands::Completions { .. } | Commands::Sym { .. } | Commands::Why { .. }) => {
