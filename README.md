@@ -11,7 +11,7 @@ A code-aware supplemental context tool for LLMs — extracts symbols, dependenci
 
 ## Quality Gates
 
-| Tool | Purpose |
+| Tool | Purpose|
 |------|---------|
 | `cargo fmt` | Enforces consistent formatting |
 | `cargo clippy` | Lint checks with `-D warnings` |

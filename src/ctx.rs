@@ -545,6 +545,7 @@ fn render(
     let has_used_by = analyses.iter().any(|a| !a.used_by.is_empty());
     if has_used_by {
         out.push_str("\n--- USED BY ---\n");
+        out.push_str("(Imprecise: text-based search — may include false positives from common names)\n");
         for (fd, analysis) in files.iter().zip(analyses.iter()) {
             if analysis.used_by.is_empty() {
                 continue;
