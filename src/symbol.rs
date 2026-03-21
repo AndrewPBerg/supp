@@ -290,18 +290,32 @@ fn build_index_incremental(root: &Path, old_cache: &Cache) -> (Vec<Symbol>, Vec<
 fn extract_symbols(file: &str, content: &str, lang: Lang, tree: &tree_sitter::Tree) -> Vec<Symbol> {
     let mut symbols = Vec::new();
     let root = tree.root_node();
-    let mut cursor = root.walk();
+    extract_symbols_recursive(file, content, lang, root, &mut symbols, None);
+    symbols
+}
 
+fn extract_symbols_recursive(
+    file: &str,
+    content: &str,
+    lang: Lang,
+    node: tree_sitter::Node,
+    symbols: &mut Vec<Symbol>,
+    parent: Option<&str>,
+) {
+    let mut cursor = node.walk();
     if cursor.goto_first_child() {
         loop {
-            extract_node_symbols(file, content, lang, cursor.node(), &mut symbols, None);
+            let child = cursor.node();
+            extract_node_symbols(file, content, lang, child, symbols, parent);
+            // Recurse into preprocessor directives so we index symbols inside #ifdef guards
+            if child.kind().starts_with("preproc_") {
+                extract_symbols_recursive(file, content, lang, child, symbols, parent);
+            }
             if !cursor.goto_next_sibling() {
                 break;
             }
         }
     }
-
-    symbols
 }
 
 fn extract_node_symbols(
@@ -698,6 +712,38 @@ fn extract_js_symbols(
                 });
             }
         }
+        "lexical_declaration" | "variable_declaration" => {
+            // const MyComponent = (props: Props) => { ... }
+            // const MyComponent = function(...) { ... }
+            let mut cursor = node.walk();
+            if cursor.goto_first_child() {
+                loop {
+                    let child = cursor.node();
+                    if child.kind() == "variable_declarator" {
+                        if let Some(name) = name_from_field(child, content) {
+                            let value = child.child_by_field_name("value");
+                            let is_fn = value.is_some_and(|v| {
+                                matches!(v.kind(), "arrow_function" | "function" | "function_expression")
+                            });
+                            if is_fn {
+                                symbols.push(Symbol {
+                                    name,
+                                    kind: SymbolKind::Function,
+                                    file: file.to_string(),
+                                    line: node.start_position().row + 1,
+                                    signature: signature_line(text),
+                                    parent: parent.map(String::from),
+                                    keywords: Vec::new(),
+                                });
+                            }
+                        }
+                    }
+                    if !cursor.goto_next_sibling() {
+                        break;
+                    }
+                }
+            }
+        }
         "export_statement" => {
             // Recurse into exported declarations
             let mut cursor = node.walk();
@@ -853,13 +899,21 @@ fn extract_c_symbols(
         "function_definition" => {
             if let Some(declarator) = node.child_by_field_name("declarator") {
                 if let Some(name) = find_declarator_name(declarator, content) {
+                    // C++: detect Foo::bar() scope qualifier for method resolution
+                    let scope = find_scope_qualifier(declarator, content);
+                    let effective_parent = scope.as_deref().or(parent);
+                    let sk = if effective_parent.is_some() {
+                        SymbolKind::Method
+                    } else {
+                        SymbolKind::Function
+                    };
                     symbols.push(Symbol {
                         name,
-                        kind: SymbolKind::Function,
+                        kind: sk,
                         file: file.to_string(),
                         line: node.start_position().row + 1,
                         signature: signature_line(text),
-                        parent: parent.map(String::from),
+                        parent: effective_parent.map(String::from),
                         keywords: Vec::new(),
                     });
                 }
@@ -919,6 +973,32 @@ fn find_declarator_name(node: tree_sitter::Node, content: &str) -> Option<String
         loop {
             if let Some(name) = find_declarator_name(cursor.node(), content) {
                 return Some(name);
+            }
+            if !cursor.goto_next_sibling() {
+                break;
+            }
+        }
+    }
+    None
+}
+
+/// Extract C++ scope qualifier from a declarator (e.g. "Foo" from "Foo::bar").
+fn find_scope_qualifier(node: tree_sitter::Node, content: &str) -> Option<String> {
+    if node.kind() == "qualified_identifier" {
+        // qualified_identifier has scope (type_identifier / namespace_identifier) and name
+        if let Some(scope) = node.child_by_field_name("scope") {
+            let text = compress::node_text(content, scope);
+            if !text.is_empty() {
+                return Some(text.to_string());
+            }
+        }
+    }
+    // Recurse into children (e.g. function_declarator wrapping qualified_identifier)
+    let mut cursor = node.walk();
+    if cursor.goto_first_child() {
+        loop {
+            if let Some(q) = find_scope_qualifier(cursor.node(), content) {
+                return Some(q);
             }
             if !cursor.goto_next_sibling() {
                 break;

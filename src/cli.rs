@@ -19,7 +19,7 @@ pub struct Cli {
     pub paths: Vec<String>,
 
     /// Strip comments and collapse blank lines
-    #[arg(short = 'S', long, global = true)]
+    #[arg(short = 's', long, global = true)]
     pub slim: bool,
 
     /// Extract only signatures and definitions (codemap)
@@ -61,7 +61,7 @@ pub enum Commands {
         all: bool,
 
         /// Compare current branch against its own remote (origin/<branch>)
-        #[arg(short = 's', long)]
+        #[arg(short = 'S', long)]
         self_branch: bool,
 
         /// Number of context lines in unified diff output
@@ -100,19 +100,13 @@ pub enum Commands {
         /// Symbol name to look up (exact or fuzzy match)
         query: Vec<String>,
     },
-    /// LLM-optimized context: file contents + dependency signatures + reverse references
-    #[command(alias = "c")]
-    Ctx {
-        /// File to analyze (launches fzf picker if omitted)
-        file: Option<String>,
-    },
     /// Interactively pick files with fzf for context generation
     #[command(alias = "p")]
     Pick {
         /// Root directory to search (defaults to ".")
         path: Option<String>,
         /// Select only a single file (no --multi)
-        #[arg(short = 's', long)]
+        #[arg(short = '1', long)]
         single: bool,
     },
 }
@@ -267,7 +261,7 @@ mod tests {
 
     #[test]
     fn diff_self_branch() {
-        let cli = parse(&["supp", "diff", "-s"]).unwrap();
+        let cli = parse(&["supp", "diff", "-S"]).unwrap();
         match cli.command {
             Some(Commands::Diff { self_branch, .. }) => assert!(self_branch),
             _ => panic!("expected diff"),

@@ -78,22 +78,6 @@ fn main() -> anyhow::Result<()> {
             styles::print_why_result(&result, no_copy, start);
             return Ok(());
         }
-        Some(Commands::Ctx { ref file }) => {
-            let file = match file {
-                Some(f) => f.clone(),
-                None => {
-                    let selected = pick::run_fzf(".", false, cli.regex.as_deref(), config.pick.preview_lines)?;
-                    if selected.is_empty() {
-                        return Ok(());
-                    }
-                    selected.into_iter().next().unwrap()
-                }
-            };
-            let result = ctx::analyze(".", &file)?;
-            let _ = text_tx.send(result.plain.clone());
-            styles::print_ctx_result(&result, no_copy, start, token_handle);
-            return Ok(());
-        }
         Some(Commands::Pick { ref path, single }) => {
             let root = path.as_deref().unwrap_or(".");
             let selected = pick::run_fzf(root, !single, cli.regex.as_deref(), config.pick.preview_lines)?;
@@ -124,14 +108,29 @@ fn main() -> anyhow::Result<()> {
             styles::print_tree_result(result, root, no_copy, start, token_handle);
         }
         None => {
-            if cli.paths.is_empty() {
-                anyhow::bail!("no paths provided. Usage: supp <paths...> or supp <subcommand>");
-            }
-            let depth = cli.resolve_depth(&config);
             let mode = cli.resolve_mode(&config);
-            let result = context::generate_context(&cli.paths, depth, cli.regex.as_deref(), mode)?;
-            let _ = text_tx.send(result.plain.clone());
-            styles::print_context_result(result, no_copy, start, token_handle);
+            if cli.paths.is_empty() {
+                // No paths: launch fzf picker → ctx analysis
+                let selected = pick::run_fzf(".", false, cli.regex.as_deref(), config.pick.preview_lines)?;
+                if selected.is_empty() {
+                    return Ok(());
+                }
+                let file = selected.into_iter().next().unwrap();
+                let result = ctx::analyze(".", &file, mode)?;
+                let _ = text_tx.send(result.plain.clone());
+                styles::print_ctx_result(&result, no_copy, start, token_handle);
+            } else if cli.paths.len() == 1 && std::path::Path::new(&cli.paths[0]).is_file() {
+                // Single file: ctx analysis
+                let result = ctx::analyze(".", &cli.paths[0], mode)?;
+                let _ = text_tx.send(result.plain.clone());
+                styles::print_ctx_result(&result, no_copy, start, token_handle);
+            } else {
+                // Multiple paths or directories: original context dump
+                let depth = cli.resolve_depth(&config);
+                let result = context::generate_context(&cli.paths, depth, cli.regex.as_deref(), mode)?;
+                let _ = text_tx.send(result.plain.clone());
+                styles::print_context_result(result, no_copy, start, token_handle);
+            }
         }
     }
     Ok(())

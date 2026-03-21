@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
@@ -7,7 +8,9 @@ use regex::Regex;
 
 use crate::compress;
 use crate::compress::Mode;
+use crate::symbol::{self, SymbolKind};
 use crate::tree;
+use crate::why;
 
 pub struct ContextResult {
     pub plain: String,
@@ -166,6 +169,120 @@ pub fn generate_context(
     }
 
     plain.push_str("</documents>\n");
+
+    // Symbol index + dependency analysis (slim and map modes)
+    if mode != Mode::Full {
+        let included: std::collections::HashSet<&str> =
+            read_files.iter().map(|(p, _, _)| p.as_str()).collect();
+
+        // Try to find a project root for symbol loading
+        let root = dir_paths
+            .first()
+            .map(|d| d.as_str())
+            .unwrap_or(".");
+        let root_path = std::fs::canonicalize(root).unwrap_or_else(|_| Path::new(root).to_path_buf());
+        let all_symbols = symbol::load_symbols(&root_path);
+
+        // Symbols defined in the included files
+        let included_symbols: Vec<_> = all_symbols
+            .iter()
+            .filter(|s| {
+                s.kind != SymbolKind::File
+                    && included.iter().any(|inc| {
+                        inc.ends_with(&s.file) || s.file.ends_with(inc)
+                    })
+            })
+            .collect();
+
+        if !included_symbols.is_empty() {
+            plain.push_str("\n--- SYMBOL INDEX ---\n");
+
+            // Group by file
+            let mut by_file: HashMap<&str, Vec<_>> = HashMap::new();
+            for sym in &included_symbols {
+                by_file.entry(sym.file.as_str()).or_default().push(*sym);
+            }
+            let mut files: Vec<_> = by_file.into_iter().collect();
+            files.sort_by_key(|(f, _)| *f);
+
+            for (file, syms) in &files {
+                plain.push_str(&format!("\n## {}\n", file));
+                for sym in syms {
+                    let display = if let Some(ref parent) = sym.parent {
+                        format!("{}::{}", parent, sym.name)
+                    } else {
+                        sym.name.clone()
+                    };
+                    if !sym.signature.is_empty() {
+                        plain.push_str(&format!(
+                            "  [{}] {}  {}\n",
+                            sym.kind.tag(),
+                            display,
+                            sym.signature
+                        ));
+                    } else {
+                        plain.push_str(&format!("  [{}] {}\n", sym.kind.tag(), display));
+                    }
+                }
+            }
+        }
+
+        // Import / dependency analysis per included file
+        let mut all_imports: Vec<(String, Vec<(String, String, Option<String>)>)> = Vec::new();
+        for (path, _, _) in &read_files {
+            let abs = root_path.join(path);
+            let content = match std::fs::read_to_string(&abs) {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
+            let rel = path.as_str();
+            let imports = why::extract_file_imports(&content, rel, &root_path);
+            if imports.is_empty() {
+                continue;
+            }
+
+            let mut resolved: Vec<(String, String, Option<String>)> = Vec::new();
+            for (name, module) in &imports {
+                // Try symbol index
+                if let Some(sym) = all_symbols.iter().find(|s| s.name == *name && s.file != rel) {
+                    resolved.push((
+                        name.clone(),
+                        format!("{}:{}", sym.file, sym.line),
+                        Some(sym.kind.tag().to_string()),
+                    ));
+                } else if let Some(resolved_file) =
+                    why::resolve_relative_import(module, rel, &root_path)
+                {
+                    resolved.push((name.clone(), resolved_file, None));
+                } else {
+                    resolved.push((name.clone(), format!("{} (external)", module), None));
+                }
+            }
+            resolved.sort_by(|a, b| a.0.cmp(&b.0));
+            all_imports.push((path.clone(), resolved));
+        }
+
+        if !all_imports.is_empty() {
+            plain.push_str("\n--- DEPENDENCIES ---\n");
+            for (file, imports) in &all_imports {
+                plain.push_str(&format!("\n## {}\n", file));
+                let max_name = imports.iter().map(|(n, _, _)| n.len()).max().unwrap_or(0);
+                for (name, loc, kind) in imports {
+                    let tag = kind
+                        .as_ref()
+                        .map(|k| format!(" [{}]", k))
+                        .unwrap_or_default();
+                    plain.push_str(&format!(
+                        "  {:<width$} → {}{}\n",
+                        name,
+                        loc,
+                        tag,
+                        width = max_name
+                    ));
+                }
+            }
+        }
+    }
 
     Ok(ContextResult {
         plain,

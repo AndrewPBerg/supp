@@ -67,7 +67,7 @@ pub fn explain(root: &str, query: &[String]) -> Result<WhyResult> {
 
     // 6. Load full symbol index + file imports for dependency resolution
     let all_symbols = symbol::load_symbols(&root_path);
-    let imports = extract_file_imports(&content, &sym.file);
+    let imports = extract_file_imports(&content, &sym.file, &root_path);
 
     // 7. Find dependencies (what this symbol calls/uses)
     let dependencies = find_dependencies(&root_path, &sym, &content, &all_symbols, &imports);
@@ -297,6 +297,42 @@ fn find_definition_node<'a>(
             }
         }
 
+        // C/C++: function_definition → declarator → function_declarator → identifier
+        if node.kind() == "function_definition" {
+            if let Some(declarator) = node.child_by_field_name("declarator") {
+                if find_c_name_in_declarator(declarator, content) == Some(&sym.name) {
+                    return Some(node);
+                }
+            }
+        }
+
+        // C/C++: struct_specifier, enum_specifier, class_specifier with name field
+        if matches!(node.kind(), "struct_specifier" | "enum_specifier" | "class_specifier") {
+            if let Some(name_node) = node.child_by_field_name("name") {
+                if compress::node_text(content, name_node) == sym.name {
+                    return Some(node);
+                }
+            }
+        }
+
+        // JS/TS: const MyComponent = (...) => { ... } (lexical_declaration wrapping arrow fn)
+        if matches!(node.kind(), "lexical_declaration" | "variable_declaration") {
+            let mut cursor = node.walk();
+            if cursor.goto_first_child() {
+                loop {
+                    let child = cursor.node();
+                    if child.kind() == "variable_declarator" {
+                        if let Some(name_node) = child.child_by_field_name("name") {
+                            if compress::node_text(content, name_node) == sym.name {
+                                return Some(node);
+                            }
+                        }
+                    }
+                    if !cursor.goto_next_sibling() { break; }
+                }
+            }
+        }
+
         // Python module-level assignments: expression_statement → assignment → left
         if node.kind() == "expression_statement" {
             let mut cursor = node.walk();
@@ -328,6 +364,31 @@ fn find_definition_node<'a>(
         }
     }
 
+    None
+}
+
+/// Recursively find the function name inside a C/C++ declarator chain.
+fn find_c_name_in_declarator<'a>(node: tree_sitter::Node<'a>, content: &'a str) -> Option<&'a str> {
+    if node.kind() == "identifier" {
+        return Some(compress::node_text(content, node));
+    }
+    // qualified_identifier: Foo::bar → the "name" field has the actual name
+    if node.kind() == "qualified_identifier" {
+        if let Some(name) = node.child_by_field_name("name") {
+            if name.kind() == "identifier" {
+                return Some(compress::node_text(content, name));
+            }
+        }
+    }
+    let mut cursor = node.walk();
+    if cursor.goto_first_child() {
+        loop {
+            if let Some(name) = find_c_name_in_declarator(cursor.node(), content) {
+                return Some(name);
+            }
+            if !cursor.goto_next_sibling() { break; }
+        }
+    }
     None
 }
 
@@ -391,12 +452,13 @@ fn extract_definition_by_lines(content: &str, sym: &Symbol) -> String {
 // ── Import extraction ───────────────────────────────────────────────
 
 /// Maps imported name → module path (e.g. "BaseModel" → "pydantic")
-pub(crate) fn extract_file_imports(content: &str, file_path: &str) -> HashMap<String, String> {
+pub(crate) fn extract_file_imports(content: &str, file_path: &str, root: &Path) -> HashMap<String, String> {
     let lang = compress::detect_lang(file_path);
     match lang {
         Some(Lang::Python) => extract_python_imports(content),
         Some(Lang::Rust) => extract_rust_imports(content),
         Some(Lang::JavaScript | Lang::TypeScript | Lang::Tsx) => extract_js_imports(content),
+        Some(Lang::C | Lang::Cpp) => extract_c_includes(content, file_path, root),
         _ => HashMap::new(),
     }
 }
@@ -492,6 +554,170 @@ fn extract_js_imports(content: &str) -> HashMap<String, String> {
         }
     }
     imports
+}
+
+fn extract_c_includes(content: &str, file_path: &str, root: &Path) -> HashMap<String, String> {
+    let mut imports = HashMap::new();
+    let file_dir = Path::new(file_path).parent().unwrap_or(Path::new(""));
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+        // Normalize: strip '#', optional whitespace, then "include"
+        let rest = if let Some(after) = trimmed.strip_prefix('#') {
+            let after = after.trim_start();
+            if let Some(rest) = after.strip_prefix("include") {
+                rest.trim()
+            } else {
+                continue;
+            }
+        } else {
+            continue;
+        };
+
+        // "file.h" — local include
+        if rest.starts_with('"') {
+            if let Some(end) = rest[1..].find('"') {
+                let header = &rest[1..1 + end];
+                if let Some(resolved) = resolve_c_include(header, file_dir, root) {
+                    let abs = root.join(&resolved);
+                    if let Ok(header_content) = std::fs::read_to_string(&abs) {
+                        let header_syms = scan_header_symbols(&header_content, &resolved);
+                        for sym_name in header_syms {
+                            imports.insert(sym_name, resolved.clone());
+                        }
+                    }
+                } else {
+                    imports.insert(header.to_string(), header.to_string());
+                }
+            }
+        }
+        // <stdlib.h> — system include
+        else if rest.starts_with('<') {
+            if let Some(end) = rest.find('>') {
+                let header = &rest[1..end];
+                imports.insert(header.to_string(), format!("<{}>", header));
+            }
+        }
+    }
+    imports
+}
+
+/// Resolve a local #include path relative to the file and common search dirs.
+fn resolve_c_include(header: &str, file_dir: &Path, root: &Path) -> Option<String> {
+    // 1. Relative to including file's directory
+    let candidate = file_dir.join(header);
+    let norm = normalize_path(&candidate);
+    if root.join(&norm).exists() {
+        return Some(norm);
+    }
+    // 2. Relative to project root
+    if root.join(header).exists() {
+        return Some(header.to_string());
+    }
+    // 3. Common include dirs
+    for dir in &["include", "inc", "src"] {
+        let candidate = Path::new(dir).join(header);
+        if root.join(&candidate).exists() {
+            return Some(candidate.to_string_lossy().to_string());
+        }
+    }
+    None
+}
+
+/// Normalize a relative path (collapse `..` and `.`).
+fn normalize_path(path: &Path) -> String {
+    let mut parts: Vec<&std::ffi::OsStr> = Vec::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::ParentDir => { parts.pop(); }
+            std::path::Component::CurDir => {}
+            std::path::Component::Normal(p) => parts.push(p),
+            _ => {}
+        }
+    }
+    parts.iter()
+        .map(|p| p.to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+/// Quickly scan a C/C++ header for symbol-like declarations (struct/class/enum names, function names).
+fn scan_header_symbols(content: &str, file_path: &str) -> Vec<String> {
+    let lang = match compress::detect_lang(file_path) {
+        Some(l) => l,
+        None => return Vec::new(),
+    };
+    let tree = match compress::parse_source(content, lang) {
+        Some(t) => t,
+        None => return Vec::new(),
+    };
+
+    let mut names = Vec::new();
+    collect_header_decl_names(tree.root_node(), content, &mut names);
+    names
+}
+
+fn collect_header_decl_names(node: tree_sitter::Node, content: &str, names: &mut Vec<String>) {
+    match node.kind() {
+        "function_definition" | "declaration" => {
+            if let Some(declarator) = node.child_by_field_name("declarator") {
+                if let Some(name) = find_c_decl_name(declarator, content) {
+                    names.push(name);
+                }
+            }
+        }
+        "struct_specifier" | "enum_specifier" | "class_specifier" => {
+            if let Some(name_node) = node.child_by_field_name("name") {
+                let text = compress::node_text(content, name_node);
+                if !text.is_empty() {
+                    names.push(text.to_string());
+                }
+            }
+        }
+        "type_definition" => {
+            // typedef struct { ... } Name; → declarator has the typedef name
+            if let Some(declarator) = node.child_by_field_name("declarator") {
+                if let Some(name) = find_c_decl_name(declarator, content) {
+                    names.push(name);
+                }
+            }
+        }
+        _ => {}
+    }
+    let mut cursor = node.walk();
+    if cursor.goto_first_child() {
+        loop {
+            collect_header_decl_names(cursor.node(), content, names);
+            if !cursor.goto_next_sibling() {
+                break;
+            }
+        }
+    }
+}
+
+fn find_c_decl_name(node: tree_sitter::Node, content: &str) -> Option<String> {
+    match node.kind() {
+        "identifier" => Some(compress::node_text(content, node).to_string()),
+        "function_declarator" | "pointer_declarator" | "array_declarator" | "init_declarator" => {
+            if let Some(decl) = node.child_by_field_name("declarator") {
+                return find_c_decl_name(decl, content);
+            }
+            // Fallback: first child
+            let mut cursor = node.walk();
+            if cursor.goto_first_child() {
+                loop {
+                    if let Some(name) = find_c_decl_name(cursor.node(), content) {
+                        return Some(name);
+                    }
+                    if !cursor.goto_next_sibling() {
+                        break;
+                    }
+                }
+            }
+            None
+        }
+        _ => None,
+    }
 }
 
 /// Try to resolve a relative import to a project file path.
@@ -640,7 +866,7 @@ fn is_ident_char(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'_'
 }
 
-fn find_enclosing_function(
+pub(crate) fn find_enclosing_function(
     tree: &tree_sitter::Tree,
     content: &str,
     line: usize,
@@ -923,6 +1149,19 @@ fn extract_hierarchy(
                     return true;
                 }
             }
+            // C++: class Derived : public Base
+            if sig.contains(':') && !sig.contains("::") || sig.matches(':').count() > sig.matches("::").count() * 2 {
+                // Has a non-scope-resolution colon — likely inheritance
+                if let Some(colon_idx) = sig.find(':') {
+                    let after_colon = &sig[colon_idx + 1..];
+                    // Skip if this is just a scope resolution
+                    if !after_colon.starts_with(':') {
+                        if contains_identifier(after_colon, &sym.name) {
+                            return true;
+                        }
+                    }
+                }
+            }
             false
         })
         .map(|s| HierarchyEntry {
@@ -1013,6 +1252,51 @@ fn extract_parent_names(
             // tree-sitter varies: may use class_heritage, extends_clause, or direct children
             let mut names = Vec::new();
             extract_extends_names(def_node, content, &mut names);
+            names
+        }
+        Lang::C | Lang::Cpp => {
+            // class Derived : public Base, protected Other { ... }
+            // tree-sitter-cpp: class_specifier > base_class_clause > base_class_specifier
+            let mut names = Vec::new();
+            let mut cursor = def_node.walk();
+            if cursor.goto_first_child() {
+                loop {
+                    let child = cursor.node();
+                    if child.kind() == "base_class_clause" {
+                        let mut inner = child.walk();
+                        if inner.goto_first_child() {
+                            loop {
+                                if inner.node().kind() == "base_class_specifier" {
+                                    collect_type_idents(inner.node(), content, &mut names);
+                                }
+                                if !inner.goto_next_sibling() { break; }
+                            }
+                        }
+                    }
+                    if !cursor.goto_next_sibling() { break; }
+                }
+            }
+            // Fallback: text-based "class X : public Y"
+            if names.is_empty() {
+                let text = compress::node_text(content, def_node);
+                let first_line = text.lines().next().unwrap_or("");
+                if let Some(colon_idx) = first_line.find(':') {
+                    let after = &first_line[colon_idx + 1..];
+                    let until_brace = after.split('{').next().unwrap_or(after);
+                    for part in until_brace.split(',') {
+                        let cleaned = part.trim()
+                            .trim_start_matches("public").trim()
+                            .trim_start_matches("protected").trim()
+                            .trim_start_matches("private").trim()
+                            .trim_start_matches("virtual").trim();
+                        let name = cleaned.split('<').next().unwrap_or("").trim();
+                        let name = name.split_whitespace().next().unwrap_or("").trim();
+                        if !name.is_empty() && name.chars().next().is_some_and(|c| c.is_alphabetic()) {
+                            names.push(name.to_string());
+                        }
+                    }
+                }
+            }
             names
         }
         _ => Vec::new(),
@@ -2183,5 +2467,357 @@ public class Dog extends Animal {
         let r = run(&dir, &["hello"]);
         let doc = r.doc_comment.as_deref().unwrap();
         assert_eq!(doc, "Say hello.");
+    }
+
+    // ── TSX component-aware tests ──────────────────────────────
+
+    #[test]
+    fn tsx_arrow_component_indexed() {
+        let dir = setup(&[(
+            "Button.tsx",
+            r#"import { useState } from 'react';
+interface ButtonProps { label: string; onClick: () => void; }
+const Button = ({ label, onClick }: ButtonProps) => {
+  const [clicks, setClicks] = useState(0);
+  return <button onClick={() => { setClicks(clicks + 1); onClick(); }}>{label}</button>;
+};
+export default Button;
+"#,
+        )]);
+        let r = run(&dir, &["Button"]);
+        assert_eq!(r.symbol.kind, SymbolKind::Function);
+        assert!(r.full_definition.contains("ButtonProps"));
+    }
+
+    #[test]
+    fn tsx_props_interface_dep() {
+        let dir = setup(&[
+            (
+                "types.tsx",
+                "export interface CardProps { title: string; count: number; }\n",
+            ),
+            (
+                "Card.tsx",
+                r#"import { CardProps } from './types';
+const Card = ({ title, count }: CardProps) => {
+  return <div>{title}: {count}</div>;
+};
+export default Card;
+"#,
+            ),
+        ]);
+        let r = run(&dir, &["Card"]);
+        let dep_names: Vec<&str> = r.dependencies.iter().map(|d| d.name.as_str()).collect();
+        assert!(dep_names.contains(&"CardProps"), "deps={dep_names:?}");
+    }
+
+    #[test]
+    fn tsx_jsx_element_dep() {
+        let dir = setup(&[
+            (
+                "Button.tsx",
+                "export function Button({ label }: { label: string }) {\n  return <button>{label}</button>;\n}\n",
+            ),
+            (
+                "App.tsx",
+                r#"import { Button } from './Button';
+export function App() {
+  return <div><Button label="Click" /></div>;
+}
+"#,
+            ),
+        ]);
+        let r = run(&dir, &["App"]);
+        let dep_names: Vec<&str> = r.dependencies.iter().map(|d| d.name.as_str()).collect();
+        assert!(dep_names.contains(&"Button"), "deps={dep_names:?}");
+    }
+
+    #[test]
+    fn tsx_custom_hook_dep() {
+        let dir = setup(&[
+            (
+                "hooks.tsx",
+                "import { useState } from 'react';\nexport function useAuth() {\n  const [user, setUser] = useState(null);\n  return user;\n}\n",
+            ),
+            (
+                "App.tsx",
+                r#"import { useAuth } from './hooks';
+export function App() {
+  const user = useAuth();
+  return <div>{user}</div>;
+}
+"#,
+            ),
+        ]);
+        let r = run(&dir, &["App"]);
+        let dep_names: Vec<&str> = r.dependencies.iter().map(|d| d.name.as_str()).collect();
+        assert!(dep_names.contains(&"useAuth"), "deps={dep_names:?}");
+    }
+
+    #[test]
+    fn tsx_builtin_hook_external() {
+        let dir = setup(&[(
+            "Counter.tsx",
+            r#"import { useState, useEffect } from 'react';
+export function Counter() {
+  const [count, setCount] = useState(0);
+  useEffect(() => { document.title = String(count); }, [count]);
+  return <button onClick={() => setCount(count + 1)}>{count}</button>;
+}
+"#,
+        )]);
+        let r = run(&dir, &["Counter"]);
+        let external: Vec<&str> = r
+            .dependencies
+            .iter()
+            .filter(|d| d.import_from.as_deref() == Some("react"))
+            .map(|d| d.name.as_str())
+            .collect();
+        assert!(external.contains(&"useState"), "react deps={external:?}");
+        assert!(external.contains(&"useEffect"), "react deps={external:?}");
+    }
+
+    #[test]
+    fn tsx_call_sites_jsx_usage() {
+        let dir = setup(&[
+            (
+                "Card.tsx",
+                "export function Card() { return <div>card</div>; }\n",
+            ),
+            (
+                "Page.tsx",
+                "import { Card } from './Card';\nexport function Page() { return <Card />; }\n",
+            ),
+        ]);
+        let r = run(&dir, &["Card"]);
+        let files: Vec<&str> = r.call_sites.iter().map(|s| s.file.as_str()).collect();
+        assert!(files.contains(&"Page.tsx"), "call_sites={files:?}");
+    }
+
+    // ── C tests ────────────────────────────────────────────────
+
+    #[test]
+    fn c_function_def_found() {
+        let dir = setup(&[(
+            "math.c",
+            "int add(int a, int b) {\n    return a + b;\n}\n",
+        )]);
+        let r = run(&dir, &["add"]);
+        assert_eq!(r.symbol.kind, SymbolKind::Function);
+        assert!(r.full_definition.contains("return a + b"));
+    }
+
+    #[test]
+    fn c_doc_comment() {
+        let dir = setup(&[(
+            "math.c",
+            "/** Add two integers. */\nint add(int a, int b) {\n    return a + b;\n}\n",
+        )]);
+        let r = run(&dir, &["add"]);
+        assert!(r.doc_comment.is_some());
+        assert!(r.doc_comment.as_deref().unwrap().contains("Add two integers"));
+    }
+
+    #[test]
+    fn c_include_local_resolved() {
+        let dir = setup(&[
+            (
+                "types.h",
+                "typedef struct { double x; double y; } Point;\ndouble distance(const Point *a, const Point *b);\n",
+            ),
+            (
+                "math.c",
+                "#include \"types.h\"\n#include <math.h>\ndouble distance(const Point *a, const Point *b) {\n    double dx = a->x - b->x;\n    return dx;\n}\n",
+            ),
+        ]);
+        let r = run(&dir, &["distance"]);
+        assert_eq!(r.symbol.kind, SymbolKind::Function);
+        // Point should be a dep (from header include)
+        let dep_names: Vec<&str> = r.dependencies.iter().map(|d| d.name.as_str()).collect();
+        assert!(dep_names.contains(&"Point"), "deps={dep_names:?}");
+    }
+
+    #[test]
+    fn c_call_sites_across_files() {
+        let dir = setup(&[
+            ("util.c", "int square(int x) { return x * x; }\n"),
+            ("main.c", "int square(int x);\nint main() { return square(5); }\n"),
+        ]);
+        let r = run(&dir, &["square"]);
+        let files: Vec<&str> = r.call_sites.iter().map(|s| s.file.as_str()).collect();
+        assert!(files.contains(&"main.c"), "call_sites={files:?}");
+    }
+
+    #[test]
+    fn c_struct_in_header() {
+        let dir = setup(&[(
+            "types.h",
+            "#ifndef TYPES_H\n#define TYPES_H\ntypedef struct {\n    int x;\n    int y;\n} Vec2;\n#endif\n",
+        )]);
+        // Vec2 is on the typedef, not the struct itself — currently indexed as type_definition
+        // This just verifies we don't crash on header-only files
+        let query: Vec<String> = vec!["Vec2".to_string()];
+        let result = explain(dir.path().to_str().unwrap(), &query);
+        // May or may not find it depending on indexing of typedef — just ensure no panic
+        let _ = result;
+    }
+
+    // ── C++ tests ──────────────────────────────────────────────
+
+    #[test]
+    fn cpp_class_hierarchy_parents() {
+        let dir = setup(&[
+            (
+                "base.hpp",
+                "class Base {\npublic:\n    virtual void run() = 0;\n};\n",
+            ),
+            (
+                "derived.hpp",
+                "#include \"base.hpp\"\nclass Derived : public Base {\npublic:\n    void run() override;\n};\n",
+            ),
+        ]);
+        let r = run(&dir, &["Derived"]);
+        let h = r.hierarchy.as_ref().expect("should have hierarchy");
+        let parent_names: Vec<&str> = h.parents.iter().map(|p| p.name.as_str()).collect();
+        assert!(parent_names.contains(&"Base"), "parents={parent_names:?}");
+    }
+
+    #[test]
+    fn cpp_class_hierarchy_children() {
+        let dir = setup(&[
+            (
+                "base.hpp",
+                "class Animal {\npublic:\n    virtual void speak() = 0;\n};\n",
+            ),
+            (
+                "dog.hpp",
+                "class Dog : public Animal {\npublic:\n    void speak() override;\n};\n",
+            ),
+            (
+                "cat.hpp",
+                "class Cat : public Animal {\npublic:\n    void speak() override;\n};\n",
+            ),
+        ]);
+        let r = run(&dir, &["Animal"]);
+        let h = r.hierarchy.as_ref().expect("should have hierarchy");
+        let child_names: Vec<&str> = h.children.iter().map(|c| c.name.as_str()).collect();
+        assert!(child_names.contains(&"Dog"), "children={child_names:?}");
+        assert!(child_names.contains(&"Cat"), "children={child_names:?}");
+    }
+
+    #[test]
+    fn cpp_scope_qualifier_method() {
+        let dir = setup(&[
+            (
+                "widget.hpp",
+                "class Widget {\npublic:\n    void draw();\n    int width();\n};\n",
+            ),
+            (
+                "widget.cpp",
+                "#include \"widget.hpp\"\nvoid Widget::draw() {\n    // render\n}\nint Widget::width() {\n    return 100;\n}\n",
+            ),
+        ]);
+        let r = run(&dir, &["draw"]);
+        assert_eq!(r.symbol.parent.as_deref(), Some("Widget"));
+        assert_eq!(r.symbol.kind, SymbolKind::Method);
+    }
+
+    #[test]
+    fn cpp_include_resolved_deps() {
+        let dir = setup(&[
+            (
+                "vec.hpp",
+                "struct Vec3 {\n    double x, y, z;\n};\ndouble length(const Vec3& v);\n",
+            ),
+            (
+                "math.cpp",
+                "#include \"vec.hpp\"\n#include <cmath>\ndouble length(const Vec3& v) {\n    return sqrt(v.x*v.x + v.y*v.y + v.z*v.z);\n}\n",
+            ),
+        ]);
+        let r = run(&dir, &["length"]);
+        let dep_names: Vec<&str> = r.dependencies.iter().map(|d| d.name.as_str()).collect();
+        assert!(dep_names.contains(&"Vec3"), "deps={dep_names:?}");
+    }
+
+    #[test]
+    fn cpp_call_sites_cross_file() {
+        let dir = setup(&[
+            (
+                "engine.hpp",
+                "class Engine {\npublic:\n    void start();\n};\n",
+            ),
+            (
+                "engine.cpp",
+                "#include \"engine.hpp\"\nvoid Engine::start() {}\n",
+            ),
+            (
+                "main.cpp",
+                "#include \"engine.hpp\"\nint main() {\n    Engine e;\n    e.start();\n    return 0;\n}\n",
+            ),
+        ]);
+        let r = run(&dir, &["start"]);
+        let files: Vec<&str> = r.call_sites.iter().map(|s| s.file.as_str()).collect();
+        assert!(files.contains(&"main.cpp"), "call_sites={files:?}");
+    }
+
+    #[test]
+    fn cpp_multiple_inheritance() {
+        let dir = setup(&[
+            ("a.hpp", "class Drawable {\npublic:\n    virtual void draw() = 0;\n};\n"),
+            ("b.hpp", "class Clickable {\npublic:\n    virtual void click() = 0;\n};\n"),
+            (
+                "button.hpp",
+                "#include \"a.hpp\"\n#include \"b.hpp\"\nclass Button : public Drawable, public Clickable {\npublic:\n    void draw() override;\n    void click() override;\n};\n",
+            ),
+        ]);
+        let r = run(&dir, &["Button"]);
+        let h = r.hierarchy.as_ref().expect("should have hierarchy");
+        let parent_names: Vec<&str> = h.parents.iter().map(|p| p.name.as_str()).collect();
+        assert!(parent_names.contains(&"Drawable"), "parents={parent_names:?}");
+        assert!(parent_names.contains(&"Clickable"), "parents={parent_names:?}");
+    }
+
+    // ── C/C++ include import tests ─────────────────────────────
+
+    #[test]
+    fn imports_c_local_include() {
+        let dir = setup(&[
+            ("types.h", "typedef struct { int x; } Point;\n"),
+            ("main.c", "#include \"types.h\"\nint main() { return 0; }\n"),
+        ]);
+        let content = std::fs::read_to_string(dir.path().join("main.c")).unwrap();
+        eprintln!("content={content:?}");
+        eprintln!("root={:?}", dir.path());
+        eprintln!("types.h exists={}", dir.path().join("types.h").exists());
+        let header_content = std::fs::read_to_string(dir.path().join("types.h")).unwrap();
+        eprintln!("header_content={header_content:?}");
+        let syms = scan_header_symbols(&header_content, "types.h");
+        eprintln!("header_syms={syms:?}");
+        let imports = extract_file_imports(&content, "main.c", dir.path());
+        eprintln!("imports={imports:?}");
+        assert!(imports.contains_key("Point"), "imports={imports:?}");
+    }
+
+    #[test]
+    fn imports_c_system_include() {
+        let dir = setup(&[(
+            "main.c",
+            "#include <stdio.h>\n#include <stdlib.h>\nint main() { return 0; }\n",
+        )]);
+        let content = std::fs::read_to_string(dir.path().join("main.c")).unwrap();
+        let imports = extract_file_imports(&content, "main.c", dir.path());
+        assert!(imports.contains_key("stdio.h"), "imports={imports:?}");
+        assert!(imports.contains_key("stdlib.h"), "imports={imports:?}");
+    }
+
+    #[test]
+    fn imports_cpp_include_subdir() {
+        let dir = setup(&[
+            ("include/vec.hpp", "struct Vec2 { double x, y; };\n"),
+            ("src/main.cpp", "#include \"../include/vec.hpp\"\nint main() { return 0; }\n"),
+        ]);
+        let content = std::fs::read_to_string(dir.path().join("src/main.cpp")).unwrap();
+        let imports = extract_file_imports(&content, "src/main.cpp", dir.path());
+        assert!(imports.contains_key("Vec2"), "imports={imports:?}");
     }
 }

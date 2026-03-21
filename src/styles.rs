@@ -728,7 +728,7 @@ pub fn print_ctx_result(result: &crate::ctx::CtxResult, no_copy: bool, start: st
     println!();
     println!(
         "  {}  {}  {} dep{}, {} reference{}",
-        "supp ctx".bold().cyan(),
+        "supp".bold().cyan(),
         result.target_file.bold(),
         result.dep_file_count,
         if result.dep_file_count == 1 { "" } else { "s" },

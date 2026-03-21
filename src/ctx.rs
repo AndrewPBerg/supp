@@ -38,7 +38,7 @@ struct UsedByRef {
 
 // ── Public API ──────────────────────────────────────────────────────
 
-pub fn analyze(root: &str, file: &str) -> Result<CtxResult> {
+pub fn analyze(root: &str, file: &str, mode: Mode) -> Result<CtxResult> {
     let root_path = std::fs::canonicalize(root)?;
     let file_path = Path::new(file);
 
@@ -68,7 +68,7 @@ pub fn analyze(root: &str, file: &str) -> Result<CtxResult> {
     let target_lines = content.lines().count();
 
     // Extract imports
-    let imports = why::extract_file_imports(&content, &rel_path);
+    let imports = why::extract_file_imports(&content, &rel_path, &root_path);
 
     // Load project symbol index
     let all_symbols = symbol::load_symbols(&root_path);
@@ -126,17 +126,31 @@ pub fn analyze(root: &str, file: &str) -> Result<CtxResult> {
 
     resolved.sort_by(|a, b| a.name.cmp(&b.name));
 
-    // Generate dependency signatures (Map mode) for in-project deps
-    let mut dep_sections: Vec<(String, Vec<String>, String)> = Vec::new(); // (file, imports, map_output)
+    // Dependency info for in-project deps
     let mut dep_files_sorted: Vec<_> = dep_files.into_iter().collect();
     dep_files_sorted.sort_by(|a, b| a.0.cmp(&b.0));
 
+    // In slim mode: compact symbol tables per dep file
+    // Otherwise: full Map-mode code blocks
+    let mut dep_sections: Vec<(String, Vec<String>, String)> = Vec::new();
+    let mut dep_sym_sections: Vec<(String, Vec<String>, Vec<&Symbol>)> = Vec::new();
+
     for (dep_file, imported_names) in &dep_files_sorted {
-        let dep_abs = root_path.join(dep_file);
-        if let Ok(dep_content) = std::fs::read_to_string(&dep_abs) {
-            let map_output = compress::compress(&dep_content, dep_file, Mode::Map);
-            if !map_output.trim().is_empty() {
-                dep_sections.push((dep_file.clone(), imported_names.clone(), map_output));
+        if mode == Mode::Slim {
+            let dep_syms: Vec<&Symbol> = all_symbols
+                .iter()
+                .filter(|s| s.file == *dep_file && s.kind != SymbolKind::File)
+                .collect();
+            if !dep_syms.is_empty() {
+                dep_sym_sections.push((dep_file.clone(), imported_names.clone(), dep_syms));
+            }
+        } else {
+            let dep_abs = root_path.join(dep_file);
+            if let Ok(dep_content) = std::fs::read_to_string(&dep_abs) {
+                let map_output = compress::compress(&dep_content, dep_file, Mode::Map);
+                if !map_output.trim().is_empty() {
+                    dep_sections.push((dep_file.clone(), imported_names.clone(), map_output));
+                }
             }
         }
     }
@@ -150,8 +164,12 @@ pub fn analyze(root: &str, file: &str) -> Result<CtxResult> {
 
     let used_by = find_file_references(&root_path, &rel_path, &symbol_names);
 
-    // Target file in Slim mode
-    let slim_content = compress::compress(&content, &rel_path, Mode::Slim);
+    // Target file source section
+    let source_content = match mode {
+        Mode::Map => compress::compress(&content, &rel_path, Mode::Map),
+        Mode::Slim => compress::compress(&content, &rel_path, Mode::Slim),
+        Mode::Full => content.clone(),
+    };
 
     // Assemble markdown
     let plain = assemble_markdown(
@@ -160,8 +178,10 @@ pub fn analyze(root: &str, file: &str) -> Result<CtxResult> {
         &resolved,
         &target_symbols,
         &dep_sections,
+        &dep_sym_sections,
         &used_by,
-        &slim_content,
+        &source_content,
+        mode,
     );
 
     Ok(CtxResult {
@@ -207,33 +227,24 @@ fn find_file_references(
         }
 
         // Only check source files
-        if compress::detect_lang(&rel).is_none() {
-            continue;
-        }
+        let lang = match compress::detect_lang(&rel) {
+            Some(l) => l,
+            None => continue,
+        };
 
         let content = match std::fs::read_to_string(path) {
             Ok(c) => c,
             Err(_) => continue,
         };
 
-        let lang = compress::detect_lang(&rel);
-        let mut tree_cache: Option<tree_sitter::Tree> = None;
-        let mut parsed = false;
+        let tree = compress::parse_source(&content, lang);
 
         for (line_idx, line) in content.lines().enumerate() {
             for &sym_name in symbol_names {
                 if why::contains_identifier(line, sym_name) {
-                    let caller = if !parsed {
-                        tree_cache = lang.and_then(|l| compress::parse_source(&content, l));
-                        parsed = true;
-                        tree_cache.as_ref().and_then(|t| {
-                            find_enclosing_fn(t, &content, line_idx)
-                        })
-                    } else {
-                        tree_cache.as_ref().and_then(|t| {
-                            find_enclosing_fn(t, &content, line_idx)
-                        })
-                    };
+                    let caller = tree.as_ref().and_then(|t| {
+                        why::find_enclosing_function(t, &content, line_idx)
+                    });
 
                     refs.push(UsedByRef {
                         file: rel.clone(),
@@ -251,61 +262,6 @@ fn find_file_references(
     refs
 }
 
-fn find_enclosing_fn(
-    tree: &tree_sitter::Tree,
-    content: &str,
-    line: usize,
-) -> Option<String> {
-    find_enclosing_fn_recursive(tree.root_node(), content, line)
-}
-
-fn find_enclosing_fn_recursive(
-    node: tree_sitter::Node,
-    content: &str,
-    line: usize,
-) -> Option<String> {
-    let mut cursor = node.walk();
-    if !cursor.goto_first_child() {
-        return None;
-    }
-
-    loop {
-        let child = cursor.node();
-        let start = child.start_position().row;
-        let end = child.end_position().row;
-
-        if line >= start && line <= end {
-            let is_fn = matches!(
-                child.kind(),
-                "function_item"
-                    | "function_definition"
-                    | "method_declaration"
-                    | "function_declaration"
-                    | "arrow_function"
-            );
-
-            if let Some(inner) = find_enclosing_fn_recursive(child, content, line) {
-                return Some(inner);
-            }
-
-            if is_fn {
-                if let Some(name_node) = child.child_by_field_name("name") {
-                    let name = name_node
-                        .utf8_text(content.as_bytes())
-                        .unwrap_or_default()
-                        .to_string();
-                    return Some(name);
-                }
-            }
-        }
-
-        if !cursor.goto_next_sibling() {
-            break;
-        }
-    }
-    None
-}
-
 // ── Markdown assembly ───────────────────────────────────────────────
 
 fn assemble_markdown(
@@ -314,14 +270,22 @@ fn assemble_markdown(
     resolved: &[ResolvedImport],
     target_symbols: &[&Symbol],
     dep_sections: &[(String, Vec<String>, String)],
+    dep_sym_sections: &[(String, Vec<String>, Vec<&Symbol>)],
     used_by: &[UsedByRef],
-    slim_content: &str,
+    source_content: &str,
+    mode: Mode,
 ) -> String {
     use std::fmt::Write;
     let mut out = String::new();
+    let slim = mode == Mode::Slim;
 
     // Header
-    let _ = writeln!(out, "## Target: {} ({} lines)", target_file, target_lines);
+    let mode_label = match mode {
+        Mode::Slim => " [blast radius]",
+        Mode::Map => " [signatures]",
+        Mode::Full => "",
+    };
+    let _ = writeln!(out, "## Target: {} ({} lines){}", target_file, target_lines, mode_label);
     let _ = writeln!(out);
 
     // Imports → Resolved
@@ -360,7 +324,7 @@ fn assemble_markdown(
         let _ = writeln!(out);
     }
 
-    // Definitions
+    // Definitions — in slim mode include signatures for richer context
     if !target_symbols.is_empty() {
         let _ = writeln!(out, "## Definitions ({} symbols)", target_symbols.len());
         for sym in target_symbols {
@@ -369,18 +333,29 @@ fn assemble_markdown(
             } else {
                 sym.name.clone()
             };
-            let _ = writeln!(
-                out,
-                "- [{}] {:<30} line {}",
-                sym.kind.tag(),
-                display,
-                sym.line
-            );
+            if slim && !sym.signature.is_empty() {
+                let _ = writeln!(
+                    out,
+                    "- [{}] {:<30} line {}  {}",
+                    sym.kind.tag(),
+                    display,
+                    sym.line,
+                    sym.signature
+                );
+            } else {
+                let _ = writeln!(
+                    out,
+                    "- [{}] {:<30} line {}",
+                    sym.kind.tag(),
+                    display,
+                    sym.line
+                );
+            }
         }
         let _ = writeln!(out);
     }
 
-    // Dependency Signatures
+    // Dependency info — code blocks (default/map) or compact sym tables (slim)
     if !dep_sections.is_empty() {
         let _ = writeln!(out, "## Dependency Signatures");
         for (file, imported_names, map_output) in dep_sections {
@@ -395,6 +370,30 @@ fn assemble_markdown(
             let _ = write!(out, "{}", map_output.trim_end());
             let _ = writeln!(out);
             let _ = writeln!(out, "```");
+            let _ = writeln!(out);
+        }
+    }
+    if !dep_sym_sections.is_empty() {
+        let _ = writeln!(out, "## Dependencies");
+        for (file, imported_names, syms) in dep_sym_sections {
+            let _ = writeln!(
+                out,
+                "### {} (imports: {})",
+                file,
+                imported_names.join(", ")
+            );
+            for sym in syms {
+                let display = if let Some(ref parent) = sym.parent {
+                    format!("{}::{}", parent, sym.name)
+                } else {
+                    sym.name.clone()
+                };
+                if !sym.signature.is_empty() {
+                    let _ = writeln!(out, "- [{}] {}  {}", sym.kind.tag(), display, sym.signature);
+                } else {
+                    let _ = writeln!(out, "- [{}] {}", sym.kind.tag(), display);
+                }
+            }
             let _ = writeln!(out);
         }
     }
@@ -417,13 +416,191 @@ fn assemble_markdown(
         let _ = writeln!(out);
     }
 
-    // Source
-    let _ = writeln!(out, "## Source");
+    // Source / Signatures
+    let section_label = match mode {
+        Mode::Map => "Signatures",
+        _ => "Source",
+    };
+    let _ = writeln!(out, "## {}", section_label);
     let hint = compress::lang_hint(target_file);
     let _ = writeln!(out, "```{}", hint);
-    let _ = write!(out, "{}", slim_content.trim_end());
+    let _ = write!(out, "{}", source_content.trim_end());
     let _ = writeln!(out);
     let _ = writeln!(out, "```");
 
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    fn setup(files: &[(&str, &str)]) -> TempDir {
+        let dir = TempDir::new().unwrap();
+        for (name, content) in files {
+            let path = dir.path().join(name);
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent).unwrap();
+            }
+            fs::write(&path, content).unwrap();
+        }
+        dir
+    }
+
+    #[test]
+    fn nonexistent_file_errors() {
+        let dir = setup(&[]);
+        let result = analyze(dir.path().to_str().unwrap(), "nope.rs", Mode::Full);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn single_file_no_deps() {
+        let dir = setup(&[("main.rs", "fn main() {\n    println!(\"hello\");\n}\n")]);
+        let result = analyze(dir.path().to_str().unwrap(), "main.rs", Mode::Full).unwrap();
+        assert_eq!(result.target_file, "main.rs");
+        assert_eq!(result.target_lines, 3);
+        assert_eq!(result.dep_file_count, 0);
+        assert_eq!(result.used_by_count, 0);
+        assert!(result.plain.contains("## Target: main.rs"));
+        assert!(result.plain.contains("## Source"));
+    }
+
+    #[test]
+    fn detects_definitions() {
+        let dir = setup(&[(
+            "lib.rs",
+            "pub struct Foo {\n    pub x: i32,\n}\n\npub fn bar() -> Foo {\n    Foo { x: 1 }\n}\n",
+        )]);
+        let result = analyze(dir.path().to_str().unwrap(), "lib.rs", Mode::Full).unwrap();
+        assert!(result.plain.contains("## Definitions"));
+        assert!(result.plain.contains("[st] Foo"));
+        assert!(result.plain.contains("[fn] bar"));
+    }
+
+    #[test]
+    fn resolves_rust_imports() {
+        let dir = setup(&[
+            ("config.rs", "pub struct Config {\n    pub debug: bool,\n}\n"),
+            (
+                "main.rs",
+                "use crate::config::Config;\n\nfn main() {\n    let _c = Config { debug: true };\n}\n",
+            ),
+        ]);
+        let result = analyze(dir.path().to_str().unwrap(), "main.rs", Mode::Full).unwrap();
+        assert!(result.plain.contains("## Imports"));
+        assert!(result.plain.contains("Config"));
+        assert!(result.dep_file_count >= 1);
+    }
+
+    #[test]
+    fn finds_used_by_references() {
+        let dir = setup(&[
+            ("lib.rs", "pub fn helper() -> i32 {\n    42\n}\n"),
+            ("main.rs", "fn main() {\n    let x = helper();\n}\n"),
+        ]);
+        let result = analyze(dir.path().to_str().unwrap(), "lib.rs", Mode::Full).unwrap();
+        assert!(result.used_by_count >= 1);
+        assert!(result.plain.contains("## Used By"));
+        assert!(result.plain.contains("main.rs"));
+    }
+
+    #[test]
+    fn map_mode_uses_signatures_label() {
+        let dir = setup(&[("main.rs", "fn main() {}\nfn helper() -> i32 { 42 }\n")]);
+        let result = analyze(dir.path().to_str().unwrap(), "main.rs", Mode::Map).unwrap();
+        assert!(result.plain.contains("## Signatures"));
+        assert!(result.plain.contains("[signatures]"));
+        assert!(!result.plain.contains("## Source"));
+    }
+
+    #[test]
+    fn slim_mode_uses_blast_radius_label() {
+        let dir = setup(&[("main.rs", "fn main() {}\n")]);
+        let result = analyze(dir.path().to_str().unwrap(), "main.rs", Mode::Slim).unwrap();
+        assert!(result.plain.contains("[blast radius]"));
+        assert!(result.plain.contains("## Source"));
+    }
+
+    #[test]
+    fn full_mode_includes_raw_source() {
+        let src = "fn main() {\n    // this is a comment\n    println!(\"hello\");\n}\n";
+        let dir = setup(&[("main.rs", src)]);
+        let result = analyze(dir.path().to_str().unwrap(), "main.rs", Mode::Full).unwrap();
+        // Full mode preserves comments
+        assert!(result.plain.contains("// this is a comment"));
+    }
+
+    #[test]
+    fn slim_mode_strips_comments() {
+        let src = "fn main() {\n    // this is a comment\n    println!(\"hello\");\n}\n";
+        let dir = setup(&[("main.rs", src)]);
+        let result = analyze(dir.path().to_str().unwrap(), "main.rs", Mode::Slim).unwrap();
+        assert!(!result.plain.contains("// this is a comment"));
+    }
+
+    #[test]
+    fn map_mode_dep_signatures_present() {
+        let dir = setup(&[
+            ("config.rs", "pub struct Config {\n    pub debug: bool,\n}\n\npub fn load() -> Config {\n    Config { debug: false }\n}\n"),
+            ("main.rs", "use crate::config::Config;\n\nfn main() {\n    let _c = Config { debug: true };\n}\n"),
+        ]);
+        let result = analyze(dir.path().to_str().unwrap(), "main.rs", Mode::Map).unwrap();
+        assert!(result.plain.contains("## Dependency Signatures"));
+        assert!(result.plain.contains("config.rs"));
+    }
+
+    #[test]
+    fn slim_mode_dep_sym_tables() {
+        let dir = setup(&[
+            ("config.rs", "pub struct Config {\n    pub debug: bool,\n}\n"),
+            ("main.rs", "use crate::config::Config;\n\nfn main() {\n    let _c = Config { debug: true };\n}\n"),
+        ]);
+        let result = analyze(dir.path().to_str().unwrap(), "main.rs", Mode::Slim).unwrap();
+        // Slim uses compact sym tables, not code blocks
+        assert!(result.plain.contains("## Dependencies"));
+        assert!(!result.plain.contains("## Dependency Signatures"));
+    }
+
+    #[test]
+    fn python_imports_resolved() {
+        let dir = setup(&[
+            ("config.py", "class Config:\n    debug = True\n"),
+            ("main.py", "from config import Config\n\ndef run():\n    c = Config()\n"),
+        ]);
+        let result = analyze(dir.path().to_str().unwrap(), "main.py", Mode::Full).unwrap();
+        assert!(result.plain.contains("Config"));
+        assert!(result.plain.contains("## Imports"));
+    }
+
+    #[test]
+    fn short_symbol_names_skipped_in_used_by() {
+        // Symbols with names <= 2 chars should not appear in used-by scan
+        let dir = setup(&[
+            ("lib.rs", "pub fn ab() -> i32 { 1 }\npub fn abc() -> i32 { 2 }\n"),
+            ("main.rs", "fn main() {\n    let _ = ab();\n    let _ = abc();\n}\n"),
+        ]);
+        let result = analyze(dir.path().to_str().unwrap(), "lib.rs", Mode::Full).unwrap();
+        // "ab" (2 chars) should be skipped, "abc" (3 chars) should be found
+        let used_by_section = result.plain.split("## Used By").nth(1).unwrap_or("");
+        assert!(!used_by_section.contains("→ ab (") && !used_by_section.contains("→ ab\n"));
+        assert!(used_by_section.contains("→ abc"));
+    }
+
+    #[test]
+    fn markdown_has_code_fences() {
+        let dir = setup(&[("main.rs", "fn main() {}\n")]);
+        let result = analyze(dir.path().to_str().unwrap(), "main.rs", Mode::Full).unwrap();
+        assert!(result.plain.contains("```rust"));
+        assert!(result.plain.contains("```\n"));
+    }
+
+    #[test]
+    fn python_gets_python_fence() {
+        let dir = setup(&[("app.py", "def main():\n    pass\n")]);
+        let result = analyze(dir.path().to_str().unwrap(), "app.py", Mode::Full).unwrap();
+        assert!(result.plain.contains("```python"));
+    }
 }
