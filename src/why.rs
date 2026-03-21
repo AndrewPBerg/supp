@@ -233,8 +233,16 @@ fn extract_comment_above(content: &str, def_line: usize) -> Option<String> {
     while i < lines.len() {
         let trimmed = lines[i].trim();
         if trimmed.starts_with("///") || trimmed.starts_with("//!") {
+            // Rust doc comments
             comment_lines.push(trimmed);
-        } else if trimmed.starts_with("/**") || trimmed.ends_with("*/") || trimmed.starts_with('*') {
+        } else if trimmed.starts_with("//") {
+            // Regular line comments (Go, C, C++, Java, JS/TS)
+            comment_lines.push(trimmed);
+        } else if trimmed.starts_with("/**")
+            || trimmed.ends_with("*/")
+            || trimmed.starts_with('*')
+        {
+            // Block doc comments (Java, JS/TS, C)
             comment_lines.push(trimmed);
         } else if trimmed.starts_with('#') || trimmed.starts_with('@') {
             // Rust attributes / Python decorators — skip but keep looking
@@ -890,14 +898,32 @@ fn extract_hierarchy(
         .filter(|s| matches!(s.kind, SymbolKind::Class | SymbolKind::Struct))
         .filter(|s| s.name != sym.name)
         .filter(|s| {
-            // Check if this class extends our symbol
-            // Look for (SymName) or (SymName, ...) or (..., SymName) in signature
-            if let Some(paren_start) = s.signature.find('(') {
-                let after_paren = &s.signature[paren_start..];
-                contains_identifier(after_paren, &sym.name)
-            } else {
-                false
+            let sig = &s.signature;
+            // Python: class Child(Parent, ...)
+            if let Some(paren_start) = sig.find('(') {
+                let after_paren = &sig[paren_start..];
+                if contains_identifier(after_paren, &sym.name) {
+                    return true;
+                }
             }
+            // Java/TS/JS: class Child extends Parent
+            if sig.contains("extends") || sig.contains("implements") {
+                let after_keyword = sig
+                    .find("extends")
+                    .map(|i| &sig[i + 7..])
+                    .unwrap_or("");
+                if contains_identifier(after_keyword, &sym.name) {
+                    return true;
+                }
+                let after_impl = sig
+                    .find("implements")
+                    .map(|i| &sig[i + 10..])
+                    .unwrap_or("");
+                if contains_identifier(after_impl, &sym.name) {
+                    return true;
+                }
+            }
+            false
         })
         .map(|s| HierarchyEntry {
             name: s.name.clone(),
@@ -971,65 +997,22 @@ fn extract_parent_names(
         }
         Lang::Java => {
             // class Foo extends Bar implements Baz, Qux
-            // tree-sitter-java: superclass field, interfaces field
+            // tree-sitter-java: superclass node contains the full "extends ClassName" clause
             let mut names = Vec::new();
-            if let Some(super_node) = def_node.child_by_field_name("superclass") {
-                let name = compress::node_text(content, super_node);
-                names.push(name.to_string());
-            }
-            // interfaces: super_interfaces node
-            if let Some(interfaces) = def_node.child_by_field_name("interfaces") {
-                let mut cursor = interfaces.walk();
-                if cursor.goto_first_child() {
-                    loop {
-                        let child = cursor.node();
-                        if child.kind() == "type_identifier" {
-                            names.push(compress::node_text(content, child).to_string());
-                        }
-                        if !cursor.goto_next_sibling() {
-                            break;
-                        }
-                    }
-                }
+            // Walk all children to find the superclass and interfaces clauses
+            extract_type_identifiers_deep(def_node, content, "superclass", &mut names);
+            extract_type_identifiers_deep(def_node, content, "interfaces", &mut names);
+            // Fallback: walk children looking for type_identifier after "extends"/"implements"
+            if names.is_empty() {
+                extract_extends_names(def_node, content, &mut names);
             }
             names
         }
         Lang::JavaScript | Lang::TypeScript | Lang::Tsx => {
             // class Foo extends Bar { ... }
+            // tree-sitter varies: may use class_heritage, extends_clause, or direct children
             let mut names = Vec::new();
-            let mut cursor = def_node.walk();
-            if cursor.goto_first_child() {
-                let mut saw_extends = false;
-                loop {
-                    let child = cursor.node();
-                    if child.kind() == "extends" || compress::node_text(content, child) == "extends"
-                    {
-                        saw_extends = true;
-                    } else if saw_extends
-                        && matches!(child.kind(), "identifier" | "type_identifier")
-                    {
-                        names.push(compress::node_text(content, child).to_string());
-                        saw_extends = false;
-                    } else if child.kind() == "class_heritage" {
-                        // TS: class_heritage contains the extends clause
-                        let mut inner = child.walk();
-                        if inner.goto_first_child() {
-                            loop {
-                                let n = inner.node();
-                                if matches!(n.kind(), "identifier" | "type_identifier") {
-                                    names.push(compress::node_text(content, n).to_string());
-                                }
-                                if !inner.goto_next_sibling() {
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                    if !cursor.goto_next_sibling() {
-                        break;
-                    }
-                }
-            }
+            extract_extends_names(def_node, content, &mut names);
             names
         }
         _ => Vec::new(),
@@ -1037,6 +1020,76 @@ fn extract_parent_names(
 }
 
 // ── Plain text builder ──────────────────────────────────────────────
+
+/// Extract type identifiers from a named field node (e.g. "superclass" → dig into it for type_identifier)
+fn extract_type_identifiers_deep(
+    parent: tree_sitter::Node,
+    content: &str,
+    field_name: &str,
+    names: &mut Vec<String>,
+) {
+    if let Some(field_node) = parent.child_by_field_name(field_name) {
+        collect_type_idents(field_node, content, names);
+    }
+}
+
+fn collect_type_idents(node: tree_sitter::Node, content: &str, names: &mut Vec<String>) {
+    if matches!(node.kind(), "type_identifier" | "identifier") {
+        let text = compress::node_text(content, node).to_string();
+        // Skip keywords that might appear
+        if !matches!(text.as_str(), "extends" | "implements" | "super" | "class") {
+            names.push(text);
+            return; // Don't recurse into this node
+        }
+    }
+    let mut cursor = node.walk();
+    if cursor.goto_first_child() {
+        loop {
+            collect_type_idents(cursor.node(), content, names);
+            if !cursor.goto_next_sibling() {
+                break;
+            }
+        }
+    }
+}
+
+/// Walk children of a class node looking for identifiers after "extends" or "implements" keywords.
+/// Works across Java, JS, TS by matching on text content.
+fn extract_extends_names(
+    def_node: tree_sitter::Node,
+    content: &str,
+    names: &mut Vec<String>,
+) {
+    // Recursively find all identifier/type_identifier nodes that appear after
+    // an "extends" or "implements" keyword, but before the class body
+    let full_text = compress::node_text(content, def_node);
+    let first_line = full_text.lines().next().unwrap_or("");
+
+    // Parse "class Name extends Parent" or "class Name extends Parent implements I1, I2"
+    // from the first line / signature
+    for keyword in ["extends", "implements"] {
+        if let Some(idx) = first_line.find(keyword) {
+            let after = &first_line[idx + keyword.len()..];
+            // Take until { or end of line
+            let until_brace = after.split('{').next().unwrap_or(after);
+            // Also split on next keyword
+            let until_keyword = until_brace
+                .split("implements")
+                .next()
+                .unwrap_or(until_brace);
+            for name in until_keyword.split(',') {
+                let name = name.trim().split('<').next().unwrap_or("").trim();
+                let name = name.split_whitespace().next().unwrap_or("").trim();
+                if !name.is_empty()
+                    && name.chars().next().is_some_and(|c| c.is_uppercase())
+                    && !matches!(name, "extends" | "implements")
+                {
+                    names.push(name.to_string());
+                }
+            }
+        }
+    }
+}
 
 fn build_plain_text(
     sym: &Symbol,
@@ -1157,4 +1210,978 @@ fn build_plain_text(
     }
 
     out
+}
+
+// ── Tests ───────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::symbol::SymbolKind;
+    use std::fs;
+    use tempfile::TempDir;
+
+    fn setup(files: &[(&str, &str)]) -> TempDir {
+        let dir = TempDir::new().unwrap();
+        for (name, content) in files {
+            let path = dir.path().join(name);
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent).unwrap();
+            }
+            fs::write(&path, content).unwrap();
+        }
+        dir
+    }
+
+    fn run(dir: &TempDir, query: &[&str]) -> WhyResult {
+        let query: Vec<String> = query.iter().map(|s| s.to_string()).collect();
+        explain(dir.path().to_str().unwrap(), &query).unwrap()
+    }
+
+    fn run_err(dir: &TempDir, query: &[&str]) -> String {
+        let query: Vec<String> = query.iter().map(|s| s.to_string()).collect();
+        match explain(dir.path().to_str().unwrap(), &query) {
+            Ok(_) => panic!("expected error"),
+            Err(e) => e.to_string(),
+        }
+    }
+
+    // ── Rust ────────────────────────────────────────────────────
+
+    fn rust_fixtures() -> Vec<(&'static str, &'static str)> {
+        vec![
+            (
+                "src/lib.rs",
+                r#"use crate::helper::Config;
+
+/// Processes data with the given configuration.
+///
+/// Returns the processed result as a string.
+pub fn process_data(config: &Config) -> String {
+    let value = config.get_value();
+    format!("processed: {}", value)
+}
+
+pub struct DataStore {
+    items: Vec<String>,
+}
+
+impl DataStore {
+    pub fn new() -> Self {
+        DataStore { items: Vec::new() }
+    }
+
+    pub fn add(&mut self, item: String) {
+        self.items.push(item);
+    }
+}
+
+pub const MAX_ITEMS: usize = 100;
+
+pub enum Status {
+    Active,
+    Inactive,
+}
+
+pub type ItemList = Vec<String>;
+
+fn main() {
+    let cfg = Config::default();
+    let result = process_data(&cfg);
+    println!("{}", result);
+}
+"#,
+            ),
+            (
+                "src/helper.rs",
+                r#"/// Configuration for data processing.
+pub struct Config {
+    pub name: String,
+}
+
+impl Config {
+    pub fn default() -> Self {
+        Config { name: "default".to_string() }
+    }
+
+    pub fn get_value(&self) -> &str {
+        &self.name
+    }
+}
+"#,
+            ),
+        ]
+    }
+
+    #[test]
+    fn rust_doc_comment() {
+        let dir = setup(&rust_fixtures());
+        let r = run(&dir, &["process_data"]);
+        let doc = r.doc_comment.as_deref().unwrap();
+        assert!(doc.contains("Processes data"), "doc={doc}");
+        assert!(doc.contains("Returns the processed result"), "doc={doc}");
+    }
+
+    #[test]
+    fn rust_no_doc_comment() {
+        let dir = setup(&rust_fixtures());
+        let r = run(&dir, &["DataStore"]);
+        assert!(r.doc_comment.is_none());
+    }
+
+    #[test]
+    fn rust_full_def_function() {
+        let dir = setup(&rust_fixtures());
+        let r = run(&dir, &["process_data"]);
+        assert!(r.full_definition.contains("config.get_value()"));
+        assert!(r.full_definition.contains("format!"));
+    }
+
+    #[test]
+    fn rust_full_def_struct() {
+        let dir = setup(&rust_fixtures());
+        let r = run(&dir, &["DataStore"]);
+        assert!(r.full_definition.contains("items: Vec<String>"));
+    }
+
+    #[test]
+    fn rust_full_def_enum() {
+        let dir = setup(&rust_fixtures());
+        let r = run(&dir, &["Status"]);
+        assert!(r.full_definition.contains("Active"));
+        assert!(r.full_definition.contains("Inactive"));
+    }
+
+    #[test]
+    fn rust_full_def_type_alias() {
+        let dir = setup(&rust_fixtures());
+        let r = run(&dir, &["ItemList"]);
+        assert!(r.full_definition.contains("Vec<String>"));
+    }
+
+    #[test]
+    fn rust_full_def_const() {
+        let dir = setup(&rust_fixtures());
+        let r = run(&dir, &["MAX_ITEMS"]);
+        assert!(r.full_definition.contains("100"));
+    }
+
+    #[test]
+    fn rust_call_sites_cross_file() {
+        let dir = setup(&rust_fixtures());
+        let r = run(&dir, &["Config"]);
+        let files: Vec<&str> = r.call_sites.iter().map(|s| s.file.as_str()).collect();
+        assert!(files.contains(&"src/lib.rs"), "call sites={files:?}");
+    }
+
+    #[test]
+    fn rust_call_sites_same_file_outside_def() {
+        let dir = setup(&rust_fixtures());
+        let r = run(&dir, &["process_data"]);
+        // Should find usage in main()
+        let in_main: Vec<_> = r
+            .call_sites
+            .iter()
+            .filter(|s| s.caller.as_deref() == Some("main"))
+            .collect();
+        assert!(!in_main.is_empty(), "should find call in main()");
+    }
+
+    #[test]
+    fn rust_deps_body_and_signature() {
+        let dir = setup(&rust_fixtures());
+        let r = run(&dir, &["process_data"]);
+        let dep_names: Vec<&str> = r.dependencies.iter().map(|d| d.name.as_str()).collect();
+        assert!(dep_names.contains(&"Config"), "deps={dep_names:?}");
+    }
+
+    #[test]
+    fn rust_imports_tracked() {
+        let dir = setup(&rust_fixtures());
+        let r = run(&dir, &["process_data"]);
+        let config_dep = r.dependencies.iter().find(|d| d.name == "Config");
+        assert!(config_dep.is_some(), "should have Config dep");
+        // Config import should be tracked from the use statement
+        let dep = config_dep.unwrap();
+        assert!(dep.import_from.as_deref() == Some("crate::helper"), "import_from={:?}", dep.import_from);
+    }
+
+    // ── Python ──────────────────────────────────────────────────
+
+    fn python_fixtures() -> Vec<(&'static str, &'static str)> {
+        vec![
+            (
+                "app/models.py",
+                r#"from dataclasses import dataclass
+
+class BaseModel:
+    """Base model with common functionality.
+
+    Provides serialization and validation.
+    """
+    def validate(self):
+        return True
+
+class User(BaseModel):
+    """A user in the system."""
+    def __init__(self, name, email):
+        self.name = name
+        self.email = email
+
+    def greet(self):
+        """Return a greeting string."""
+        return f"Hello, {self.name}"
+
+MAX_USERS = 1000
+"#,
+            ),
+            (
+                "app/service.py",
+                r#"from app.models import User, MAX_USERS
+
+def create_user(name, email):
+    """Create a new user after validation."""
+    if get_count() >= MAX_USERS:
+        raise ValueError("Too many users")
+    user = User(name, email)
+    user.validate()
+    return user
+
+def get_count():
+    return 0
+"#,
+            ),
+        ]
+    }
+
+    #[test]
+    fn python_doc_comment_class() {
+        let dir = setup(&python_fixtures());
+        let r = run(&dir, &["BaseModel"]);
+        let doc = r.doc_comment.as_deref().unwrap();
+        assert!(doc.contains("Base model with common functionality"), "doc={doc}");
+        assert!(doc.contains("serialization and validation"), "doc={doc}");
+    }
+
+    #[test]
+    fn python_doc_comment_method() {
+        let dir = setup(&python_fixtures());
+        let r = run(&dir, &["greet"]);
+        let doc = r.doc_comment.as_deref().unwrap();
+        assert!(doc.contains("Return a greeting string"), "doc={doc}");
+    }
+
+    #[test]
+    fn python_doc_comment_function() {
+        let dir = setup(&python_fixtures());
+        let r = run(&dir, &["create_user"]);
+        let doc = r.doc_comment.as_deref().unwrap();
+        assert!(doc.contains("Create a new user"), "doc={doc}");
+    }
+
+    #[test]
+    fn python_full_def_class() {
+        let dir = setup(&python_fixtures());
+        let r = run(&dir, &["User"]);
+        assert!(r.full_definition.contains("__init__"));
+        assert!(r.full_definition.contains("greet"));
+    }
+
+    #[test]
+    fn python_full_def_const() {
+        let dir = setup(&python_fixtures());
+        let r = run(&dir, &["MAX_USERS"]);
+        assert!(r.full_definition.contains("1000"));
+    }
+
+    #[test]
+    fn python_call_sites_cross_file() {
+        let dir = setup(&python_fixtures());
+        let r = run(&dir, &["User"]);
+        let sites: Vec<_> = r
+            .call_sites
+            .iter()
+            .filter(|s| s.file == "app/service.py")
+            .collect();
+        assert!(!sites.is_empty(), "should find usage in service.py");
+        assert!(
+            sites.iter().any(|s| s.caller.as_deref() == Some("create_user")),
+            "caller should be create_user"
+        );
+    }
+
+    #[test]
+    fn python_deps_resolved() {
+        let dir = setup(&python_fixtures());
+        let r = run(&dir, &["create_user"]);
+        let dep_names: Vec<&str> = r.dependencies.iter().map(|d| d.name.as_str()).collect();
+        assert!(dep_names.contains(&"User"), "deps={dep_names:?}");
+        assert!(dep_names.contains(&"MAX_USERS"), "deps={dep_names:?}");
+        assert!(dep_names.contains(&"get_count"), "deps={dep_names:?}");
+    }
+
+    #[test]
+    fn python_deps_import_tracked() {
+        let dir = setup(&python_fixtures());
+        let r = run(&dir, &["create_user"]);
+        let user_dep = r.dependencies.iter().find(|d| d.name == "User").unwrap();
+        assert_eq!(user_dep.import_from.as_deref(), Some("app.models"));
+    }
+
+    #[test]
+    fn python_hierarchy_parents() {
+        let dir = setup(&python_fixtures());
+        let r = run(&dir, &["User"]);
+        let h = r.hierarchy.as_ref().expect("should have hierarchy");
+        let parent_names: Vec<&str> = h.parents.iter().map(|p| p.name.as_str()).collect();
+        assert!(parent_names.contains(&"BaseModel"), "parents={parent_names:?}");
+    }
+
+    #[test]
+    fn python_hierarchy_children() {
+        let dir = setup(&python_fixtures());
+        let r = run(&dir, &["BaseModel"]);
+        let h = r.hierarchy.as_ref().expect("should have hierarchy");
+        let child_names: Vec<&str> = h.children.iter().map(|c| c.name.as_str()).collect();
+        assert!(child_names.contains(&"User"), "children={child_names:?}");
+    }
+
+    #[test]
+    fn python_hierarchy_external_parent() {
+        let dir = setup(&[(
+            "ext/child.py",
+            r#"from pydantic import BaseModel
+
+class MyModel(BaseModel):
+    """A pydantic model."""
+    name: str
+"#,
+        )]);
+        let r = run(&dir, &["MyModel"]);
+        let h = r.hierarchy.as_ref().expect("should have hierarchy");
+        assert_eq!(h.parents.len(), 1);
+        assert_eq!(h.parents[0].name, "BaseModel");
+        assert_eq!(
+            h.parents[0].external_module.as_deref(),
+            Some("pydantic"),
+            "should tag external parent module"
+        );
+        assert!(h.parents[0].location.is_none(), "external parent has no project location");
+    }
+
+    #[test]
+    fn python_hierarchy_none_for_function() {
+        let dir = setup(&python_fixtures());
+        let r = run(&dir, &["create_user"]);
+        assert!(r.hierarchy.is_none());
+    }
+
+    // ── TypeScript ──────────────────────────────────────────────
+
+    fn ts_fixtures() -> Vec<(&'static str, &'static str)> {
+        vec![
+            (
+                "src/types.ts",
+                r#"/** Represents a configuration option. */
+export interface AppConfig {
+    name: string;
+    debug: boolean;
+}
+
+/** Base service with logging. */
+export class BaseService {
+    protected log(msg: string): void {
+        console.log(msg);
+    }
+}
+
+export type StatusCode = number;
+
+export const DEFAULT_PORT = 3000;
+"#,
+            ),
+            (
+                "src/app.ts",
+                r#"import { AppConfig, BaseService, DEFAULT_PORT } from './types';
+
+/** Application service that handles requests. */
+export class AppService extends BaseService {
+    private config: AppConfig;
+
+    constructor(config: AppConfig) {
+        super();
+        this.config = config;
+    }
+
+    /** Start the application server. */
+    start(): void {
+        this.log(`Starting on port ${DEFAULT_PORT}`);
+    }
+}
+
+export function createApp(config: AppConfig): AppService {
+    return new AppService(config);
+}
+"#,
+            ),
+        ]
+    }
+
+    #[test]
+    fn ts_doc_comment_class() {
+        let dir = setup(&ts_fixtures());
+        let r = run(&dir, &["AppService"]);
+        let doc = r.doc_comment.as_deref().unwrap();
+        assert!(doc.contains("Application service"), "doc={doc}");
+    }
+
+    #[test]
+    fn ts_full_def_interface() {
+        let dir = setup(&ts_fixtures());
+        let r = run(&dir, &["AppConfig"]);
+        assert!(r.full_definition.contains("name: string"), "def={}", r.full_definition);
+        assert!(r.full_definition.contains("debug: boolean"), "def={}", r.full_definition);
+    }
+
+    #[test]
+    fn ts_full_def_class() {
+        let dir = setup(&ts_fixtures());
+        let r = run(&dir, &["AppService"]);
+        assert!(r.full_definition.contains("constructor"), "def={}", r.full_definition);
+        assert!(r.full_definition.contains("start()"), "def={}", r.full_definition);
+    }
+
+    #[test]
+    fn ts_full_def_type_alias() {
+        let dir = setup(&ts_fixtures());
+        let r = run(&dir, &["StatusCode"]);
+        assert!(r.full_definition.contains("number"), "def={}", r.full_definition);
+    }
+
+    #[test]
+    fn ts_call_sites_cross_file() {
+        let dir = setup(&ts_fixtures());
+        let r = run(&dir, &["AppConfig"]);
+        let files: Vec<&str> = r.call_sites.iter().map(|s| s.file.as_str()).collect();
+        assert!(files.contains(&"src/app.ts"), "call_sites files={files:?}");
+    }
+
+    #[test]
+    fn ts_deps_resolved() {
+        let dir = setup(&ts_fixtures());
+        let r = run(&dir, &["createApp"]);
+        let dep_names: Vec<&str> = r.dependencies.iter().map(|d| d.name.as_str()).collect();
+        assert!(dep_names.contains(&"AppConfig"), "deps={dep_names:?}");
+        assert!(dep_names.contains(&"AppService"), "deps={dep_names:?}");
+    }
+
+    #[test]
+    fn ts_deps_import_tracked() {
+        let dir = setup(&ts_fixtures());
+        let r = run(&dir, &["createApp"]);
+        let cfg_dep = r.dependencies.iter().find(|d| d.name == "AppConfig").unwrap();
+        assert_eq!(cfg_dep.import_from.as_deref(), Some("./types"));
+    }
+
+    #[test]
+    fn ts_hierarchy_parents() {
+        let dir = setup(&ts_fixtures());
+        let r = run(&dir, &["AppService"]);
+        let h = r.hierarchy.as_ref().expect("should have hierarchy");
+        let parent_names: Vec<&str> = h.parents.iter().map(|p| p.name.as_str()).collect();
+        assert!(parent_names.contains(&"BaseService"), "parents={parent_names:?}");
+    }
+
+    #[test]
+    fn ts_hierarchy_children() {
+        let dir = setup(&ts_fixtures());
+        let r = run(&dir, &["BaseService"]);
+        let h = r.hierarchy.as_ref().expect("should have hierarchy");
+        let child_names: Vec<&str> = h.children.iter().map(|c| c.name.as_str()).collect();
+        assert!(child_names.contains(&"AppService"), "children={child_names:?}");
+    }
+
+    // ── TSX ─────────────────────────────────────────────────────
+
+    fn tsx_fixtures() -> Vec<(&'static str, &'static str)> {
+        vec![
+            (
+                "components/Button.tsx",
+                r#"import React from 'react';
+
+/** A reusable button component. */
+export class Button extends React.Component {
+    render() {
+        return <button>{this.props.label}</button>;
+    }
+}
+
+export function IconButton(props: { icon: string }) {
+    return <button>{props.icon}</button>;
+}
+"#,
+            ),
+            (
+                "components/App.tsx",
+                r#"import { Button, IconButton } from './Button';
+
+export function App() {
+    return (
+        <div>
+            <Button label="Click" />
+            <IconButton icon="star" />
+        </div>
+    );
+}
+"#,
+            ),
+        ]
+    }
+
+    #[test]
+    fn tsx_doc_comment() {
+        let dir = setup(&tsx_fixtures());
+        let r = run(&dir, &["Button"]);
+        let doc = r.doc_comment.as_deref().unwrap();
+        assert!(doc.contains("reusable button component"), "doc={doc}");
+    }
+
+    #[test]
+    fn tsx_call_sites_cross_file() {
+        let dir = setup(&tsx_fixtures());
+        let r = run(&dir, &["Button"]);
+        let files: Vec<&str> = r.call_sites.iter().map(|s| s.file.as_str()).collect();
+        assert!(files.contains(&"components/App.tsx"), "call_sites={files:?}");
+    }
+
+    #[test]
+    fn tsx_full_def_class() {
+        let dir = setup(&tsx_fixtures());
+        let r = run(&dir, &["Button"]);
+        assert!(r.full_definition.contains("render()"), "def={}", r.full_definition);
+    }
+
+    // ── JavaScript ──────────────────────────────────────────────
+
+    fn js_fixtures() -> Vec<(&'static str, &'static str)> {
+        vec![
+            (
+                "lib/utils.js",
+                r#"/** Calculate the sum of two numbers. */
+function calculate(a, b) {
+    return a + b;
+}
+
+class EventEmitter {
+    constructor() {
+        this.listeners = {};
+    }
+
+    /** Register an event listener. */
+    on(event, callback) {
+        this.listeners[event] = callback;
+    }
+}
+
+module.exports = { calculate, EventEmitter };
+"#,
+            ),
+            (
+                "lib/main.js",
+                r#"const { calculate, EventEmitter } = require('./utils');
+
+function run() {
+    const result = calculate(1, 2);
+    const emitter = new EventEmitter();
+    emitter.on('data', console.log);
+    return result;
+}
+"#,
+            ),
+        ]
+    }
+
+    #[test]
+    fn js_doc_comment() {
+        let dir = setup(&js_fixtures());
+        let r = run(&dir, &["calculate"]);
+        let doc = r.doc_comment.as_deref().unwrap();
+        assert!(doc.contains("Calculate the sum"), "doc={doc}");
+    }
+
+    #[test]
+    fn js_doc_comment_method() {
+        let dir = setup(&js_fixtures());
+        let r = run(&dir, &["on"]);
+        let doc = r.doc_comment.as_deref().unwrap();
+        assert!(doc.contains("Register an event listener"), "doc={doc}");
+    }
+
+    #[test]
+    fn js_full_def_function() {
+        let dir = setup(&js_fixtures());
+        let r = run(&dir, &["calculate"]);
+        assert!(r.full_definition.contains("return a + b"), "def={}", r.full_definition);
+    }
+
+    #[test]
+    fn js_call_sites_cross_file() {
+        let dir = setup(&js_fixtures());
+        let r = run(&dir, &["calculate"]);
+        let sites: Vec<_> = r
+            .call_sites
+            .iter()
+            .filter(|s| s.file == "lib/main.js")
+            .collect();
+        assert!(!sites.is_empty(), "should find call in main.js");
+        assert!(
+            sites.iter().any(|s| s.caller.as_deref() == Some("run")),
+            "caller should be run"
+        );
+    }
+
+    // ── Go ──────────────────────────────────────────────────────
+
+    fn go_fixtures() -> Vec<(&'static str, &'static str)> {
+        vec![
+            (
+                "pkg/server.go",
+                r#"package pkg
+
+// Server handles HTTP requests.
+// It supports graceful shutdown.
+type Server struct {
+    Port    int
+    Handler Handler
+}
+
+// NewServer creates a new Server with the given port.
+func NewServer(port int) *Server {
+    return &Server{Port: port}
+}
+
+// Start begins listening on the configured port.
+func (s *Server) Start() error {
+    return nil
+}
+
+type Handler interface {
+    Handle(req string) string
+}
+
+const DefaultPort = 8080
+"#,
+            ),
+            (
+                "pkg/handler.go",
+                r#"package pkg
+
+// LogHandler logs and handles requests.
+type LogHandler struct {
+    Prefix string
+}
+
+// Handle processes the request.
+func (h *LogHandler) Handle(req string) string {
+    return h.Prefix + req
+}
+
+func UseServer() {
+    srv := NewServer(DefaultPort)
+    srv.Start()
+}
+"#,
+            ),
+        ]
+    }
+
+    #[test]
+    fn go_doc_comment() {
+        let dir = setup(&go_fixtures());
+        let r = run(&dir, &["Server"]);
+        let doc = r.doc_comment.as_deref().unwrap();
+        assert!(doc.contains("Server handles HTTP requests"), "doc={doc}");
+        assert!(doc.contains("graceful shutdown"), "doc={doc}");
+    }
+
+    #[test]
+    fn go_full_def_struct() {
+        let dir = setup(&go_fixtures());
+        let r = run(&dir, &["Server"]);
+        assert!(r.full_definition.contains("Port"), "def={}", r.full_definition);
+        assert!(r.full_definition.contains("Handler"), "def={}", r.full_definition);
+    }
+
+    #[test]
+    fn go_full_def_function() {
+        let dir = setup(&go_fixtures());
+        let r = run(&dir, &["NewServer"]);
+        assert!(r.full_definition.contains("return &Server"), "def={}", r.full_definition);
+    }
+
+    #[test]
+    fn go_full_def_interface() {
+        let dir = setup(&go_fixtures());
+        let r = run(&dir, &["Handler"]);
+        assert!(r.full_definition.contains("Handle"), "def={}", r.full_definition);
+    }
+
+    #[test]
+    fn go_call_sites_cross_file() {
+        let dir = setup(&go_fixtures());
+        let r = run(&dir, &["NewServer"]);
+        let sites: Vec<_> = r
+            .call_sites
+            .iter()
+            .filter(|s| s.file == "pkg/handler.go")
+            .collect();
+        assert!(!sites.is_empty(), "should find call in handler.go");
+        assert!(
+            sites.iter().any(|s| s.caller.as_deref() == Some("UseServer")),
+            "caller should be UseServer, got {:?}",
+            sites.iter().map(|s| &s.caller).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn go_deps_resolved() {
+        let dir = setup(&go_fixtures());
+        let r = run(&dir, &["NewServer"]);
+        let dep_names: Vec<&str> = r.dependencies.iter().map(|d| d.name.as_str()).collect();
+        assert!(dep_names.contains(&"Server"), "deps={dep_names:?}");
+    }
+
+    // ── Java ────────────────────────────────────────────────────
+
+    fn java_fixtures() -> Vec<(&'static str, &'static str)> {
+        vec![
+            (
+                "src/Animal.java",
+                r#"/**
+ * Base class for all animals.
+ * Provides common animal behavior.
+ */
+public class Animal {
+    protected String name;
+
+    public Animal(String name) {
+        this.name = name;
+    }
+
+    /** Get the animal's name. */
+    public String getName() {
+        return name;
+    }
+}
+"#,
+            ),
+            (
+                "src/Dog.java",
+                r#"/**
+ * A dog that extends Animal.
+ */
+public class Dog extends Animal {
+    private String breed;
+
+    public Dog(String name, String breed) {
+        super(name);
+        this.breed = breed;
+    }
+
+    /** Make the dog bark. */
+    public String bark() {
+        return getName() + " says Woof!";
+    }
+}
+"#,
+            ),
+        ]
+    }
+
+    #[test]
+    fn java_doc_comment() {
+        let dir = setup(&java_fixtures());
+        let r = run(&dir, &["Animal"]);
+        let doc = r.doc_comment.as_deref().unwrap();
+        assert!(doc.contains("Base class for all animals"), "doc={doc}");
+    }
+
+    #[test]
+    fn java_doc_comment_method() {
+        let dir = setup(&java_fixtures());
+        let r = run(&dir, &["bark"]);
+        let doc = r.doc_comment.as_deref().unwrap();
+        assert!(doc.contains("Make the dog bark"), "doc={doc}");
+    }
+
+    #[test]
+    fn java_full_def_class() {
+        let dir = setup(&java_fixtures());
+        let r = run(&dir, &["Dog"]);
+        assert!(r.full_definition.contains("breed"), "def={}", r.full_definition);
+        assert!(r.full_definition.contains("bark"), "def={}", r.full_definition);
+    }
+
+    #[test]
+    fn java_call_sites_cross_file() {
+        let dir = setup(&java_fixtures());
+        let r = run(&dir, &["getName"]);
+        let sites: Vec<_> = r
+            .call_sites
+            .iter()
+            .filter(|s| s.file == "src/Dog.java")
+            .collect();
+        assert!(!sites.is_empty(), "should find call in Dog.java");
+        assert!(
+            sites.iter().any(|s| s.caller.as_deref() == Some("bark")),
+            "caller should be bark"
+        );
+    }
+
+    #[test]
+    fn java_hierarchy_parents() {
+        let dir = setup(&java_fixtures());
+        let r = run(&dir, &["Dog"]);
+        let h = r.hierarchy.as_ref().expect("Dog should have hierarchy");
+        let parent_names: Vec<&str> = h.parents.iter().map(|p| p.name.as_str()).collect();
+        assert!(parent_names.contains(&"Animal"), "parents={parent_names:?}");
+    }
+
+    #[test]
+    fn java_hierarchy_children() {
+        let dir = setup(&java_fixtures());
+        let r = run(&dir, &["Animal"]);
+        let h = r.hierarchy.as_ref().expect("Animal should have hierarchy");
+        let child_names: Vec<&str> = h.children.iter().map(|c| c.name.as_str()).collect();
+        assert!(child_names.contains(&"Dog"), "children={child_names:?}");
+    }
+
+    #[test]
+    fn java_deps_resolved() {
+        let dir = setup(&java_fixtures());
+        let r = run(&dir, &["bark"]);
+        let dep_names: Vec<&str> = r.dependencies.iter().map(|d| d.name.as_str()).collect();
+        assert!(dep_names.contains(&"getName"), "deps={dep_names:?}");
+    }
+
+    // ── JSON ────────────────────────────────────────────────────
+
+    #[test]
+    fn json_file_level_symbol() {
+        let dir = setup(&[(
+            "config.json",
+            r#"{
+    "name": "my-project",
+    "version": "1.0.0",
+    "database": {
+        "host": "localhost",
+        "port": 5432
+    }
+}"#,
+        )]);
+        let r = run(&dir, &["config.json"]);
+        assert_eq!(r.symbol.kind, SymbolKind::File);
+        assert!(r.doc_comment.is_none());
+        assert!(r.hierarchy.is_none());
+    }
+
+    // ── Markdown ────────────────────────────────────────────────
+
+    #[test]
+    fn markdown_file_level_symbol() {
+        let dir = setup(&[(
+            "docs/README.md",
+            "# My Project\n\n## Installation\n\nRun `pip install my-project`.\n\n## Usage\n\nImport and call `process_data`.\n",
+        )]);
+        let r = run(&dir, &["README.md"]);
+        assert_eq!(r.symbol.kind, SymbolKind::File);
+        assert!(r.hierarchy.is_none());
+    }
+
+    // ── Edge cases ──────────────────────────────────────────────
+
+    #[test]
+    fn edge_no_symbol_found() {
+        let dir = setup(&[("src/lib.rs", "fn main() {}")]);
+        let err = run_err(&dir, &["nonexistent_symbol_xyz"]);
+        assert!(err.contains("no symbol found"), "err={err}");
+    }
+
+    #[test]
+    fn edge_short_name_call_sites_empty() {
+        // Symbols with name length <= 2 should skip call site search
+        let dir = setup(&[(
+            "lib.rs",
+            "pub fn go() { }\nfn main() { go(); }\n",
+        )]);
+        let r = run(&dir, &["go"]);
+        assert!(r.call_sites.is_empty(), "short names skip call site search");
+    }
+
+    // ── Import parsing unit tests ───────────────────────────────
+
+    #[test]
+    fn imports_python_from() {
+        let imports = extract_python_imports("from app.models import User, Config\nimport os\n");
+        assert_eq!(imports.get("User").map(String::as_str), Some("app.models"));
+        assert_eq!(imports.get("Config").map(String::as_str), Some("app.models"));
+        assert_eq!(imports.get("os").map(String::as_str), Some("os"));
+    }
+
+    #[test]
+    fn imports_python_relative() {
+        let imports = extract_python_imports("from .main_prompt import build\n");
+        assert_eq!(imports.get("build").map(String::as_str), Some(".main_prompt"));
+    }
+
+    #[test]
+    fn imports_python_as_alias() {
+        let imports = extract_python_imports("from numpy import array as arr\n");
+        assert_eq!(imports.get("array").map(String::as_str), Some("numpy"));
+    }
+
+    #[test]
+    fn imports_rust_use() {
+        let imports = extract_rust_imports("use anyhow::Result;\nuse std::collections::{HashMap, HashSet};\n");
+        assert_eq!(imports.get("Result").map(String::as_str), Some("anyhow"));
+        assert_eq!(imports.get("HashMap").map(String::as_str), Some("std::collections"));
+        assert_eq!(imports.get("HashSet").map(String::as_str), Some("std::collections"));
+    }
+
+    #[test]
+    fn imports_js_named() {
+        let imports = extract_js_imports("import { AppConfig, BaseService } from './types';\n");
+        assert_eq!(imports.get("AppConfig").map(String::as_str), Some("./types"));
+        assert_eq!(imports.get("BaseService").map(String::as_str), Some("./types"));
+    }
+
+    #[test]
+    fn imports_js_default() {
+        let imports = extract_js_imports("import React from 'react';\n");
+        assert_eq!(imports.get("React").map(String::as_str), Some("react"));
+    }
+
+    // ── Docstring edge cases ────────────────────────────────────
+
+    #[test]
+    fn python_single_line_docstring() {
+        let dir = setup(&[(
+            "mod.py",
+            "def hello():\n    \"\"\"Say hello.\"\"\"\n    return 'hi'\n",
+        )]);
+        let r = run(&dir, &["hello"]);
+        let doc = r.doc_comment.as_deref().unwrap();
+        assert_eq!(doc, "Say hello.");
+    }
+
+    #[test]
+    fn python_triple_single_quote_docstring() {
+        let dir = setup(&[(
+            "mod.py",
+            "def hello():\n    '''Say hello.'''\n    return 'hi'\n",
+        )]);
+        let r = run(&dir, &["hello"]);
+        let doc = r.doc_comment.as_deref().unwrap();
+        assert_eq!(doc, "Say hello.");
+    }
 }
