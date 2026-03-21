@@ -27,6 +27,7 @@
 ## TODO
 - [ ] Upgrade wording and prompting around supp -mapping, context, and symbols
 - [ ] make base `supp` dfeault to `.` path
+- [ ] make MCP ref --json outpt
 - [ ] expand README and docs around supp claude code usage
   - [ ] define some happy paths for claude prompts to use supp w/ like
     - [ ] "map out this codebase"
