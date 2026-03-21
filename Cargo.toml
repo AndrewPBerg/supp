@@ -1,8 +1,13 @@
 [package]
 name = "supp"
+description = "Supp, here is your context"
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
+repository = "https://github.com/AndrewPBerg/supp/"
+readme = "README.md"
+keywords = ["cli", "context", "llm"]
+categories = ["command-line-utilities", "development-tools"]
 
 [dependencies]
 anyhow = "1.0.102"
