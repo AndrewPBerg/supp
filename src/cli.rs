@@ -3,6 +3,9 @@ use clap::{CommandFactory, Parser, Subcommand};
 #[derive(Parser)]
 #[command(subcommand_negates_reqs = true)]
 pub struct Cli {
+    /// Print version and check for updates
+    #[arg(long = "version")]
+    pub version_flag: bool,
     /// Skip copying to clipboard and just show the stats
     #[arg(short = 'n', long = "no-copy", aliases = &["no"], global = true)]
     pub no_copy: bool,
@@ -106,6 +109,13 @@ pub enum Commands {
         #[arg(short = '1', long)]
         single: bool,
     },
+    /// Show version and check for updates
+    #[command(alias = "v")]
+    Version,
+    /// Update supp to the latest release
+    Update,
+    /// Remove supp from your system
+    Uninstall,
 }
 
 impl Cli {
@@ -359,6 +369,32 @@ mod tests {
             Some(Commands::Pick { path, .. }) => assert_eq!(path.as_deref(), Some("/tmp/dir")),
             _ => panic!("expected pick"),
         }
+    }
+
+    // ── Version / Update / Uninstall ────────────────────────────
+
+    #[test]
+    fn version_subcommand() {
+        let cli = parse(&["supp", "version"]).unwrap();
+        assert!(matches!(cli.command, Some(Commands::Version)));
+    }
+
+    #[test]
+    fn version_alias() {
+        let cli = parse(&["supp", "v"]).unwrap();
+        assert!(matches!(cli.command, Some(Commands::Version)));
+    }
+
+    #[test]
+    fn update_subcommand() {
+        let cli = parse(&["supp", "update"]).unwrap();
+        assert!(matches!(cli.command, Some(Commands::Update)));
+    }
+
+    #[test]
+    fn uninstall_subcommand() {
+        let cli = parse(&["supp", "uninstall"]).unwrap();
+        assert!(matches!(cli.command, Some(Commands::Uninstall)));
     }
 
     // ── Compression flags ────────────────────────────────────────

@@ -14,25 +14,34 @@ use crate::compress::Mode;
 
 const MAX_HISTORY: usize = 20;
 
-/// Collect all files under `root`, respecting .gitignore, with optional regex filter.
+/// Collect all files and directories under `root`, respecting .gitignore, with optional regex filter.
+/// Includes dotfiles and dotfolders (except .git).
 pub fn collect_files(root: &str, regex: Option<&str>) -> Result<Vec<String>> {
     let re = regex.map(Regex::new).transpose()?;
     let mut files = Vec::new();
 
     let walker = WalkBuilder::new(root)
+        .hidden(false)
         .sort_by_file_name(|a, b| a.cmp(b))
         .build();
 
     for entry in walker.flatten() {
-        if entry.path().is_file() {
-            let rel = entry.path().to_string_lossy().to_string();
-            if let Some(ref re) = re
-                && !re.is_match(&rel)
-            {
-                continue;
-            }
-            files.push(rel);
+        let path = entry.path();
+        // Skip the root directory itself
+        if path == Path::new(root) {
+            continue;
         }
+        // Skip .git directory and its contents
+        if path.components().any(|c| c.as_os_str() == ".git") {
+            continue;
+        }
+        let rel = path.to_string_lossy().to_string();
+        if let Some(ref re) = re
+            && !re.is_match(&rel)
+        {
+            continue;
+        }
+        files.push(rel);
     }
 
     Ok(files)
@@ -424,7 +433,8 @@ mod tests {
     fn collect_files_finds_all() {
         let dir = setup(&["a.rs", "b.rs", "sub/c.rs"]);
         let files = collect_files(dir.path().to_str().unwrap(), None).unwrap();
-        assert_eq!(files.len(), 3);
+        // 3 files + 1 directory (sub/)
+        assert_eq!(files.len(), 4);
     }
 
     #[test]

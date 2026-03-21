@@ -5,6 +5,7 @@ mod ctx;
 mod git;
 mod mcp;
 mod pick;
+mod self_update;
 mod styles;
 mod symbol;
 mod tree;
@@ -22,6 +23,11 @@ fn main() -> anyhow::Result<()> {
     let start = std::time::Instant::now();
     let cli = Cli::parse();
     let config = Config::load();
+
+    if cli.version_flag {
+        self_update::print_version();
+        return Ok(());
+    }
 
     if cli.resolve_no_color(&config) {
         colored::control::set_override(false);
@@ -51,6 +57,18 @@ fn main() -> anyhow::Result<()> {
                 .enable_all()
                 .build()?
                 .block_on(mcp::run())?;
+            return Ok(());
+        }
+        Some(Commands::Version) => {
+            self_update::print_version();
+            return Ok(());
+        }
+        Some(Commands::Update) => {
+            self_update::self_update()?;
+            return Ok(());
+        }
+        Some(Commands::Uninstall) => {
+            self_update::uninstall()?;
             return Ok(());
         }
         _ => {}
@@ -184,7 +202,10 @@ fn main() -> anyhow::Result<()> {
             Commands::Completions { .. }
             | Commands::Sym { .. }
             | Commands::Why { .. }
-            | Commands::Mcp,
+            | Commands::Mcp
+            | Commands::Version
+            | Commands::Update
+            | Commands::Uninstall,
         ) => {
             unreachable!()
         }
