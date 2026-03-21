@@ -27,6 +27,10 @@ serde = { version = "1", features = ["derive"] }
 gix = { version = "0.80", default-features = false, features = ["status", "revision"] }
 gix-status = "0.27" # must match version used by gix; needed for EntryStatus/Change types
 strsim = "0.11"
+crossterm = "0.28"
+rmcp = { version = "0.16", features = ["server", "transport-io"] }
+tokio = { version = "1", features = ["rt", "macros"] }
+serde_json = "1"
 
 [dev-dependencies]
 tempfile = "3"

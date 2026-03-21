@@ -100,12 +100,14 @@ pub enum Commands {
         /// Symbol name to look up (exact or fuzzy match)
         query: Vec<String>,
     },
+    /// Start MCP (Model Context Protocol) server over stdio
+    Mcp,
     /// Interactively pick files with fzf for context generation
     #[command(alias = "p")]
     Pick {
         /// Root directory to search (defaults to ".")
         path: Option<String>,
-        /// Select only a single file (no --multi)
+        /// Select only a single file (skips confirmation and accumulation)
         #[arg(short = '1', long)]
         single: bool,
     },

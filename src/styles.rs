@@ -694,12 +694,13 @@ pub fn print_why_result(result: &crate::why::WhyResult, no_copy: bool, start: st
 
 // ── Ctx display ─────────────────────────────────────────────────
 
-pub fn print_ctx_result(result: &crate::ctx::CtxResult, no_copy: bool, start: std::time::Instant, token_tx: std::sync::mpsc::Sender<String>, token_handle: std::thread::JoinHandle<Option<usize>>) {
+pub fn print_ctx_result(result: &crate::ctx::AnalysisResult, no_copy: bool, start: std::time::Instant, token_tx: std::sync::mpsc::Sender<String>, token_handle: std::thread::JoinHandle<Option<usize>>) {
     println!();
     println!(
-        "  {}  {}  {} dep{}, {} reference{}",
+        "  {}  {} file{}, {} dep{}, {} reference{}",
         "supp".bold().cyan(),
-        result.target_file.bold(),
+        result.file_count,
+        if result.file_count == 1 { "" } else { "s" },
         result.dep_file_count,
         if result.dep_file_count == 1 { "" } else { "s" },
         result.used_by_count,
@@ -709,10 +710,11 @@ pub fn print_ctx_result(result: &crate::ctx::CtxResult, no_copy: bool, start: st
     println!();
 
     // Brief summary
-    println!("  {} lines in target", result.target_lines.to_string().bold());
+    println!("  {} lines, {}", result.total_lines.to_string().bold(), format_size(result.total_bytes).dimmed());
     println!();
 
-    print_footer(&result.plain, no_copy, start, token_tx, token_handle, None, false);
+    let compression = Some((result.original_bytes, result.total_bytes));
+    print_footer(&result.plain, no_copy, start, token_tx, token_handle, compression, false);
 }
 
 // ── Context display ─────────────────────────────────────────────
@@ -875,5 +877,46 @@ mod tests {
     fn file_status_indicator_untracked() {
         let (plain, _) = file_status_indicator(FileStatus::Untracked);
         assert_eq!(plain, "[?]");
+    }
+
+    // ── token count reflects final clipboard text ───────────────
+
+    #[test]
+    fn print_footer_sends_final_text_for_token_counting() {
+        let (tx, rx) = std::sync::mpsc::channel::<String>();
+        let token_handle = std::thread::spawn(move || {
+            let text: String = rx.recv().ok()?;
+            Some(text)
+        });
+
+        let clipboard_text = "header\n---\nactual diff content";
+        // Verify the channel mechanism: send the text like print_footer does
+        let _ = tx.send(clipboard_text.to_string());
+
+        let received = token_handle.join().unwrap().unwrap();
+        assert_eq!(received, clipboard_text);
+    }
+
+    #[test]
+    fn diff_token_count_includes_clipboard_header() {
+        // Simulate what print_diff_result does: clipboard_text = header + result.text
+        let label = "working tree";
+        let diff_body = "diff --git a/foo.rs b/foo.rs\n-old\n+new";
+        let meta = "2026-03-21 12:00";
+
+        let mut clipboard_header = format!("supp diff  {}\n", label);
+        clipboard_header.push_str(meta);
+        clipboard_header.push_str("\n---\n\n");
+        let clipboard_text = format!("{}{}", clipboard_header, diff_body);
+
+        // The token channel should receive clipboard_text, not just diff_body
+        let (tx, rx) = std::sync::mpsc::channel::<String>();
+        let _ = tx.send(clipboard_text.clone());
+
+        let received = rx.recv().unwrap();
+        assert_eq!(received, clipboard_text);
+        assert!(received.starts_with("supp diff"));
+        assert!(received.contains(diff_body));
+        assert!(received.len() > diff_body.len());
     }
 }

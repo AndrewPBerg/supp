@@ -1,7 +1,11 @@
-use std::io::Write;
+use std::io::{self, Write};
 use std::process::{Command, Stdio};
+use std::time::Duration;
 
 use anyhow::{Result, bail};
+use colored::Colorize;
+use crossterm::event::{self, Event, KeyCode, KeyEvent};
+use crossterm::terminal;
 use ignore::WalkBuilder;
 use regex::Regex;
 
@@ -29,6 +33,29 @@ pub fn collect_files(root: &str, regex: Option<&str>) -> Result<Vec<String>> {
     Ok(files)
 }
 
+/// Build the fzf argument list. Extracted for testability.
+fn build_fzf_args(multi: bool, preview_lines: usize) -> Vec<String> {
+    let mut args: Vec<String> = Vec::new();
+    if multi {
+        args.extend([
+            "--multi".into(),
+            "--bind".into(),
+            "space:toggle+down".into(),
+            "--bind".into(),
+            "enter:toggle+down".into(),
+            "--bind".into(),
+            "tab:accept".into(),
+            "--bind".into(),
+            "esc:abort".into(),
+            "--header".into(),
+            "space/enter: select | tab: confirm | esc: cancel".into(),
+        ]);
+    }
+    args.push("--preview".into());
+    args.push(format!("head -{preview_lines} {{}}"));
+    args
+}
+
 /// Spawn fzf with the collected file list, return selected paths.
 pub fn run_fzf(root: &str, multi: bool, regex: Option<&str>, preview_lines: usize) -> Result<Vec<String>> {
     let files = collect_files(root, regex)?;
@@ -36,24 +63,7 @@ pub fn run_fzf(root: &str, multi: bool, regex: Option<&str>, preview_lines: usiz
         bail!("no files found under '{}'", root);
     }
 
-    let mut args: Vec<&str> = Vec::new();
-    if multi {
-        args.extend_from_slice(&[
-            "--multi",
-            "--bind",
-            "enter:toggle",
-            "--bind",
-            "double-click:toggle",
-            "--bind",
-            "tab:accept",
-            "--bind",
-            "esc:deselect-all",
-            "--header",
-            "enter: toggle | tab: confirm | esc: clear selection",
-        ]);
-    }
-    let preview_cmd = format!("head -{preview_lines} {{}}");
-    args.extend_from_slice(&["--preview", &preview_cmd]);
+    let args = build_fzf_args(multi, preview_lines);
 
     let mut child = match Command::new("fzf")
         .args(&args)
@@ -85,12 +95,9 @@ pub fn run_fzf(root: &str, multi: bool, regex: Option<&str>, preview_lines: usiz
 
     match output.status.code() {
         Some(0) => {}
-        Some(130) => {
-            // User pressed Esc/Ctrl-C — clean exit
+        Some(130) | Some(1) => {
+            // User pressed Esc/Ctrl-C or no match — clean exit
             return Ok(Vec::new());
-        }
-        Some(1) => {
-            bail!("no matches found in fzf");
         }
         Some(code) => {
             bail!("fzf exited with code {}", code);
@@ -107,6 +114,134 @@ pub fn run_fzf(root: &str, multi: bool, regex: Option<&str>, preview_lines: usiz
         .collect();
 
     Ok(selected)
+}
+
+// ── Terminal key input ───────────────────────────────────────────
+
+/// Read a single key press using crossterm's raw mode.
+/// Returns the KeyCode. Handles raw mode enable/disable with cleanup on drop.
+fn read_single_key() -> Result<KeyCode> {
+    terminal::enable_raw_mode()?;
+    let result = (|| {
+        loop {
+            if event::poll(Duration::from_secs(60))? {
+                if let Event::Key(KeyEvent { code, .. }) = event::read()? {
+                    return Ok(code);
+                }
+            }
+        }
+    })();
+    terminal::disable_raw_mode()?;
+    result
+}
+
+// ── Confirmation / accumulation UI ──────────────────────────────
+
+enum ConfirmAction {
+    Confirm,
+    Reselect,
+}
+
+fn show_confirmation(files: &[String]) -> Result<ConfirmAction> {
+    eprintln!();
+    eprintln!("{}", "  Selected files:".bold());
+    for (i, f) in files.iter().enumerate() {
+        eprintln!("    {} {}", format!("{}.", i + 1).dimmed(), f.cyan());
+    }
+    eprintln!();
+    eprint!("{}", "  tab: confirm | any key: back to fzf ".dimmed());
+    io::stderr().flush()?;
+
+    let key = read_single_key()?;
+    eprintln!();
+
+    match key {
+        KeyCode::Tab => Ok(ConfirmAction::Confirm),
+        _ => Ok(ConfirmAction::Reselect),
+    }
+}
+
+/// Run fzf in a loop with a confirmation step. Returns confirmed selection or empty vec on cancel.
+pub fn pick_with_confirm(root: &str, regex: Option<&str>, preview_lines: usize) -> Result<Vec<String>> {
+    loop {
+        let selected = run_fzf(root, true, regex, preview_lines)?;
+        if selected.is_empty() {
+            return Ok(Vec::new());
+        }
+        match show_confirmation(&selected)? {
+            ConfirmAction::Confirm => return Ok(selected),
+            ConfirmAction::Reselect => continue,
+        }
+    }
+}
+
+/// Merge new files into accumulated list, deduplicating.
+pub fn merge_unique(accumulated: &mut Vec<String>, new: Vec<String>) {
+    for f in new {
+        if !accumulated.contains(&f) {
+            accumulated.push(f);
+        }
+    }
+}
+
+/// Interactive accumulation loop. Shows accumulated files and lets user pick more, execute, or cancel.
+pub fn interactive_pick_loop(
+    root: &str,
+    regex: Option<&str>,
+    preview_lines: usize,
+    initial: Vec<String>,
+) -> Result<Vec<String>> {
+    let mut accumulated = initial;
+
+    loop {
+        // Show accumulated files
+        eprintln!();
+        eprintln!("{}", "  Accumulated files:".bold());
+        for (i, f) in accumulated.iter().enumerate() {
+            eprintln!("    {} {}", format!("{}.", i + 1).dimmed(), f.cyan());
+        }
+        eprintln!();
+        eprint!("{}", "  p: pick more | enter: execute | esc: cancel ".dimmed());
+        io::stderr().flush()?;
+
+        let key = read_single_key()?;
+        eprintln!();
+
+        match key {
+            KeyCode::Char('p' | 'P') => {
+                let more = pick_with_confirm(root, regex, preview_lines)?;
+                if !more.is_empty() {
+                    merge_unique(&mut accumulated, more);
+                }
+            }
+            KeyCode::Enter => {
+                return Ok(accumulated);
+            }
+            KeyCode::Esc => {
+                return Ok(Vec::new());
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Expand `"p"` tokens in a list of paths by launching fzf for each one.
+/// Non-`"p"` tokens are passed through unchanged.
+pub fn expand_p_tokens(
+    paths: &[String],
+    regex: Option<&str>,
+    preview_lines: usize,
+) -> Result<Vec<String>> {
+    let mut result = Vec::new();
+    for path in paths {
+        if path == "p" {
+            let picked = pick_with_confirm(".", regex, preview_lines)?;
+            result.extend(picked);
+        } else {
+            result.push(path.clone());
+        }
+    }
+    Ok(result)
 }
 
 #[cfg(test)]
@@ -154,5 +289,45 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let result = collect_files(dir.path().to_str().unwrap(), Some("[invalid"));
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn fzf_args_single_mode() {
+        let args = build_fzf_args(false, 50);
+        assert!(!args.contains(&"--multi".to_string()));
+        assert!(args.contains(&"--preview".to_string()));
+        assert!(args.contains(&"head -50 {}".to_string()));
+    }
+
+    #[test]
+    fn fzf_args_multi_mode() {
+        let args = build_fzf_args(true, 30);
+        assert!(args.contains(&"--multi".to_string()));
+        assert!(args.contains(&"space:toggle+down".to_string()));
+        assert!(args.contains(&"enter:toggle+down".to_string()));
+        assert!(args.contains(&"tab:accept".to_string()));
+        assert!(args.contains(&"esc:abort".to_string()));
+        assert!(args.contains(&"space/enter: select | tab: confirm | esc: cancel".to_string()));
+    }
+
+    #[test]
+    fn merge_unique_deduplicates() {
+        let mut acc = vec!["a.rs".into(), "b.rs".into()];
+        merge_unique(&mut acc, vec!["b.rs".into(), "c.rs".into()]);
+        assert_eq!(acc, vec!["a.rs", "b.rs", "c.rs"]);
+    }
+
+    #[test]
+    fn merge_unique_empty() {
+        let mut acc = vec!["a.rs".into()];
+        merge_unique(&mut acc, vec![]);
+        assert_eq!(acc, vec!["a.rs"]);
+    }
+
+    #[test]
+    fn merge_unique_into_empty() {
+        let mut acc: Vec<String> = vec![];
+        merge_unique(&mut acc, vec!["a.rs".into()]);
+        assert_eq!(acc, vec!["a.rs"]);
     }
 }
