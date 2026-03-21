@@ -1,5 +1,9 @@
 {
   "name": "supp-marketplace",
+  "owner": {
+    "name": "AndrewPBerg",
+    "url": "https://github.com/AndrewPBerg"
+  },
   "plugins": [
     {
       "name": "supp",
