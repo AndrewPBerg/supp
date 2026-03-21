@@ -28,6 +28,9 @@ pub(super) fn find_definition_node<'a>(
     sym: &Symbol,
     _lang: Lang,
 ) -> Option<tree_sitter::Node<'a>> {
+    if sym.line == 0 {
+        return None;
+    }
     let line = sym.line - 1; // tree-sitter uses 0-based
 
     if node.start_position().row == line {
@@ -198,4 +201,218 @@ pub(super) fn find_definition_span(root: &std::path::Path, sym: &Symbol) -> Opti
     let tree = compress::parse_source(&content, lang)?;
     let node = find_definition_node(tree.root_node(), &content, sym, lang)?;
     Some((node.start_position().row + 1, node.end_position().row + 1))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::symbol::SymbolKind;
+
+    fn sym(name: &str, file: &str, line: usize, kind: SymbolKind) -> Symbol {
+        Symbol {
+            name: name.to_string(),
+            kind,
+            file: file.to_string(),
+            line,
+            signature: String::new(),
+            parent: None,
+            keywords: Vec::new(),
+        }
+    }
+
+    // ── extract_full_definition ─────────────────────────────────
+
+    #[test]
+    fn rust_function_definition() {
+        let content = "pub fn greet(name: &str) -> String {\n    format!(\"Hi {}\", name)\n}\n";
+        let s = sym("greet", "test.rs", 1, SymbolKind::Function);
+        let result = extract_full_definition(content, &s);
+        assert!(result.contains("pub fn greet"));
+        assert!(result.contains("format!"));
+    }
+
+    #[test]
+    fn rust_struct_definition() {
+        let content = "pub struct Config {\n    pub name: String,\n}\n";
+        let s = sym("Config", "test.rs", 1, SymbolKind::Struct);
+        let result = extract_full_definition(content, &s);
+        assert!(result.contains("pub struct Config"));
+        assert!(result.contains("name: String"));
+    }
+
+    #[test]
+    fn python_function_definition() {
+        let content = "def greet(name):\n    return f'Hi {name}'\n";
+        let s = sym("greet", "test.py", 1, SymbolKind::Function);
+        let result = extract_full_definition(content, &s);
+        assert!(result.contains("def greet"));
+    }
+
+    #[test]
+    fn python_class_definition() {
+        let content = "class MyClass:\n    def __init__(self):\n        self.x = 1\n";
+        let s = sym("MyClass", "test.py", 1, SymbolKind::Class);
+        let result = extract_full_definition(content, &s);
+        assert!(result.contains("class MyClass"));
+    }
+
+    #[test]
+    fn js_arrow_function_const() {
+        let content = "const greet = (name) => {\n    return `Hi ${name}`;\n};\n";
+        let s = sym("greet", "test.js", 1, SymbolKind::Function);
+        let result = extract_full_definition(content, &s);
+        assert!(result.contains("greet"));
+    }
+
+    #[test]
+    fn c_function_definition() {
+        let content = "int add(int a, int b) {\n    return a + b;\n}\n";
+        let s = sym("add", "test.c", 1, SymbolKind::Function);
+        let result = extract_full_definition(content, &s);
+        assert!(result.contains("int add"));
+    }
+
+    #[test]
+    fn c_struct_specifier() {
+        let content = "struct Point {\n    int x;\n    int y;\n};\n";
+        let s = sym("Point", "test.c", 1, SymbolKind::Struct);
+        let result = extract_full_definition(content, &s);
+        assert!(result.contains("struct Point"));
+    }
+
+    #[test]
+    fn cpp_qualified_function() {
+        let content = "void Foo::bar() {\n    return;\n}\n";
+        let s = sym("bar", "test.cpp", 1, SymbolKind::Function);
+        let result = extract_full_definition(content, &s);
+        assert!(result.contains("Foo::bar"));
+    }
+
+    #[test]
+    fn python_module_assignment() {
+        let content = "MAX_SIZE = 100\n";
+        let s = sym("MAX_SIZE", "test.py", 1, SymbolKind::Const);
+        let result = extract_full_definition(content, &s);
+        assert!(result.contains("MAX_SIZE = 100"));
+    }
+
+    #[test]
+    fn unsupported_language_fallback() {
+        let content = "some content here\nmore content\n";
+        let s = sym("something", "test.txt", 1, SymbolKind::Function);
+        let result = extract_full_definition(content, &s);
+        // Falls back to line-based extraction
+        assert!(result.contains("some content here"));
+    }
+
+    #[test]
+    fn invalid_line_number() {
+        let content = "fn foo() {}\n";
+        let s = sym("foo", "test.rs", 999, SymbolKind::Function);
+        let result = extract_full_definition(content, &s);
+        // Line out of range - falls back, returns empty from extract_definition_by_lines
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn line_zero_returns_empty() {
+        let content = "fn foo() {}\n";
+        let s = sym("foo", "test.rs", 0, SymbolKind::Function);
+        let result = extract_full_definition(content, &s);
+        assert!(result.is_empty());
+    }
+
+    // ── extract_definition_by_lines ─────────────────────────────
+
+    #[test]
+    fn brace_based_multiline() {
+        let content = "fn foo() {\n    let x = 1;\n    x + 1\n}\n";
+        let s = sym("foo", "test.unknown_ext", 1, SymbolKind::Function);
+        // Unknown ext → falls through to line-based
+        let result = extract_full_definition(content, &s);
+        assert!(result.contains("fn foo()"));
+        assert!(result.contains("}"));
+    }
+
+    #[test]
+    fn semicolon_terminated_line() {
+        let content = "int add(int a, int b);\n";
+        let s = sym("add", "test.unknown_ext", 1, SymbolKind::Function);
+        let result = extract_full_definition(content, &s);
+        assert!(result.contains("int add"));
+    }
+
+    #[test]
+    fn python_indentation_based() {
+        let content = "def foo():\n    x = 1\n    return x\n\ndef bar():\n    pass\n";
+        let s = sym("foo", "test.py_fallback", 1, SymbolKind::Function);
+        // .py_fallback won't be detected as Python, so uses brace-based fallback
+        let result = extract_full_definition(content, &s);
+        assert!(result.contains("def foo()"));
+    }
+
+    // ── find_definition_span ────────────────────────────────────
+
+    #[test]
+    fn definition_span_found() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let content = "fn hello() {\n    println!(\"hi\");\n}\n";
+        std::fs::write(dir.path().join("test.rs"), content).unwrap();
+        let s = sym("hello", "test.rs", 1, SymbolKind::Function);
+        let span = find_definition_span(dir.path(), &s);
+        assert!(span.is_some());
+        let (start, end) = span.unwrap();
+        assert_eq!(start, 1);
+        assert_eq!(end, 3);
+    }
+
+    #[test]
+    fn definition_span_file_not_found() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let s = sym("foo", "nonexistent.rs", 1, SymbolKind::Function);
+        assert!(find_definition_span(dir.path(), &s).is_none());
+    }
+
+    #[test]
+    fn definition_span_unsupported_lang() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(dir.path().join("test.txt"), "some text").unwrap();
+        let s = sym("foo", "test.txt", 1, SymbolKind::Function);
+        assert!(find_definition_span(dir.path(), &s).is_none());
+    }
+
+    // ── find_c_name_in_declarator ───────────────────────────────
+
+    #[test]
+    fn c_function_declarator_name() {
+        let content = "int (*callback)(int, int);\n";
+        let s = sym("callback", "test.c", 1, SymbolKind::Function);
+        let result = extract_full_definition(content, &s);
+        // Should at least extract the line
+        assert!(!result.is_empty());
+    }
+
+    #[test]
+    fn ts_function_declaration() {
+        let content = "function greet(name: string): string {\n    return `Hi ${name}`;\n}\n";
+        let s = sym("greet", "test.ts", 1, SymbolKind::Function);
+        let result = extract_full_definition(content, &s);
+        assert!(result.contains("function greet"));
+    }
+
+    #[test]
+    fn java_class_definition() {
+        let content = "public class MyService {\n    public void run() {\n        System.out.println(\"running\");\n    }\n}\n";
+        let s = sym("MyService", "test.java", 1, SymbolKind::Class);
+        let result = extract_full_definition(content, &s);
+        assert!(result.contains("class MyService"));
+    }
+
+    #[test]
+    fn go_function_definition() {
+        let content = "package main\n\nfunc Add(a, b int) int {\n\treturn a + b\n}\n";
+        let s = sym("Add", "test.go", 3, SymbolKind::Function);
+        let result = extract_full_definition(content, &s);
+        assert!(result.contains("func Add"));
+    }
 }

@@ -385,6 +385,11 @@ fn emit_js(source: &str, node: tree_sitter::Node, out: &mut String, depth: usize
         "method_definition" => {
             emit_js_method(source, node, out, depth);
         }
+        "ambient_declaration" if is_ts => {
+            out.push_str(&indent(depth));
+            out.push_str(node_text(source, node));
+            out.push('\n');
+        }
         _ => {}
     }
 }

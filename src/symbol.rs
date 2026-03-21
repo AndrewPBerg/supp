@@ -2507,4 +2507,150 @@ function hello() {}
         assert!(!is_function_node("struct_item", Lang::Rust));
         assert!(!is_function_node("class_definition", Lang::Python));
     }
+
+    // ── search public API ────────────────────────────────────────────
+
+    #[test]
+    fn search_finds_symbols_in_rust_project() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        // Create a mini Rust project with a function
+        std::fs::write(
+            tmp.path().join("lib.rs"),
+            "pub fn find_me() -> i32 { 42 }\npub fn other() {}\n",
+        )
+        .unwrap();
+        let result = search(tmp.path().to_str().unwrap(), &["find_me".to_string()]);
+        assert!(result.is_ok());
+        let result = result.unwrap();
+        assert!(result.total_symbols > 0);
+        assert!(!result.matches.is_empty(), "should find find_me symbol");
+        assert_eq!(result.matches[0].0.name, "find_me");
+    }
+
+    #[test]
+    fn search_no_results_for_nonexistent() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("lib.rs"), "pub fn hello() {}\n").unwrap();
+        let result = search(
+            tmp.path().to_str().unwrap(),
+            &["zzzznonexistent".to_string()],
+        )
+        .unwrap();
+        assert!(result.matches.is_empty());
+    }
+
+    #[test]
+    fn load_symbols_returns_symbols() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("lib.rs"),
+            "pub fn my_func() {}\npub struct MyStruct {}\n",
+        )
+        .unwrap();
+        let symbols = load_symbols(tmp.path());
+        assert!(symbols.len() >= 2);
+        let names: Vec<&str> = symbols.iter().map(|s| s.name.as_str()).collect();
+        assert!(names.contains(&"my_func"));
+        assert!(names.contains(&"MyStruct"));
+    }
+
+    // ── parse_file_entry for non-code files ──────────────────────────
+
+    #[test]
+    fn parse_file_entry_non_code_file() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("README.md");
+        std::fs::write(&path, "# My Project\nThis is about foo_bar and baz.\n").unwrap();
+        let result = parse_file_entry(&path, "README.md");
+        assert!(result.is_some());
+        let (symbols, refs) = result.unwrap();
+        assert_eq!(symbols.len(), 1);
+        assert_eq!(symbols[0].kind, SymbolKind::File);
+        assert_eq!(symbols[0].name, "README.md");
+        assert!(refs.contains(&"foo_bar".to_string()));
+    }
+
+    #[test]
+    fn parse_file_entry_code_file() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("lib.rs");
+        std::fs::write(&path, "pub fn hello() {}\n").unwrap();
+        let result = parse_file_entry(&path, "lib.rs");
+        assert!(result.is_some());
+        let (symbols, _refs) = result.unwrap();
+        assert!(symbols.iter().any(|s| s.name == "hello"));
+    }
+
+    #[test]
+    fn parse_file_entry_nonexistent() {
+        let result = parse_file_entry(Path::new("/tmp/nonexistent_supp_xyz.rs"), "nonexistent.rs");
+        assert!(result.is_none());
+    }
+
+    // ── extract_python_assignment ────────────────────────────────────
+
+    #[test]
+    fn extract_python_module_level_assignment() {
+        let code = "MAX_SIZE = 100\nDEFAULT_NAME = 'hello'\ndef func():\n    pass\n";
+        let syms = parse_python(code);
+        let names: Vec<&str> = syms.iter().map(|s| s.name.as_str()).collect();
+        assert!(
+            names.contains(&"MAX_SIZE"),
+            "module-level assignment should be extracted"
+        );
+        assert!(
+            names.contains(&"DEFAULT_NAME"),
+            "module-level assignment should be extracted"
+        );
+        assert!(names.contains(&"func"));
+    }
+
+    // ── build_and_save caching ───────────────────────────────────────
+
+    #[test]
+    fn build_and_save_creates_cache() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("main.rs"), "fn main() {}\n").unwrap();
+        let result = build_and_save(tmp.path());
+        assert!(!result.symbols.is_empty());
+        // Cache should have been saved
+        let cp = cache_path(tmp.path());
+        assert!(cp.exists(), "cache file should be created");
+    }
+
+    #[test]
+    fn build_and_save_incremental_uses_cache() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("main.rs"), "fn main() {}\n").unwrap();
+        // First build
+        let result1 = build_and_save(tmp.path());
+        assert!(result1.changed);
+        // Second build without changes - should use cache
+        let result2 = build_and_save(tmp.path());
+        assert!(
+            !result2.changed,
+            "second build should use cache and not be marked changed"
+        );
+        assert_eq!(result1.symbols.len(), result2.symbols.len());
+    }
+
+    // ── file_meta ────────────────────────────────────────────────────
+
+    #[test]
+    fn file_meta_existing_file() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("test.txt");
+        std::fs::write(&path, "hello").unwrap();
+        let meta = file_meta(&path);
+        assert!(meta.is_some());
+        let (mtime, size) = meta.unwrap();
+        assert!(mtime > 0);
+        assert_eq!(size, 5);
+    }
+
+    #[test]
+    fn file_meta_nonexistent() {
+        let meta = file_meta(Path::new("/tmp/nonexistent_supp_xyz"));
+        assert!(meta.is_none());
+    }
 }

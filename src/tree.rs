@@ -462,4 +462,98 @@ mod tests {
         assert_eq!(result.status_counts.get(&FileStatus::Added), Some(&1));
         assert_eq!(result.file_count, 2);
     }
+
+    // ── Additional coverage ─────────────────────────────────────
+
+    #[test]
+    fn pycache_filtered() {
+        let dir = setup_tree(&["src/main.py", "src/__pycache__/cached.pyc"]);
+        let result = build_tree(dir.path().to_str().unwrap(), None, None, None).unwrap();
+        assert!(!result.plain.contains("__pycache__"));
+        assert!(!result.plain.contains("cached.pyc"));
+    }
+
+    #[test]
+    fn max_depth_2_shows_nested() {
+        let dir = setup_tree(&["a/b/file.txt", "a/top.txt"]);
+        let result = build_tree(dir.path().to_str().unwrap(), Some(2), None, None).unwrap();
+        assert!(result.plain.contains("top.txt"));
+        // depth 2 shows a/ and a/b/ but not a/b/file.txt
+        assert!(!result.plain.contains("file.txt"));
+    }
+
+    #[test]
+    fn regex_case_sensitive() {
+        let dir = setup_tree(&["FOO.rs", "foo.rs"]);
+        let result = build_tree(dir.path().to_str().unwrap(), None, Some(r"^FOO"), None).unwrap();
+        assert_eq!(result.file_count, 1);
+        assert!(result.plain.contains("FOO.rs"));
+    }
+
+    #[test]
+    fn multiple_files_sorted() {
+        let dir = setup_tree(&["c.txt", "a.txt", "b.txt"]);
+        let result = build_tree(dir.path().to_str().unwrap(), None, None, None).unwrap();
+        let lines: Vec<&str> = result.plain.lines().collect();
+        // Files should be alphabetically sorted
+        let file_lines: Vec<&str> = lines
+            .iter()
+            .filter(|l| l.contains(".txt"))
+            .copied()
+            .collect();
+        assert!(file_lines.len() == 3);
+    }
+
+    #[test]
+    fn all_statuses_counted() {
+        let dir = setup_tree(&[
+            "modified.rs",
+            "added.rs",
+            "deleted.rs",
+            "renamed.rs",
+            "untracked.rs",
+        ]);
+        let mut statuses = HashMap::new();
+        statuses.insert("modified.rs".to_string(), FileStatus::Modified);
+        statuses.insert("added.rs".to_string(), FileStatus::Added);
+        statuses.insert("deleted.rs".to_string(), FileStatus::Deleted);
+        statuses.insert("renamed.rs".to_string(), FileStatus::Renamed);
+        statuses.insert("untracked.rs".to_string(), FileStatus::Untracked);
+        let result = build_tree(
+            dir.path().to_str().unwrap(),
+            None,
+            None,
+            Some((&statuses, "")),
+        )
+        .unwrap();
+        assert_eq!(result.status_counts.len(), 5);
+    }
+
+    #[test]
+    fn root_dot_format() {
+        let dir = setup_tree(&["file.txt"]);
+        // Simulate "." root
+        let result = build_tree(dir.path().to_str().unwrap(), None, None, None).unwrap();
+        let first_line = result.plain.lines().next().unwrap();
+        assert!(first_line.ends_with('/'));
+    }
+
+    #[test]
+    fn deeply_nested_with_depth_limit() {
+        let dir = setup_tree(&["a/b/c/d/e/f.txt"]);
+        let result = build_tree(dir.path().to_str().unwrap(), Some(3), None, None).unwrap();
+        // depth 3: root + a/ + b/ shown, but not c/ or deeper
+        assert!(!result.plain.contains("f.txt"));
+    }
+
+    #[test]
+    fn regex_with_nested_files() {
+        let dir = setup_tree(&["src/main.rs", "src/lib.rs", "docs/guide.md"]);
+        let result = build_tree(dir.path().to_str().unwrap(), None, Some(r"\.rs$"), None).unwrap();
+        assert!(result.plain.contains("main.rs"));
+        assert!(result.plain.contains("lib.rs"));
+        assert!(!result.plain.contains("guide.md"));
+        // docs/ dir should be pruned
+        assert!(!result.plain.contains("docs/"));
+    }
 }

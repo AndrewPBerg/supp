@@ -1047,4 +1047,405 @@ public class Foo {
         let result = compress(src, "test.go", Mode::Map);
         assert!(result.contains("type") && result.contains("ID"));
     }
+
+    // ── Additional coverage: edge cases ─────────────────────────
+
+    #[test]
+    fn detect_lang_c_header() {
+        assert_eq!(detect_lang("lib.h"), Some(Lang::C));
+    }
+
+    #[test]
+    fn detect_lang_cpp_variants() {
+        assert_eq!(detect_lang("lib.cpp"), Some(Lang::Cpp));
+        assert_eq!(detect_lang("lib.cc"), Some(Lang::Cpp));
+        assert_eq!(detect_lang("lib.hpp"), Some(Lang::Cpp));
+        assert_eq!(detect_lang("lib.cxx"), Some(Lang::Cpp));
+    }
+
+    #[test]
+    fn detect_lang_none_for_unknown() {
+        assert_eq!(detect_lang("readme.md"), None);
+        assert_eq!(detect_lang("data.json"), None);
+        assert_eq!(detect_lang("Makefile"), None);
+    }
+
+    #[test]
+    fn detect_lang_no_extension() {
+        assert_eq!(detect_lang("Dockerfile"), None);
+    }
+
+    #[test]
+    fn parse_source_all_langs() {
+        for (content, lang) in [
+            ("fn main() {}", Lang::Rust),
+            ("def foo(): pass", Lang::Python),
+            ("function f() {}", Lang::JavaScript),
+            ("function f(): void {}", Lang::TypeScript),
+            ("function f(): void {}", Lang::Tsx),
+            ("package main\nfunc main() {}", Lang::Go),
+            ("int main() { return 0; }", Lang::C),
+            ("int main() { return 0; }", Lang::Cpp),
+            ("class Foo {}", Lang::Java),
+        ] {
+            assert!(
+                parse_source(content, lang).is_some(),
+                "Failed for {:?}",
+                lang
+            );
+        }
+    }
+
+    #[test]
+    fn node_text_basic() {
+        let tree = parse_source("fn foo() {}", Lang::Rust).unwrap();
+        let root = tree.root_node();
+        let text = node_text("fn foo() {}", root);
+        assert_eq!(text, "fn foo() {}");
+    }
+
+    #[test]
+    fn lang_hint_all() {
+        assert_eq!(lang_hint("test.rs"), "rust");
+        assert_eq!(lang_hint("test.py"), "python");
+        assert_eq!(lang_hint("test.js"), "javascript");
+        assert_eq!(lang_hint("test.ts"), "typescript");
+        assert_eq!(lang_hint("test.tsx"), "typescript");
+        assert_eq!(lang_hint("test.go"), "go");
+        assert_eq!(lang_hint("test.c"), "c");
+        assert_eq!(lang_hint("test.cpp"), "cpp");
+        assert_eq!(lang_hint("test.java"), "java");
+        assert_eq!(lang_hint("test.txt"), "");
+    }
+
+    #[test]
+    fn full_mode_passthrough() {
+        let src = "anything // with comments\n\n\n\n";
+        let result = compress(src, "test.rs", Mode::Full);
+        assert_eq!(result, src);
+    }
+
+    #[test]
+    fn slim_unsupported_lang_passthrough() {
+        let src = "some content\n";
+        let result = compress(src, "test.txt", Mode::Slim);
+        assert_eq!(result, src);
+    }
+
+    #[test]
+    fn map_unsupported_lang_falls_back_to_slim() {
+        let src = "some content\n\n\n\nmore\n";
+        let result = compress(src, "test.txt", Mode::Map);
+        // Map falls back to slim_fallback which collapses blank lines
+        assert!(!result.contains("\n\n\n"));
+    }
+
+    #[test]
+    fn slim_empty_content() {
+        let result = compress("", "test.rs", Mode::Slim);
+        assert!(result.is_empty() || result.trim().is_empty());
+    }
+
+    #[test]
+    fn map_empty_content() {
+        let result = compress("", "test.rs", Mode::Map);
+        assert!(result.is_empty() || result.trim().is_empty());
+    }
+
+    #[test]
+    fn slim_preserves_code() {
+        let src = "fn foo() {\n    // comment\n    let x = 1;\n}\n";
+        let result = compress(src, "test.rs", Mode::Slim);
+        assert!(result.contains("fn foo()"));
+        assert!(result.contains("let x = 1"));
+        assert!(!result.contains("// comment"));
+    }
+
+    #[test]
+    fn slim_python_comments() {
+        let src = "# comment\ndef foo():\n    # inner\n    pass\n";
+        let result = compress(src, "test.py", Mode::Slim);
+        assert!(!result.contains("# comment"));
+        assert!(!result.contains("# inner"));
+        assert!(result.contains("def foo()"));
+    }
+
+    #[test]
+    fn slim_collapses_blank_lines() {
+        let src = "fn a() {}\n\n\n\n\nfn b() {}\n";
+        let result = compress(src, "test.rs", Mode::Slim);
+        // 3+ newlines collapsed to 2
+        assert!(!result.contains("\n\n\n"));
+    }
+
+    #[test]
+    fn is_comment_kind_rust() {
+        assert!(is_comment_kind("line_comment", Lang::Rust));
+        assert!(is_comment_kind("block_comment", Lang::Rust));
+        assert!(!is_comment_kind("identifier", Lang::Rust));
+    }
+
+    #[test]
+    fn is_comment_kind_python() {
+        assert!(is_comment_kind("comment", Lang::Python));
+        assert!(!is_comment_kind("identifier", Lang::Python));
+    }
+
+    #[test]
+    fn is_comment_kind_js() {
+        assert!(is_comment_kind("comment", Lang::JavaScript));
+        assert!(is_comment_kind("comment", Lang::TypeScript));
+        assert!(is_comment_kind("comment", Lang::Tsx));
+        assert!(is_comment_kind("comment", Lang::Go));
+        assert!(is_comment_kind("comment", Lang::C));
+        assert!(is_comment_kind("comment", Lang::Cpp));
+    }
+
+    #[test]
+    fn is_comment_kind_java() {
+        assert!(is_comment_kind("line_comment", Lang::Java));
+        assert!(is_comment_kind("block_comment", Lang::Java));
+    }
+
+    #[test]
+    fn collapse_blank_lines_basic() {
+        let result = collapse_blank_lines("a\n\n\n\nb\n");
+        assert_eq!(result, "a\n\nb\n");
+    }
+
+    #[test]
+    fn collapse_blank_lines_double_ok() {
+        let input = "a\n\nb\n";
+        let result = collapse_blank_lines(input);
+        assert_eq!(result, input);
+    }
+
+    // ── Map mode: additional language coverage ──────────────────
+
+    #[test]
+    fn map_rust_use_declaration() {
+        let src = "use std::collections::HashMap;\n";
+        let result = compress(src, "test.rs", Mode::Map);
+        assert!(result.contains("use std::collections::HashMap"));
+    }
+
+    #[test]
+    fn map_rust_type_alias() {
+        let src = "type Result<T> = std::result::Result<T, Error>;\n";
+        let result = compress(src, "test.rs", Mode::Map);
+        assert!(result.contains("type Result"));
+    }
+
+    #[test]
+    fn map_rust_const() {
+        let src = "const MAX: usize = 100;\n";
+        let result = compress(src, "test.rs", Mode::Map);
+        assert!(result.contains("const MAX"));
+    }
+
+    #[test]
+    fn map_rust_static() {
+        let src = "static COUNT: usize = 0;\n";
+        let result = compress(src, "test.rs", Mode::Map);
+        assert!(result.contains("static COUNT"));
+    }
+
+    #[test]
+    fn map_rust_mod_with_body() {
+        let src = "mod inner {\n    fn foo() {}\n}\n";
+        let result = compress(src, "test.rs", Mode::Map);
+        assert!(result.contains("mod inner"));
+        assert!(result.contains("{ ... }"));
+    }
+
+    #[test]
+    fn map_rust_mod_without_body() {
+        let src = "mod other;\n";
+        let result = compress(src, "test.rs", Mode::Map);
+        assert!(result.contains("mod other"));
+    }
+
+    #[test]
+    fn map_rust_impl_with_type() {
+        let src =
+            "impl Foo {\n    type Bar = i32;\n    const X: i32 = 1;\n    fn method(&self) {}\n}\n";
+        let result = compress(src, "test.rs", Mode::Map);
+        assert!(result.contains("impl Foo"));
+        assert!(result.contains("type Bar"));
+        assert!(result.contains("const X"));
+        assert!(result.contains("fn method"));
+    }
+
+    #[test]
+    fn map_python_import() {
+        let src = "import os\nfrom sys import path\n\ndef foo():\n    pass\n";
+        let result = compress(src, "test.py", Mode::Map);
+        assert!(result.contains("import os"));
+        assert!(result.contains("from sys import path"));
+    }
+
+    #[test]
+    fn map_python_decorator() {
+        let src = "@staticmethod\ndef foo():\n    pass\n";
+        let result = compress(src, "test.py", Mode::Map);
+        assert!(result.contains("@staticmethod"));
+        assert!(result.contains("def foo"));
+    }
+
+    #[test]
+    fn map_python_class_with_methods() {
+        let src = "class Foo:\n    x = 1\n    def bar(self):\n        pass\n";
+        let result = compress(src, "test.py", Mode::Map);
+        assert!(result.contains("class Foo"));
+        assert!(result.contains("x = 1"));
+        assert!(result.contains("def bar"));
+    }
+
+    #[test]
+    fn map_python_decorated_class() {
+        let src = "@dataclass\nclass Foo:\n    x: int = 0\n";
+        let result = compress(src, "test.py", Mode::Map);
+        assert!(result.contains("@dataclass"));
+        assert!(result.contains("class Foo"));
+    }
+
+    #[test]
+    fn map_js_import() {
+        let src = "import { useState } from 'react';\n\nfunction App() { return null; }\n";
+        let result = compress(src, "test.js", Mode::Map);
+        assert!(result.contains("import"));
+        assert!(result.contains("function App"));
+    }
+
+    #[test]
+    fn map_js_export_default_function() {
+        let src = "export default function main() {\n    return 1;\n}\n";
+        let result = compress(src, "test.js", Mode::Map);
+        assert!(result.contains("export default"));
+        assert!(result.contains("main"));
+    }
+
+    #[test]
+    fn map_ts_export_type() {
+        let src = "export type ID = number;\n";
+        let result = compress(src, "test.ts", Mode::Map);
+        assert!(result.contains("export"));
+        assert!(result.contains("type ID"));
+    }
+
+    #[test]
+    fn map_ts_export_enum() {
+        let src = "export enum Color {\n    Red,\n    Green,\n    Blue,\n}\n";
+        let result = compress(src, "test.ts", Mode::Map);
+        assert!(result.contains("export"));
+        assert!(result.contains("enum Color"));
+    }
+
+    #[test]
+    fn map_js_export_bare() {
+        // export { foo, bar }
+        let src = "export { foo, bar };\n";
+        let result = compress(src, "test.js", Mode::Map);
+        assert!(result.contains("export"));
+    }
+
+    #[test]
+    fn map_go_import() {
+        let src = "package main\n\nimport \"fmt\"\n\nfunc main() { fmt.Println(\"hi\") }\n";
+        let result = compress(src, "test.go", Mode::Map);
+        assert!(result.contains("package main"));
+        assert!(result.contains("import"));
+    }
+
+    #[test]
+    fn map_go_const_var() {
+        let src = "package main\nconst X = 1\nvar Y = 2\n";
+        let result = compress(src, "test.go", Mode::Map);
+        assert!(result.contains("const X"));
+        assert!(result.contains("var Y"));
+    }
+
+    #[test]
+    fn map_go_method() {
+        let src = "package main\nfunc (s *Server) Start() {\n    s.running = true\n}\n";
+        let result = compress(src, "test.go", Mode::Map);
+        assert!(result.contains("Start"));
+    }
+
+    #[test]
+    fn map_c_preproc() {
+        let src = "#include <stdio.h>\n#define MAX 100\nint main() { return 0; }\n";
+        let result = compress(src, "test.c", Mode::Map);
+        assert!(result.contains("#include <stdio.h>"));
+        assert!(result.contains("#define MAX"));
+    }
+
+    #[test]
+    fn map_c_declaration() {
+        let src = "int global_var;\nextern int other_var;\n";
+        let result = compress(src, "test.c", Mode::Map);
+        assert!(result.contains("int global_var"));
+    }
+
+    #[test]
+    fn map_cpp_class() {
+        let src = "class Foo {\npublic:\n    void bar() { }\n};\n";
+        let result = compress(src, "test.cpp", Mode::Map);
+        assert!(result.contains("class Foo"));
+    }
+
+    #[test]
+    fn map_cpp_namespace() {
+        let src = "namespace ns {\n    void foo() {}\n}\n";
+        let result = compress(src, "test.cpp", Mode::Map);
+        assert!(result.contains("namespace ns"));
+    }
+
+    #[test]
+    fn map_java_import_package() {
+        let src =
+            "package com.foo;\nimport java.util.List;\npublic class Foo {\n    void bar() {}\n}\n";
+        let result = compress(src, "test.java", Mode::Map);
+        assert!(result.contains("package com.foo"));
+        assert!(result.contains("import java.util.List"));
+    }
+
+    #[test]
+    fn map_java_nested_class() {
+        let src = "class Outer {\n    class Inner {\n        void foo() {}\n    }\n}\n";
+        let result = compress(src, "test.java", Mode::Map);
+        assert!(result.contains("class Outer"));
+        assert!(result.contains("class Inner"));
+    }
+
+    #[test]
+    fn map_java_field_declaration() {
+        let src = "class Foo {\n    private int x = 0;\n    void bar() {}\n}\n";
+        let result = compress(src, "test.java", Mode::Map);
+        assert!(result.contains("private int x"));
+    }
+
+    #[test]
+    fn map_comments_stripped() {
+        let src = "// comment\nfn foo() {}\n";
+        let result = compress(src, "test.rs", Mode::Map);
+        assert!(!result.contains("// comment"));
+        assert!(result.contains("fn foo"));
+    }
+
+    #[test]
+    fn map_ts_ambient_declaration() {
+        let src = "declare function foo(): void;\ndeclare const bar: string;\n";
+        let result = compress(src, "test.ts", Mode::Map);
+        assert!(result.contains("foo"));
+        assert!(result.contains("bar"));
+    }
+
+    #[test]
+    fn slim_java_block_comments() {
+        let src = "/* block comment */\npublic class Foo {}\n";
+        let result = compress(src, "test.java", Mode::Slim);
+        assert!(!result.contains("block comment"));
+        assert!(result.contains("class Foo"));
+    }
 }

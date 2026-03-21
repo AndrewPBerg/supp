@@ -152,3 +152,146 @@ fn collect_all_identifiers(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::symbol::SymbolKind;
+    use std::collections::HashMap;
+
+    fn sym(name: &str, file: &str, line: usize, kind: SymbolKind) -> Symbol {
+        Symbol {
+            name: name.to_string(),
+            kind,
+            file: file.to_string(),
+            line,
+            signature: String::new(),
+            parent: None,
+            keywords: Vec::new(),
+        }
+    }
+
+    fn make_root() -> tempfile::TempDir {
+        tempfile::TempDir::new().unwrap()
+    }
+
+    #[test]
+    fn finds_project_dependency() {
+        let dir = make_root();
+        let content = "fn caller() {\n    let x = helper();\n}\n";
+        std::fs::write(dir.path().join("main.rs"), content).unwrap();
+        std::fs::write(dir.path().join("lib.rs"), "pub fn helper() -> i32 { 42 }\n").unwrap();
+
+        let s = sym("caller", "main.rs", 1, SymbolKind::Function);
+        let all_symbols = vec![
+            sym("caller", "main.rs", 1, SymbolKind::Function),
+            sym("helper", "lib.rs", 1, SymbolKind::Function),
+        ];
+        let imports = HashMap::new();
+        let deps = find_dependencies(dir.path(), &s, content, &all_symbols, &imports);
+        assert!(deps.iter().any(|d| d.name == "helper"));
+    }
+
+    #[test]
+    fn excludes_self_reference() {
+        let dir = make_root();
+        let content = "fn caller() {\n    caller();\n}\n";
+        std::fs::write(dir.path().join("test.rs"), content).unwrap();
+
+        let s = sym("caller", "test.rs", 1, SymbolKind::Function);
+        let all_symbols = vec![sym("caller", "test.rs", 1, SymbolKind::Function)];
+        let imports = HashMap::new();
+        let deps = find_dependencies(dir.path(), &s, content, &all_symbols, &imports);
+        assert!(deps.iter().all(|d| d.name != "caller"));
+    }
+
+    #[test]
+    fn finds_external_import_dependency() {
+        let dir = make_root();
+        let content =
+            "from requests import get\n\ndef fetch():\n    return get('http://example.com')\n";
+        std::fs::write(dir.path().join("main.py"), content).unwrap();
+
+        let s = sym("fetch", "main.py", 3, SymbolKind::Function);
+        let all_symbols = vec![sym("fetch", "main.py", 3, SymbolKind::Function)];
+        let mut imports = HashMap::new();
+        imports.insert("get".to_string(), "requests".to_string());
+        let deps = find_dependencies(dir.path(), &s, content, &all_symbols, &imports);
+        assert!(
+            deps.iter()
+                .any(|d| d.name == "get" && d.import_from.as_deref() == Some("requests"))
+        );
+    }
+
+    #[test]
+    fn unsupported_lang_returns_empty() {
+        let dir = make_root();
+        let content = "some text\n";
+        std::fs::write(dir.path().join("test.txt"), content).unwrap();
+
+        let s = sym("something", "test.txt", 1, SymbolKind::Function);
+        let deps = find_dependencies(dir.path(), &s, content, &[], &HashMap::new());
+        assert!(deps.is_empty());
+    }
+
+    #[test]
+    fn definition_not_found_returns_empty() {
+        let dir = make_root();
+        let content = "fn other() {}\n";
+        std::fs::write(dir.path().join("test.rs"), content).unwrap();
+
+        let s = sym("nonexistent", "test.rs", 99, SymbolKind::Function);
+        let deps = find_dependencies(dir.path(), &s, content, &[], &HashMap::new());
+        assert!(deps.is_empty());
+    }
+
+    #[test]
+    fn filters_keywords() {
+        let dir = make_root();
+        let content = "fn caller() {\n    if true { return; }\n}\n";
+        std::fs::write(dir.path().join("test.rs"), content).unwrap();
+
+        let s = sym("caller", "test.rs", 1, SymbolKind::Function);
+        let all_symbols = vec![sym("caller", "test.rs", 1, SymbolKind::Function)];
+        let deps = find_dependencies(dir.path(), &s, content, &all_symbols, &HashMap::new());
+        // "if", "true", "return" are keywords, should not appear
+        assert!(
+            deps.iter()
+                .all(|d| !matches!(d.name.as_str(), "if" | "true" | "return"))
+        );
+    }
+
+    #[test]
+    fn deduplicates_identifiers() {
+        let dir = make_root();
+        let content = "fn caller() {\n    helper();\n    helper();\n}\n";
+        std::fs::write(dir.path().join("test.rs"), content).unwrap();
+
+        let s = sym("caller", "test.rs", 1, SymbolKind::Function);
+        let all_symbols = vec![
+            sym("caller", "test.rs", 1, SymbolKind::Function),
+            sym("helper", "lib.rs", 1, SymbolKind::Function),
+        ];
+        let deps = find_dependencies(dir.path(), &s, content, &all_symbols, &HashMap::new());
+        let helper_count = deps.iter().filter(|d| d.name == "helper").count();
+        assert_eq!(helper_count, 1);
+    }
+
+    #[test]
+    fn prefers_cross_file_match() {
+        let dir = make_root();
+        let content = "fn caller() {\n    helper();\n}\nfn helper() {}\n";
+        std::fs::write(dir.path().join("main.rs"), content).unwrap();
+        std::fs::write(dir.path().join("lib.rs"), "pub fn helper() {}\n").unwrap();
+
+        let s = sym("caller", "main.rs", 1, SymbolKind::Function);
+        let all_symbols = vec![
+            sym("caller", "main.rs", 1, SymbolKind::Function),
+            sym("helper", "main.rs", 4, SymbolKind::Function),
+            sym("helper", "lib.rs", 1, SymbolKind::Function),
+        ];
+        let deps = find_dependencies(dir.path(), &s, content, &all_symbols, &HashMap::new());
+        let h = deps.iter().find(|d| d.name == "helper").unwrap();
+        assert_eq!(h.location.as_ref().unwrap().0, "lib.rs");
+    }
+}

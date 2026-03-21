@@ -308,3 +308,224 @@ fn extract_extends_names(def_node: tree_sitter::Node, content: &str, names: &mut
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::symbol::SymbolKind;
+    use std::collections::HashMap;
+
+    fn sym(name: &str, file: &str, line: usize, kind: SymbolKind, sig: &str) -> Symbol {
+        Symbol {
+            name: name.to_string(),
+            kind,
+            file: file.to_string(),
+            line,
+            signature: sig.to_string(),
+            parent: None,
+            keywords: Vec::new(),
+        }
+    }
+
+    fn class_sym(name: &str, file: &str, line: usize, sig: &str) -> Symbol {
+        sym(name, file, line, SymbolKind::Class, sig)
+    }
+
+    // ── extract_hierarchy ───────────────────────────────────────
+
+    #[test]
+    fn non_class_returns_none() {
+        let s = sym("foo", "test.py", 1, SymbolKind::Function, "def foo():");
+        let result = extract_hierarchy(
+            Path::new("."),
+            &s,
+            "def foo():\n    pass\n",
+            &[],
+            &HashMap::new(),
+            None,
+        );
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn python_single_parent() {
+        let content = "class Child(Parent):\n    pass\n";
+        let s = class_sym("Child", "test.py", 1, "class Child(Parent):");
+        let parent_sym = class_sym("Parent", "base.py", 1, "class Parent:");
+        let result = extract_hierarchy(
+            Path::new("."),
+            &s,
+            content,
+            &[parent_sym],
+            &HashMap::new(),
+            None,
+        );
+        assert!(result.is_some());
+        let h = result.unwrap();
+        assert_eq!(h.parents.len(), 1);
+        assert_eq!(h.parents[0].name, "Parent");
+    }
+
+    #[test]
+    fn python_multiple_parents() {
+        let content = "class Child(Base, Mixin):\n    pass\n";
+        let s = class_sym("Child", "test.py", 1, "class Child(Base, Mixin):");
+        let result = extract_hierarchy(Path::new("."), &s, content, &[], &HashMap::new(), None);
+        assert!(result.is_some());
+        let h = result.unwrap();
+        assert_eq!(h.parents.len(), 2);
+    }
+
+    #[test]
+    fn python_no_parents_no_children() {
+        let content = "class Standalone:\n    pass\n";
+        let s = class_sym("Standalone", "test.py", 1, "class Standalone:");
+        let result = extract_hierarchy(Path::new("."), &s, content, &[], &HashMap::new(), None);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn python_dotted_parent() {
+        let content = "class MyModel(models.Model):\n    pass\n";
+        let s = class_sym("MyModel", "test.py", 1, "class MyModel(models.Model):");
+        let result = extract_hierarchy(Path::new("."), &s, content, &[], &HashMap::new(), None);
+        assert!(result.is_some());
+        let h = result.unwrap();
+        assert_eq!(h.parents[0].name, "Model");
+    }
+
+    #[test]
+    fn finds_children() {
+        let content = "class Base:\n    pass\n";
+        let s = class_sym("Base", "base.py", 1, "class Base:");
+        let child = class_sym("Child", "child.py", 1, "class Child(Base):");
+        let result =
+            extract_hierarchy(Path::new("."), &s, content, &[child], &HashMap::new(), None);
+        assert!(result.is_some());
+        let h = result.unwrap();
+        assert_eq!(h.children.len(), 1);
+        assert_eq!(h.children[0].name, "Child");
+    }
+
+    #[test]
+    fn java_extends_child_detection() {
+        let content = "class Base {\n}\n";
+        let s = class_sym("Base", "Base.java", 1, "class Base {");
+        let child = class_sym("Child", "Child.java", 1, "class Child extends Base {");
+        let result =
+            extract_hierarchy(Path::new("."), &s, content, &[child], &HashMap::new(), None);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().children.len(), 1);
+    }
+
+    #[test]
+    fn java_implements_child_detection() {
+        let content = "interface Runnable {\n}\n";
+        let s = sym(
+            "Runnable",
+            "Runnable.java",
+            1,
+            SymbolKind::Interface,
+            "interface Runnable {",
+        );
+        let child = class_sym(
+            "Worker",
+            "Worker.java",
+            1,
+            "class Worker implements Runnable {",
+        );
+        let result =
+            extract_hierarchy(Path::new("."), &s, content, &[child], &HashMap::new(), None);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().children.len(), 1);
+    }
+
+    #[test]
+    fn external_parent_module() {
+        let content = "class Child(ExternalBase):\n    pass\n";
+        let s = class_sym("Child", "test.py", 1, "class Child(ExternalBase):");
+        let mut imports = HashMap::new();
+        imports.insert("ExternalBase".to_string(), "some_lib".to_string());
+        let result = extract_hierarchy(Path::new("."), &s, content, &[], &imports, None);
+        assert!(result.is_some());
+        let h = result.unwrap();
+        assert_eq!(h.parents[0].external_module.as_deref(), Some("some_lib"));
+    }
+
+    #[test]
+    fn unsupported_lang_returns_none() {
+        let s = class_sym("Foo", "test.txt", 1, "class Foo:");
+        let result = extract_hierarchy(
+            Path::new("."),
+            &s,
+            "class Foo:\n    pass\n",
+            &[],
+            &HashMap::new(),
+            None,
+        );
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn with_pre_parsed_tree() {
+        let content = "class Child(Parent):\n    pass\n";
+        let tree = compress::parse_source(content, Lang::Python).unwrap();
+        let s = class_sym("Child", "test.py", 1, "class Child(Parent):");
+        let result = extract_hierarchy(
+            Path::new("."),
+            &s,
+            content,
+            &[],
+            &HashMap::new(),
+            Some(&tree),
+        );
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn ts_extends_parent() {
+        let content = "class Child extends Parent {\n    constructor() { super(); }\n}\n";
+        let s = class_sym("Child", "test.ts", 1, "class Child extends Parent {");
+        let result = extract_hierarchy(Path::new("."), &s, content, &[], &HashMap::new(), None);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().parents[0].name, "Parent");
+    }
+
+    #[test]
+    fn struct_kind_accepted() {
+        let content = "pub struct MyStruct {}\n";
+        let s = sym(
+            "MyStruct",
+            "test.rs",
+            1,
+            SymbolKind::Struct,
+            "pub struct MyStruct {}",
+        );
+        let result = extract_hierarchy(Path::new("."), &s, content, &[], &HashMap::new(), None);
+        // No parents or children → None
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn trait_kind_accepted() {
+        let content = "pub trait MyTrait {}\n";
+        let s = sym(
+            "MyTrait",
+            "test.rs",
+            1,
+            SymbolKind::Trait,
+            "pub trait MyTrait {}",
+        );
+        let result = extract_hierarchy(Path::new("."), &s, content, &[], &HashMap::new(), None);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn cpp_inheritance() {
+        let content = "class Derived : public Base {\n    void method() {}\n};\n";
+        let s = class_sym("Derived", "test.cpp", 1, "class Derived : public Base {");
+        let result = extract_hierarchy(Path::new("."), &s, content, &[], &HashMap::new(), None);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().parents[0].name, "Base");
+    }
+}

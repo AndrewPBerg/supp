@@ -145,3 +145,194 @@ fn find_enclosing_fn_recursive(
 
     None
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::symbol::SymbolKind;
+    use std::fs;
+    use tempfile::TempDir;
+
+    fn sym(name: &str, file: &str, line: usize) -> Symbol {
+        Symbol {
+            name: name.to_string(),
+            kind: SymbolKind::Function,
+            file: file.to_string(),
+            line,
+            signature: String::new(),
+            parent: None,
+            keywords: Vec::new(),
+        }
+    }
+
+    // ── contains_identifier ─────────────────────────────────────
+
+    #[test]
+    fn contains_exact_match() {
+        assert!(contains_identifier("foo(bar)", "foo"));
+        assert!(contains_identifier("foo(bar)", "bar"));
+    }
+
+    #[test]
+    fn rejects_substring() {
+        assert!(!contains_identifier("foobar", "foo"));
+        assert!(!contains_identifier("barfoo", "foo"));
+    }
+
+    #[test]
+    fn match_at_start() {
+        assert!(contains_identifier("foo = 1", "foo"));
+    }
+
+    #[test]
+    fn match_at_end() {
+        assert!(contains_identifier("x = foo", "foo"));
+    }
+
+    #[test]
+    fn match_with_dot() {
+        assert!(contains_identifier("x.foo()", "foo"));
+    }
+
+    #[test]
+    fn no_match_underscore_prefix() {
+        assert!(!contains_identifier("_foo = 1", "foo"));
+    }
+
+    #[test]
+    fn no_match_underscore_suffix() {
+        assert!(!contains_identifier("foo_ = 1", "foo"));
+    }
+
+    #[test]
+    fn empty_line() {
+        assert!(!contains_identifier("", "foo"));
+    }
+
+    #[test]
+    fn multiple_occurrences() {
+        assert!(contains_identifier("foo + foo", "foo"));
+    }
+
+    #[test]
+    fn identifier_with_numbers() {
+        assert!(contains_identifier("call foo2()", "foo2"));
+        assert!(!contains_identifier("call foo2()", "foo"));
+    }
+
+    // ── find_enclosing_function ─────────────────────────────────
+
+    #[test]
+    fn rust_enclosing_function() {
+        let content = "fn outer() {\n    let x = inner();\n}\nfn inner() {}\n";
+        let tree = compress::parse_source(content, compress::Lang::Rust).unwrap();
+        let result = find_enclosing_function(&tree, content, 1); // line 1 (0-based) is inside outer
+        assert_eq!(result, Some("outer".to_string()));
+    }
+
+    #[test]
+    fn no_enclosing_function() {
+        let content = "let x = 1;\nfn foo() {}\n";
+        let tree = compress::parse_source(content, compress::Lang::Rust).unwrap();
+        let result = find_enclosing_function(&tree, content, 0); // top-level
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn python_enclosing_function() {
+        let content = "def outer():\n    x = helper()\n    return x\n";
+        let tree = compress::parse_source(content, compress::Lang::Python).unwrap();
+        let result = find_enclosing_function(&tree, content, 1);
+        assert_eq!(result, Some("outer".to_string()));
+    }
+
+    #[test]
+    fn js_enclosing_function() {
+        let content = "function doWork() {\n    let result = compute();\n    return result;\n}\n";
+        let tree = compress::parse_source(content, compress::Lang::JavaScript).unwrap();
+        let result = find_enclosing_function(&tree, content, 1);
+        assert_eq!(result, Some("doWork".to_string()));
+    }
+
+    #[test]
+    fn java_method_enclosing() {
+        let content = "class Foo {\n    void doStuff() {\n        helper();\n    }\n}\n";
+        let tree = compress::parse_source(content, compress::Lang::Java).unwrap();
+        let result = find_enclosing_function(&tree, content, 2);
+        assert_eq!(result, Some("doStuff".to_string()));
+    }
+
+    // ── find_call_sites ─────────────────────────────────────────
+
+    #[test]
+    fn finds_cross_file_call() {
+        let dir = TempDir::new().unwrap();
+        fs::write(
+            dir.path().join("main.rs"),
+            "fn main() {\n    helper();\n}\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.path().join("lib.rs"),
+            "pub fn helper() {\n    println!(\"help\");\n}\n",
+        )
+        .unwrap();
+        let s = sym("helper", "lib.rs", 1);
+        let sites = find_call_sites(dir.path(), &s);
+        assert!(!sites.is_empty());
+        assert!(sites.iter().any(|s| s.file == "main.rs"));
+    }
+
+    #[test]
+    fn skips_definition_span() {
+        let dir = TempDir::new().unwrap();
+        fs::write(
+            dir.path().join("lib.rs"),
+            "pub fn helper() {\n    // helper is defined here\n}\nfn caller() {\n    helper();\n}\n",
+        )
+        .unwrap();
+        let s = sym("helper", "lib.rs", 1);
+        let sites = find_call_sites(dir.path(), &s);
+        // Should find the call in caller() but not the definition itself
+        assert!(sites.iter().all(|s| s.line > 3));
+    }
+
+    #[test]
+    fn short_name_returns_empty() {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("test.rs"), "let x = 1;\n").unwrap();
+        let s = sym("x", "test.rs", 1);
+        let sites = find_call_sites(dir.path(), &s);
+        assert!(sites.is_empty());
+    }
+
+    #[test]
+    fn truncates_at_30() {
+        let dir = TempDir::new().unwrap();
+        let mut content = String::from("pub fn target() {}\n");
+        for i in 0..40 {
+            content.push_str(&format!("fn f{}() {{ target(); }}\n", i));
+        }
+        fs::write(dir.path().join("test.rs"), &content).unwrap();
+        let s = sym("target", "test.rs", 1);
+        let sites = find_call_sites(dir.path(), &s);
+        assert!(sites.len() <= 30);
+    }
+
+    #[test]
+    fn includes_caller_name() {
+        let dir = TempDir::new().unwrap();
+        fs::write(
+            dir.path().join("test.rs"),
+            "pub fn target() {}\nfn my_caller() {\n    target();\n}\n",
+        )
+        .unwrap();
+        let s = sym("target", "test.rs", 1);
+        let sites = find_call_sites(dir.path(), &s);
+        assert!(
+            sites
+                .iter()
+                .any(|s| s.caller.as_deref() == Some("my_caller"))
+        );
+    }
+}

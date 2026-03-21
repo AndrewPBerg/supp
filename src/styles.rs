@@ -1656,4 +1656,287 @@ mod tests {
         };
         print_pick_stats(&result, true, std::time::Instant::now());
     }
+
+    // ── print_clipboard_status ──────────────────────────────────
+
+    #[test]
+    fn print_clipboard_status_empty_text() {
+        // Should return without printing anything
+        print_clipboard_status("", true);
+        print_clipboard_status("", false);
+    }
+
+    // ── format_size boundary ────────────────────────────────────
+
+    #[test]
+    fn format_size_large_mb() {
+        let result = format_size(500_000_000);
+        assert!(result.contains("MB"));
+    }
+
+    #[test]
+    fn format_size_multi_gb() {
+        let result = format_size(5_000_000_000);
+        assert!(result.contains("GB"));
+    }
+
+    // ── estimate_tokens larger values ───────────────────────────
+
+    #[test]
+    fn estimate_tokens_large() {
+        let tokens = estimate_tokens(35000);
+        assert_eq!(tokens, 10000);
+    }
+
+    // ── format_number edge cases ────────────────────────────────
+
+    #[test]
+    fn format_number_100() {
+        assert_eq!(format_number(100), "100");
+    }
+
+    #[test]
+    fn format_number_10000() {
+        assert_eq!(format_number(10000), "10,000");
+    }
+
+    #[test]
+    fn format_number_100000000() {
+        assert_eq!(format_number(100_000_000), "100,000,000");
+    }
+
+    // ── print_diff_result with files ────────────────────────────
+
+    #[test]
+    fn print_diff_result_with_files_extended() {
+        let result = DiffResult {
+            label: "working tree".to_string(),
+            files: vec![
+                FileEntry {
+                    path: "src/main.rs".to_string(),
+                    old_path: None,
+                    status: DeltaStatus::Modified,
+                    additions: 10,
+                    deletions: 3,
+                    patch: "some patch".to_string(),
+                },
+                FileEntry {
+                    path: "src/lib.rs".to_string(),
+                    old_path: None,
+                    status: DeltaStatus::Added,
+                    additions: 20,
+                    deletions: 0,
+                    patch: "another patch".to_string(),
+                },
+            ],
+            text: "diff output".to_string(),
+            has_conflicts: false,
+            is_branch_comparison: false,
+            commit_count: Some(1),
+            stale_check: None,
+        };
+        print_diff_result(result, true, std::time::Instant::now());
+    }
+
+    // ── print_why_result ────────────────────────────────────────
+
+    #[test]
+    fn print_why_result_minimal() {
+        use crate::symbol::{Symbol, SymbolKind};
+        use crate::why::WhyResult;
+        let result = WhyResult {
+            symbol: Symbol {
+                name: "foo".to_string(),
+                kind: SymbolKind::Function,
+                file: "test.rs".to_string(),
+                line: 1,
+                signature: "fn foo()".to_string(),
+                parent: None,
+                keywords: vec![],
+            },
+            doc_comment: None,
+            full_definition: "fn foo() { 42 }".to_string(),
+            call_sites: vec![],
+            dependencies: vec![],
+            hierarchy: None,
+            plain: "plain text".to_string(),
+        };
+        print_why_result(&result, true, std::time::Instant::now());
+    }
+
+    #[test]
+    fn print_why_result_with_all_sections_extended() {
+        use crate::symbol::{Symbol, SymbolKind};
+        use crate::why::{CallSite, Dependency, Hierarchy, HierarchyEntry, WhyResult};
+        let result = WhyResult {
+            symbol: Symbol {
+                name: "Child".to_string(),
+                kind: SymbolKind::Class,
+                file: "test.py".to_string(),
+                line: 1,
+                signature: "class Child(Parent):".to_string(),
+                parent: None,
+                keywords: vec![],
+            },
+            doc_comment: Some("A child class.".to_string()),
+            full_definition: "class Child(Parent):\n    def method(self):\n        pass"
+                .to_string(),
+            call_sites: vec![CallSite {
+                file: "main.py".to_string(),
+                line: 10,
+                context: "obj = Child()".to_string(),
+                caller: Some("create_obj".to_string()),
+            }],
+            dependencies: vec![Dependency {
+                name: "Parent".to_string(),
+                kind: Some(SymbolKind::Class),
+                location: Some(("base.py".to_string(), 1)),
+                import_from: None,
+            }],
+            hierarchy: Some(Hierarchy {
+                parents: vec![
+                    HierarchyEntry {
+                        name: "Parent".to_string(),
+                        location: Some(("base.py".to_string(), 1)),
+                        external_module: None,
+                    },
+                    HierarchyEntry {
+                        name: "ExternalBase".to_string(),
+                        location: None,
+                        external_module: Some("external_lib".to_string()),
+                    },
+                    HierarchyEntry {
+                        name: "Unknown".to_string(),
+                        location: None,
+                        external_module: None,
+                    },
+                ],
+                children: vec![
+                    HierarchyEntry {
+                        name: "GrandChild".to_string(),
+                        location: Some(("gc.py".to_string(), 1)),
+                        external_module: None,
+                    },
+                    HierarchyEntry {
+                        name: "Orphan".to_string(),
+                        location: None,
+                        external_module: None,
+                    },
+                ],
+            }),
+            plain: "plain text".to_string(),
+        };
+        print_why_result(&result, true, std::time::Instant::now());
+    }
+
+    #[test]
+    fn print_why_result_with_parent_symbol() {
+        use crate::symbol::{Symbol, SymbolKind};
+        use crate::why::WhyResult;
+        let result = WhyResult {
+            symbol: Symbol {
+                name: "method".to_string(),
+                kind: SymbolKind::Method,
+                file: "test.rs".to_string(),
+                line: 5,
+                signature: "fn method(&self)".to_string(),
+                parent: Some("MyStruct".to_string()),
+                keywords: vec![],
+            },
+            doc_comment: None,
+            full_definition: "fn method(&self) { }".to_string(),
+            call_sites: vec![],
+            dependencies: vec![],
+            hierarchy: None,
+            plain: "text".to_string(),
+        };
+        print_why_result(&result, true, std::time::Instant::now());
+    }
+
+    #[test]
+    fn print_why_result_long_definition_truncated() {
+        use crate::symbol::{Symbol, SymbolKind};
+        use crate::why::WhyResult;
+        let long_def = (0..50)
+            .map(|i| format!("    line {}", i))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let result = WhyResult {
+            symbol: Symbol {
+                name: "big_fn".to_string(),
+                kind: SymbolKind::Function,
+                file: "test.rs".to_string(),
+                line: 1,
+                signature: "fn big_fn()".to_string(),
+                parent: None,
+                keywords: vec![],
+            },
+            doc_comment: None,
+            full_definition: long_def,
+            call_sites: vec![],
+            dependencies: vec![],
+            hierarchy: None,
+            plain: "text".to_string(),
+        };
+        print_why_result(&result, true, std::time::Instant::now());
+    }
+
+    // ── print_tree_result ───────────────────────────────────────
+
+    #[test]
+    fn print_tree_result_empty() {
+        let result = TreeResult {
+            display: String::new(),
+            plain: String::new(),
+            file_count: 0,
+            dir_count: 0,
+            status_counts: std::collections::HashMap::new(),
+        };
+        print_tree_result(result, ".", true, std::time::Instant::now());
+    }
+
+    #[test]
+    fn print_tree_result_singular() {
+        let result = TreeResult {
+            display: "test/\n└── file.txt\n".to_string(),
+            plain: "test/\n└── file.txt\n".to_string(),
+            file_count: 1,
+            dir_count: 1,
+            status_counts: std::collections::HashMap::new(),
+        };
+        print_tree_result(result, "test", true, std::time::Instant::now());
+    }
+
+    #[test]
+    fn print_tree_result_with_statuses() {
+        let mut status_counts = std::collections::HashMap::new();
+        status_counts.insert(FileStatus::Modified, 2);
+        status_counts.insert(FileStatus::Added, 1);
+        status_counts.insert(FileStatus::Untracked, 1);
+        status_counts.insert(FileStatus::Renamed, 1);
+        let result = TreeResult {
+            display: "test/\n├── a.rs\n└── b.rs\n".to_string(),
+            plain: "test/\n├── a.rs\n└── b.rs\n".to_string(),
+            file_count: 5,
+            dir_count: 2,
+            status_counts,
+        };
+        print_tree_result(result, "test", true, std::time::Instant::now());
+    }
+
+    // ── print_summary edge cases ────────────────────────────────
+
+    #[test]
+    fn print_summary_narrow_col() {
+        let files = vec![FileEntry {
+            path: "x.rs".to_string(),
+            old_path: None,
+            status: DeltaStatus::Modified,
+            additions: 1,
+            deletions: 1,
+            patch: String::new(),
+        }];
+        // Very small global_max_name_col to test the padding edge case
+        print_summary(&files, 5, 2, 2);
+    }
 }

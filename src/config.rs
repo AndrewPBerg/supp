@@ -97,4 +97,38 @@ mod tests {
         assert_eq!(config.global.depth, 2);
         assert_eq!(config.global.mode, "full");
     }
+
+    #[test]
+    fn diff_config_defaults() {
+        let config = DiffConfig::default();
+        assert_eq!(config.context_lines, 3);
+    }
+
+    #[test]
+    fn pick_config_defaults() {
+        let config = PickConfig::default();
+        assert_eq!(config.preview_lines, 100);
+    }
+
+    #[test]
+    fn limits_config_defaults() {
+        let config = LimitsConfig::default();
+        assert_eq!(config.max_untracked_file_size_mb, 10);
+        assert_eq!(config.max_files, 20000);
+        assert_eq!(config.max_total_mb, 50);
+    }
+
+    #[test]
+    fn global_config_debug() {
+        let config = GlobalConfig::default();
+        let debug = format!("{:?}", config);
+        assert!(debug.contains("GlobalConfig"));
+    }
+
+    #[test]
+    fn config_debug() {
+        let config = Config::default();
+        let debug = format!("{:?}", config);
+        assert!(debug.contains("Config"));
+    }
 }

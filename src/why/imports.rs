@@ -351,3 +351,323 @@ pub(crate) fn resolve_relative_import(
 
     None
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    // ── extract_python_imports ──────────────────────────────────
+
+    #[test]
+    fn python_from_import() {
+        let imports = extract_python_imports("from os import path\n");
+        assert_eq!(imports.get("path"), Some(&"os".to_string()));
+    }
+
+    #[test]
+    fn python_from_import_multiple() {
+        let imports = extract_python_imports("from os import path, getcwd\n");
+        assert_eq!(imports.get("path"), Some(&"os".to_string()));
+        assert_eq!(imports.get("getcwd"), Some(&"os".to_string()));
+    }
+
+    #[test]
+    fn python_from_import_as() {
+        let imports = extract_python_imports("from numpy import array as np_array\n");
+        assert_eq!(imports.get("array"), Some(&"numpy".to_string()));
+    }
+
+    #[test]
+    fn python_import_statement() {
+        let imports = extract_python_imports("import os\n");
+        assert_eq!(imports.get("os"), Some(&"os".to_string()));
+    }
+
+    #[test]
+    fn python_import_dotted() {
+        let imports = extract_python_imports("import os.path\n");
+        assert_eq!(imports.get("path"), Some(&"os.path".to_string()));
+    }
+
+    #[test]
+    fn python_import_as() {
+        let imports = extract_python_imports("import numpy as np\n");
+        assert_eq!(imports.get("numpy"), Some(&"numpy".to_string()));
+    }
+
+    #[test]
+    fn python_import_multiple() {
+        let imports = extract_python_imports("import os, sys\n");
+        assert!(imports.contains_key("os"));
+        assert!(imports.contains_key("sys"));
+    }
+
+    #[test]
+    fn python_from_import_paren() {
+        let imports = extract_python_imports("from os import (path, getcwd)\n");
+        assert!(imports.contains_key("path"));
+        assert!(imports.contains_key("getcwd"));
+    }
+
+    #[test]
+    fn python_relative_import() {
+        let imports = extract_python_imports("from . import utils\n");
+        assert_eq!(imports.get("utils"), Some(&".".to_string()));
+    }
+
+    #[test]
+    fn python_no_imports() {
+        let imports = extract_python_imports("x = 1\nprint(x)\n");
+        assert!(imports.is_empty());
+    }
+
+    // ── extract_rust_imports ────────────────────────────────────
+
+    #[test]
+    fn rust_simple_use() {
+        let imports = extract_rust_imports("use std::collections::HashMap;\n");
+        assert_eq!(
+            imports.get("HashMap"),
+            Some(&"std::collections".to_string())
+        );
+    }
+
+    #[test]
+    fn rust_brace_use() {
+        let imports = extract_rust_imports("use std::collections::{HashMap, HashSet};\n");
+        assert_eq!(
+            imports.get("HashMap"),
+            Some(&"std::collections".to_string())
+        );
+        assert_eq!(
+            imports.get("HashSet"),
+            Some(&"std::collections".to_string())
+        );
+    }
+
+    #[test]
+    fn rust_use_as() {
+        let imports = extract_rust_imports("use std::io::Result as IoResult;\n");
+        assert_eq!(imports.get("Result"), Some(&"std::io".to_string()));
+    }
+
+    #[test]
+    fn rust_use_self_excluded() {
+        let imports = extract_rust_imports("use std::io::{self, Read};\n");
+        assert!(!imports.contains_key("self"));
+        assert!(imports.contains_key("Read"));
+    }
+
+    #[test]
+    fn rust_no_imports() {
+        let imports = extract_rust_imports("fn main() {}\n");
+        assert!(imports.is_empty());
+    }
+
+    // ── extract_js_imports ──────────────────────────────────────
+
+    #[test]
+    fn js_named_import() {
+        let imports = extract_js_imports("import { useState } from 'react';\n");
+        assert_eq!(imports.get("useState"), Some(&"react".to_string()));
+    }
+
+    #[test]
+    fn js_multiple_named_imports() {
+        let imports = extract_js_imports("import { useState, useEffect } from 'react';\n");
+        assert!(imports.contains_key("useState"));
+        assert!(imports.contains_key("useEffect"));
+    }
+
+    #[test]
+    fn js_default_import() {
+        let imports = extract_js_imports("import React from 'react';\n");
+        assert_eq!(imports.get("React"), Some(&"react".to_string()));
+    }
+
+    #[test]
+    fn js_import_as() {
+        let imports = extract_js_imports("import { foo as bar } from 'baz';\n");
+        assert_eq!(imports.get("foo"), Some(&"baz".to_string()));
+    }
+
+    #[test]
+    fn js_star_import_excluded() {
+        let imports = extract_js_imports("import * as utils from './utils';\n");
+        assert!(!imports.contains_key("*"));
+    }
+
+    #[test]
+    fn js_no_imports() {
+        let imports = extract_js_imports("const x = 1;\n");
+        assert!(imports.is_empty());
+    }
+
+    #[test]
+    fn js_double_quote_import() {
+        let imports = extract_js_imports("import { Foo } from \"bar\";\n");
+        assert_eq!(imports.get("Foo"), Some(&"bar".to_string()));
+    }
+
+    // ── extract_c_includes ──────────────────────────────────────
+
+    #[test]
+    fn c_system_include() {
+        let imports = extract_c_includes("#include <stdio.h>\n", "test.c", Path::new("/tmp"));
+        assert!(imports.contains_key("stdio.h"));
+        assert_eq!(imports.get("stdio.h"), Some(&"<stdio.h>".to_string()));
+    }
+
+    #[test]
+    fn c_local_include_not_found() {
+        let imports = extract_c_includes("#include \"myheader.h\"\n", "test.c", Path::new("/tmp"));
+        assert!(imports.contains_key("myheader.h"));
+    }
+
+    #[test]
+    fn c_local_include_resolved() {
+        let dir = TempDir::new().unwrap();
+        fs::write(
+            dir.path().join("header.h"),
+            "int add(int a, int b);\nstruct Point { int x; int y; };\n",
+        )
+        .unwrap();
+        let imports = extract_c_includes("#include \"header.h\"\n", "test.c", dir.path());
+        // Should resolve symbols from the header
+        assert!(!imports.is_empty());
+    }
+
+    #[test]
+    fn c_no_includes() {
+        let imports = extract_c_includes("int main() { return 0; }\n", "test.c", Path::new("/tmp"));
+        assert!(imports.is_empty());
+    }
+
+    #[test]
+    fn c_preproc_not_include() {
+        let imports = extract_c_includes(
+            "#define FOO 1\n#ifdef FOO\n#endif\n",
+            "test.c",
+            Path::new("/tmp"),
+        );
+        assert!(imports.is_empty());
+    }
+
+    // ── extract_file_imports ────────────────────────────────────
+
+    #[test]
+    fn dispatches_to_python() {
+        let imports = extract_file_imports("from os import path\n", "test.py", Path::new("."));
+        assert!(imports.contains_key("path"));
+    }
+
+    #[test]
+    fn dispatches_to_rust() {
+        let imports = extract_file_imports("use std::io::Read;\n", "test.rs", Path::new("."));
+        assert!(imports.contains_key("Read"));
+    }
+
+    #[test]
+    fn dispatches_to_js() {
+        let imports =
+            extract_file_imports("import { Foo } from 'bar';\n", "test.js", Path::new("."));
+        assert!(imports.contains_key("Foo"));
+    }
+
+    #[test]
+    fn dispatches_to_ts() {
+        let imports =
+            extract_file_imports("import { Foo } from 'bar';\n", "test.ts", Path::new("."));
+        assert!(imports.contains_key("Foo"));
+    }
+
+    #[test]
+    fn dispatches_to_c() {
+        let imports = extract_file_imports("#include <stdio.h>\n", "test.c", Path::new("."));
+        assert!(imports.contains_key("stdio.h"));
+    }
+
+    #[test]
+    fn unsupported_lang_returns_empty() {
+        let imports = extract_file_imports("something\n", "test.txt", Path::new("."));
+        assert!(imports.is_empty());
+    }
+
+    #[test]
+    fn go_returns_empty() {
+        let imports = extract_file_imports("import \"fmt\"\n", "test.go", Path::new("."));
+        assert!(imports.is_empty());
+    }
+
+    // ── resolve_relative_import ─────────────────────────────────
+
+    #[test]
+    fn non_relative_returns_none() {
+        assert!(resolve_relative_import("os", "test.py", Path::new(".")).is_none());
+    }
+
+    #[test]
+    fn dot_only_returns_none() {
+        assert!(resolve_relative_import(".", "test.py", Path::new(".")).is_none());
+    }
+
+    #[test]
+    fn single_dot_module() {
+        let dir = TempDir::new().unwrap();
+        fs::create_dir_all(dir.path().join("pkg")).unwrap();
+        fs::write(dir.path().join("pkg/utils.py"), "x = 1\n").unwrap();
+        let result = resolve_relative_import(".utils", "pkg/main.py", dir.path());
+        assert!(result.is_some());
+        assert!(result.unwrap().contains("utils.py"));
+    }
+
+    #[test]
+    fn double_dot_module() {
+        let dir = TempDir::new().unwrap();
+        fs::create_dir_all(dir.path().join("pkg/sub")).unwrap();
+        fs::write(dir.path().join("pkg/helper.py"), "x = 1\n").unwrap();
+        let result = resolve_relative_import("..helper", "pkg/sub/main.py", dir.path());
+        assert!(result.is_some());
+        assert!(result.unwrap().contains("helper.py"));
+    }
+
+    #[test]
+    fn package_init_resolution() {
+        let dir = TempDir::new().unwrap();
+        fs::create_dir_all(dir.path().join("pkg/utils")).unwrap();
+        fs::write(dir.path().join("pkg/utils/__init__.py"), "").unwrap();
+        let result = resolve_relative_import(".utils", "pkg/main.py", dir.path());
+        assert!(result.is_some());
+        assert!(result.unwrap().contains("__init__.py"));
+    }
+
+    #[test]
+    fn module_not_found() {
+        let dir = TempDir::new().unwrap();
+        fs::create_dir_all(dir.path().join("pkg")).unwrap();
+        let result = resolve_relative_import(".nonexistent", "pkg/main.py", dir.path());
+        assert!(result.is_none());
+    }
+
+    // ── normalize_path ──────────────────────────────────────────
+
+    #[test]
+    fn normalize_collapses_parent() {
+        let result = normalize_path(Path::new("a/b/../c"));
+        assert_eq!(result, "a/c");
+    }
+
+    #[test]
+    fn normalize_removes_curdir() {
+        let result = normalize_path(Path::new("a/./b"));
+        assert_eq!(result, "a/b");
+    }
+
+    #[test]
+    fn normalize_simple() {
+        let result = normalize_path(Path::new("a/b/c"));
+        assert_eq!(result, "a/b/c");
+    }
+}

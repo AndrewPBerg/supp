@@ -567,4 +567,98 @@ mod tests {
             _ => panic!("expected clean-cache"),
         }
     }
+
+    // ── resolve_json ──────────────────────────────────────────────
+
+    #[test]
+    fn resolve_json_from_flag() {
+        let cli = parse(&["supp", "-j", "src/"]).unwrap();
+        let config = crate::config::Config::default();
+        assert!(cli.resolve_json(&config));
+    }
+
+    #[test]
+    fn resolve_json_from_config() {
+        let cli = parse(&["supp", "src/"]).unwrap();
+        let mut config = crate::config::Config::default();
+        config.global.json = true;
+        assert!(cli.resolve_json(&config));
+    }
+
+    #[test]
+    fn resolve_json_default_false() {
+        let cli = parse(&["supp", "src/"]).unwrap();
+        let config = crate::config::Config::default();
+        assert!(!cli.resolve_json(&config));
+    }
+
+    // ── resolve_mode from config ──────────────────────────────────
+
+    #[test]
+    fn resolve_mode_slim_from_config() {
+        let cli = parse(&["supp", "src/"]).unwrap();
+        let mut config = crate::config::Config::default();
+        config.global.mode = "slim".to_string();
+        assert_eq!(cli.resolve_mode(&config), crate::compress::Mode::Slim);
+    }
+
+    #[test]
+    fn resolve_mode_map_from_config() {
+        let cli = parse(&["supp", "src/"]).unwrap();
+        let mut config = crate::config::Config::default();
+        config.global.mode = "map".to_string();
+        assert_eq!(cli.resolve_mode(&config), crate::compress::Mode::Map);
+    }
+
+    #[test]
+    fn resolve_mode_unknown_config_defaults_to_full() {
+        let cli = parse(&["supp", "src/"]).unwrap();
+        let mut config = crate::config::Config::default();
+        config.global.mode = "unknown".to_string();
+        assert_eq!(cli.resolve_mode(&config), crate::compress::Mode::Full);
+    }
+
+    // ── sym and why subcommands ──────────────────────────────────
+
+    #[test]
+    fn sym_subcommand() {
+        let cli = parse(&["supp", "sym", "hello"]).unwrap();
+        match cli.command {
+            Some(Commands::Sym { query }) => assert_eq!(query, vec!["hello"]),
+            _ => panic!("expected sym"),
+        }
+    }
+
+    #[test]
+    fn sym_alias_s() {
+        let cli = parse(&["supp", "s", "test"]).unwrap();
+        assert!(matches!(cli.command, Some(Commands::Sym { .. })));
+    }
+
+    #[test]
+    fn why_subcommand() {
+        let cli = parse(&["supp", "why", "my_func"]).unwrap();
+        match cli.command {
+            Some(Commands::Why { query }) => assert_eq!(query, vec!["my_func"]),
+            _ => panic!("expected why"),
+        }
+    }
+
+    #[test]
+    fn why_alias_w() {
+        let cli = parse(&["supp", "w", "test"]).unwrap();
+        assert!(matches!(cli.command, Some(Commands::Why { .. })));
+    }
+
+    #[test]
+    fn mcp_subcommand() {
+        let cli = parse(&["supp", "mcp"]).unwrap();
+        assert!(matches!(cli.command, Some(Commands::Mcp)));
+    }
+
+    #[test]
+    fn version_flag() {
+        let cli = parse(&["supp", "--version"]).unwrap();
+        assert!(cli.version_flag);
+    }
 }

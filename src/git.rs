@@ -1269,4 +1269,350 @@ mod tests {
             .unwrap();
         assert_eq!(map.get("file.txt"), Some(&FileStatus::Modified));
     }
+
+    // ── collect_untracked_files ──────────────────────────────────
+
+    #[test]
+    fn collect_untracked_basic() {
+        let dir = setup_test_repo();
+        fs::write(dir.path().join("new_file.txt"), "hello world").unwrap();
+        let (files, text) = collect_untracked_files(dir.path(), 10 * 1024 * 1024).unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path, "new_file.txt");
+        assert_eq!(files[0].status, DeltaStatus::Untracked);
+        assert!(files[0].additions > 0);
+        assert_eq!(files[0].deletions, 0);
+        assert!(text.contains("+hello world"));
+    }
+
+    #[test]
+    fn collect_untracked_large_file_skipped() {
+        let dir = setup_test_repo();
+        // Create file larger than the limit
+        fs::write(dir.path().join("big.txt"), "x".repeat(2000)).unwrap();
+        let (files, text) = collect_untracked_files(dir.path(), 1000).unwrap(); // limit = 1000 bytes
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path, "big.txt");
+        // File should be listed but with 0 additions (content skipped)
+        assert_eq!(files[0].additions, 0);
+        assert!(files[0].patch.is_empty());
+        assert!(!text.contains("+x")); // content not in the diff text
+    }
+
+    #[test]
+    fn collect_untracked_multiple_files() {
+        let dir = setup_test_repo();
+        fs::write(dir.path().join("a.txt"), "aaa").unwrap();
+        fs::write(dir.path().join("b.txt"), "bbb").unwrap();
+        let (files, _text) = collect_untracked_files(dir.path(), 10 * 1024 * 1024).unwrap();
+        assert_eq!(files.len(), 2);
+        let paths: Vec<&str> = files.iter().map(|f| f.path.as_str()).collect();
+        assert!(paths.contains(&"a.txt"));
+        assert!(paths.contains(&"b.txt"));
+    }
+
+    #[test]
+    fn collect_untracked_empty_repo() {
+        let dir = setup_test_repo();
+        let (files, text) = collect_untracked_files(dir.path(), 10 * 1024 * 1024).unwrap();
+        assert!(files.is_empty());
+        assert!(text.is_empty());
+    }
+
+    // ── DeltaStatus Debug ─────────────────────────────────────────
+
+    #[test]
+    fn delta_status_debug() {
+        assert_eq!(format!("{:?}", DeltaStatus::Added), "Added");
+        assert_eq!(format!("{:?}", DeltaStatus::Modified), "Modified");
+        assert_eq!(format!("{:?}", DeltaStatus::Deleted), "Deleted");
+        assert_eq!(format!("{:?}", DeltaStatus::Renamed), "Renamed");
+        assert_eq!(format!("{:?}", DeltaStatus::Untracked), "Untracked");
+    }
+
+    #[test]
+    fn delta_status_equality() {
+        assert_eq!(DeltaStatus::Added, DeltaStatus::Added);
+        assert_ne!(DeltaStatus::Added, DeltaStatus::Deleted);
+        assert_ne!(DeltaStatus::Modified, DeltaStatus::Renamed);
+    }
+
+    // ── get_diff unstaged changes ────────────────────────────────
+
+    #[test]
+    fn get_diff_unstaged_changes() {
+        let dir = setup_test_repo();
+        write_and_stage(dir.path(), "file.rs", "fn original() {}");
+        commit(dir.path(), "initial file");
+        // Modify without staging
+        fs::write(dir.path().join("file.rs"), "fn modified() {}").unwrap();
+        let mut opts = default_opts();
+        opts.tracked = true; // unstaged tracked changes
+        let result = get_diff(dir.path().to_str().unwrap(), opts, None).unwrap();
+        assert!(!result.files.is_empty());
+        assert!(result.text.contains("modified"));
+    }
+
+    // ── get_diff with context lines ──────────────────────────────
+
+    #[test]
+    fn get_diff_context_lines() {
+        let dir = setup_test_repo();
+        let content = "line1\nline2\nline3\nline4\nline5\nline6\nline7\n";
+        write_and_stage(dir.path(), "file.txt", content);
+        commit(dir.path(), "add file");
+        let modified = "line1\nline2\nCHANGED\nline4\nline5\nline6\nline7\n";
+        fs::write(dir.path().join("file.txt"), modified).unwrap();
+        run_git(dir.path(), &["add", "file.txt"]).unwrap();
+        let mut opts = default_opts();
+        opts.staged = true;
+        opts.context_lines = Some(1);
+        let result = get_diff(dir.path().to_str().unwrap(), opts, None).unwrap();
+        assert!(result.text.contains("CHANGED"));
+    }
+
+    // ── get_diff include_untracked ───────────────────────────────
+
+    #[test]
+    fn get_diff_includes_untracked() {
+        let dir = setup_test_repo();
+        fs::write(dir.path().join("untracked.rs"), "fn new_file() {}").unwrap();
+        let mut opts = default_opts();
+        opts.untracked = true;
+        opts.staged = true;
+        let result = get_diff(dir.path().to_str().unwrap(), opts, None).unwrap();
+        let paths: Vec<&str> = result.files.iter().map(|f| f.path.as_str()).collect();
+        assert!(
+            paths.contains(&"untracked.rs"),
+            "untracked files should be included"
+        );
+    }
+
+    // ── DiffOptions default ──────────────────────────────────────
+
+    #[test]
+    fn diff_options_default_values() {
+        let opts = DiffOptions::default();
+        assert!(!opts.staged);
+        assert!(!opts.untracked);
+        assert_eq!(opts.context_lines, None);
+    }
+
+    // ── status_map deleted file ──────────────────────────────────
+
+    #[test]
+    fn status_map_deleted_file() {
+        let dir = setup_test_repo();
+        write_and_stage(dir.path(), "to_delete.txt", "content");
+        commit(dir.path(), "add file");
+        fs::remove_file(dir.path().join("to_delete.txt")).unwrap();
+        let (map, _) = get_status_map(dir.path().to_str().unwrap())
+            .unwrap()
+            .unwrap();
+        assert_eq!(map.get("to_delete.txt"), Some(&FileStatus::Deleted));
+    }
+
+    // ── status_map staged new file ───────────────────────────────
+
+    #[test]
+    fn status_map_staged_new_file() {
+        let dir = setup_test_repo();
+        write_and_stage(dir.path(), "staged.txt", "new content");
+        let (map, _) = get_status_map(dir.path().to_str().unwrap())
+            .unwrap()
+            .unwrap();
+        assert_eq!(map.get("staged.txt"), Some(&FileStatus::Added));
+    }
+
+    // ── get_diff all mode ────────────────────────────────────────
+
+    #[test]
+    fn get_diff_all_combines_changes() {
+        let dir = setup_test_repo();
+        // Staged file
+        write_and_stage(dir.path(), "staged.rs", "fn staged() {}");
+        // Committed + unstaged modification
+        write_and_stage(dir.path(), "tracked.rs", "fn original() {}");
+        commit(dir.path(), "add files");
+        fs::write(dir.path().join("tracked.rs"), "fn modified() {}").unwrap();
+        // Untracked file
+        fs::write(dir.path().join("untracked.rs"), "fn new() {}").unwrap();
+
+        let mut opts = default_opts();
+        opts.all = true;
+        let result = get_diff(dir.path().to_str().unwrap(), opts, None).unwrap();
+        assert!(!result.files.is_empty());
+        assert_eq!(result.label, "All local changes");
+        assert!(!result.is_branch_comparison);
+    }
+
+    // ── get_diff staged with branch name ─────────────────────────
+
+    #[test]
+    fn get_diff_staged_shows_branch() {
+        let dir = setup_test_repo();
+        write_and_stage(dir.path(), "file.rs", "fn foo() {}");
+        let mut opts = default_opts();
+        opts.staged = true;
+        let result = get_diff(dir.path().to_str().unwrap(), opts, None).unwrap();
+        assert!(result.label.contains("Staged"));
+        assert!(!result.is_branch_comparison);
+    }
+
+    // ── get_diff not a git repo ──────────────────────────────────
+
+    #[test]
+    fn get_diff_not_git_repo() {
+        let dir = TempDir::new().unwrap();
+        let opts = default_opts();
+        let result = get_diff(dir.path().to_str().unwrap(), opts, None);
+        assert!(result.is_err());
+        let err = result.err().unwrap().to_string();
+        assert!(err.contains("not a git repository"), "got: {}", err);
+    }
+
+    // ── run_diff with deletions ──────────────────────────────────
+
+    #[test]
+    fn get_diff_tracks_deletions() {
+        let dir = setup_test_repo();
+        write_and_stage(dir.path(), "file.rs", "line1\nline2\nline3\n");
+        commit(dir.path(), "add file");
+        fs::write(dir.path().join("file.rs"), "line1\n").unwrap();
+        run_git(dir.path(), &["add", "file.rs"]).unwrap();
+        let mut opts = default_opts();
+        opts.staged = true;
+        let result = get_diff(dir.path().to_str().unwrap(), opts, None).unwrap();
+        assert!(!result.files.is_empty());
+        assert!(result.files[0].deletions > 0);
+    }
+
+    // ── discover_repo ────────────────────────────────────────────
+
+    #[test]
+    fn discover_repo_from_file_path() {
+        let dir = setup_test_repo();
+        let file_path = dir.path().join("test.txt");
+        fs::write(&file_path, "hello").unwrap();
+        let result = discover_repo(file_path.to_str().unwrap()).unwrap();
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn discover_repo_non_git() {
+        let dir = TempDir::new().unwrap();
+        let result = discover_repo(dir.path().to_str().unwrap()).unwrap();
+        assert!(result.is_none());
+    }
+
+    // ── open_repo ────────────────────────────────────────────────
+
+    #[test]
+    fn open_repo_valid() {
+        let dir = setup_test_repo();
+        assert!(open_repo(dir.path()).is_ok());
+    }
+
+    #[test]
+    fn open_repo_invalid() {
+        let dir = TempDir::new().unwrap();
+        assert!(open_repo(dir.path()).is_err());
+    }
+
+    // ── try_run_git ──────────────────────────────────────────────
+
+    #[test]
+    fn try_run_git_success() {
+        let dir = setup_test_repo();
+        let result = try_run_git(dir.path(), &["status"]);
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn try_run_git_failure() {
+        let dir = TempDir::new().unwrap();
+        let result = try_run_git(dir.path(), &["log"]); // no git repo
+        assert!(result.is_none());
+    }
+
+    // ── run_git error path ───────────────────────────────────────
+
+    #[test]
+    fn run_git_error_on_bad_command() {
+        let dir = setup_test_repo();
+        let result = run_git(dir.path(), &["nonexistent-subcommand"]);
+        assert!(result.is_err());
+    }
+
+    // ── FileEntry serialization ──────────────────────────────────
+
+    #[test]
+    fn file_entry_serialize() {
+        let entry = FileEntry {
+            path: "test.rs".to_string(),
+            old_path: Some("old_test.rs".to_string()),
+            status: DeltaStatus::Renamed,
+            additions: 5,
+            deletions: 3,
+            patch: "diff content".to_string(),
+        };
+        let json = serde_json::to_string(&entry).unwrap();
+        assert!(json.contains("test.rs"));
+        assert!(json.contains("old_test.rs"));
+        assert!(json.contains("Renamed"));
+    }
+
+    // ── DiffResult serialization ─────────────────────────────────
+
+    #[test]
+    fn diff_result_serialize() {
+        let result = DiffResult {
+            label: "test".to_string(),
+            files: vec![],
+            text: "".to_string(),
+            has_conflicts: false,
+            is_branch_comparison: false,
+            commit_count: Some(5),
+            stale_check: None,
+        };
+        let json = serde_json::to_string(&result).unwrap();
+        assert!(json.contains("\"label\":\"test\""));
+        assert!(json.contains("\"commit_count\":5"));
+        // stale_check should be skipped
+        assert!(!json.contains("stale_check"));
+    }
+
+    // ── FileStatus variants ──────────────────────────────────────
+
+    #[test]
+    fn file_status_debug_and_clone() {
+        let s = FileStatus::Modified;
+        let cloned = s;
+        assert_eq!(format!("{:?}", cloned), "Modified");
+        let s2 = FileStatus::Renamed;
+        assert_eq!(format!("{:?}", s2), "Renamed");
+    }
+
+    // ── get_diff with all + no changes ───────────────────────────
+
+    #[test]
+    fn get_diff_all_no_changes() {
+        let dir = setup_test_repo();
+        let mut opts = default_opts();
+        opts.all = true;
+        let result = get_diff(dir.path().to_str().unwrap(), opts, None).unwrap();
+        assert!(result.files.is_empty());
+    }
+
+    // ── split_diff with rename ───────────────────────────────────
+
+    #[test]
+    fn split_diff_with_fallback_to_minus() {
+        // Patch where +++ is /dev/null (deletion) — should fallback to --- a/ path
+        let diff = "diff --git a/old.rs b/old.rs\n--- a/old.rs\n+++ /dev/null\n-fn old() {}\n";
+        let result = split_diff_per_file(diff);
+        assert!(result.contains_key("old.rs"));
+        let (_, _, deletions) = &result["old.rs"];
+        assert_eq!(*deletions, 1);
+    }
 }

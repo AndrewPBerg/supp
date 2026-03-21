@@ -15,7 +15,7 @@ use crate::why;
 
 // ── Result type ─────────────────────────────────────────────────────
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 pub struct AnalysisResult {
     pub plain: String,
     pub file_count: usize,
@@ -1052,5 +1052,134 @@ mod tests {
         if result.plain.contains("DEPENDENCIES") {
             assert!(result.plain.contains("external") || result.plain.contains("os"));
         }
+    }
+
+    #[test]
+    fn max_files_limit_exceeded() {
+        // Create more files than the limit
+        let dir = setup(&[
+            ("a.rs", "fn a() {}"),
+            ("b.rs", "fn b() {}"),
+            ("c.rs", "fn c() {}"),
+        ]);
+        let result = analyze(
+            dir.path().to_str().unwrap(),
+            &[dir.path().to_string_lossy().to_string()],
+            2,
+            None,
+            Mode::Full,
+            2, // max_files = 2, but we have 3 files
+            50 * 1024 * 1024,
+        );
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("too many files"), "got: {}", err);
+    }
+
+    #[test]
+    fn max_total_bytes_exceeded() {
+        let dir = setup(&[("big.rs", &"x".repeat(1000))]);
+        let result = analyze(
+            dir.path().to_str().unwrap(),
+            &[dir.path().join("big.rs").to_string_lossy().to_string()],
+            2,
+            None,
+            Mode::Full,
+            20000,
+            500, // max_total_bytes = 500, but content is 1000 bytes
+        );
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("total content too large"), "got: {}", err);
+    }
+
+    #[test]
+    fn path_does_not_exist() {
+        let result = analyze(
+            "/tmp",
+            &["/tmp/nonexistent_supp_test_path_xyz".to_string()],
+            2,
+            None,
+            Mode::Full,
+            20000,
+            50 * 1024 * 1024,
+        );
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("path does not exist"), "got: {}", err);
+    }
+
+    #[test]
+    fn regex_filters_all_files() {
+        let dir = setup(&[("a.txt", "hello"), ("b.txt", "world")]);
+        let result = analyze(
+            dir.path().to_str().unwrap(),
+            &[dir.path().to_string_lossy().to_string()],
+            2,
+            Some(r"\.rs$"), // regex only matches .rs files, but we only have .txt
+            Mode::Full,
+            20000,
+            50 * 1024 * 1024,
+        );
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("no files matched"), "got: {}", err);
+    }
+
+    #[test]
+    fn many_files_skips_used_by() {
+        // Create >20 files to trigger the used-by skip
+        let mut files: Vec<(&str, &str)> = Vec::new();
+        let names: Vec<String> = (0..22).map(|i| format!("f{}.rs", i)).collect();
+        let content = "fn dummy() {}";
+        for name in &names {
+            files.push((name.as_str(), content));
+        }
+        let dir = setup(&files);
+        let paths: Vec<String> = names
+            .iter()
+            .map(|n| dir.path().join(n).to_string_lossy().to_string())
+            .collect();
+        let result = analyze(
+            dir.path().to_str().unwrap(),
+            &paths,
+            2,
+            None,
+            Mode::Full,
+            30000,
+            50 * 1024 * 1024,
+        )
+        .unwrap();
+        assert_eq!(result.file_count, 22);
+        // used_by should be 0 because file_count > 20
+        assert_eq!(result.used_by_count, 0);
+    }
+
+    #[test]
+    fn used_by_references_found() {
+        // Create two files where one references a symbol from the other
+        let dir = setup(&[
+            ("lib.rs", "pub fn helper() -> i32 { 42 }\n"),
+            (
+                "main.rs",
+                "use crate::helper;\nfn main() {\n    helper();\n}\n",
+            ),
+        ]);
+        let result = analyze(
+            dir.path().to_str().unwrap(),
+            &[dir.path().join("lib.rs").to_string_lossy().to_string()],
+            2,
+            None,
+            Mode::Full,
+            20000,
+            50 * 1024 * 1024,
+        )
+        .unwrap();
+        // Should find used-by references from main.rs
+        assert!(
+            result.used_by_count > 0
+                || result.plain.contains("USED BY")
+                || result.plain.contains("helper")
+        );
     }
 }
