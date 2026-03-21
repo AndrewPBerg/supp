@@ -23,3 +23,7 @@
 - [x] `--json` flag — machine-readable JSON output across all commands for editor/IDE integrations
 - [x] Smarter hierarchy — multi-level inheritance chains, mixin/trait resolution
 - [x] Pipe-friendly output — detect `| pipe` and skip color/clipboard automatically
+
+## TODO
+- [ ] Upgrade wording and prompting around supp -mapping, context, and symbols
+- [ ] make base `supp` dfeault to `.` path
