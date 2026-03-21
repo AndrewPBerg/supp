@@ -14,6 +14,7 @@ supp [-n] tree [PATH] [OPTIONS]
 |------|-------|-------------|
 | `--no-copy` | `-n` | Show tree only, skip clipboard copy |
 | `--no-color` | | Disable colored output |
+| `--json` | | Output as JSON (machine-readable) |
 | `--regex` | `-r` | Regex pattern to filter file paths |
 
 ## Options
@@ -44,7 +45,7 @@ supp [-n] tree [PATH] [OPTIONS]
   2 directories, 10 files (5 modified, 2 added)
 
   ✓ Copied to clipboard (268 B)
-  ≈ ~81 tokens (cl100k est.)
+  ≈ ~81 tokens (est.)
 ```
 
-An estimated token count (using `cl100k_base`) is always shown. With `-n`, the clipboard step is skipped.
+An estimated token count (bytes / 3.5) is always shown. With `-n`, the clipboard step is skipped.

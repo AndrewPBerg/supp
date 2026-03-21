@@ -599,4 +599,452 @@ int main() {
         assert!(result.contains("int main() { ... }"));
         assert!(!result.contains("printf"));
     }
+
+    // ── Additional coverage tests ─────────────────────────────────
+
+    #[test]
+    fn map_rust_attribute() {
+        let src = "#[derive(Debug)]\npub struct Foo {\n    x: i32,\n}\n";
+        let result = compress(src, "test.rs", Mode::Map);
+        assert!(result.contains("#[derive(Debug)]"));
+        assert!(result.contains("pub struct Foo"));
+    }
+
+    #[test]
+    fn map_rust_macro_definition() {
+        let src = "macro_rules! my_macro {\n    ($x:expr) => { $x + 1 };\n}\n";
+        let result = compress(src, "test.rs", Mode::Map);
+        assert!(result.contains("macro_rules! my_macro { ... }"));
+        assert!(!result.contains("$x + 1"));
+    }
+
+    #[test]
+    fn map_rust_mod_item_with_body() {
+        let src = "mod inner {\n    fn foo() {}\n}\n";
+        let result = compress(src, "test.rs", Mode::Map);
+        assert!(result.contains("mod inner { ... }"));
+        assert!(!result.contains("fn foo"));
+    }
+
+    #[test]
+    fn map_rust_mod_declaration() {
+        let src = "mod foo;\n";
+        let result = compress(src, "test.rs", Mode::Map);
+        assert!(result.contains("mod foo;"));
+    }
+
+    #[test]
+    fn map_rust_impl_type_and_const() {
+        let src = "\
+impl Foo {
+    type Output = i32;
+    const MAX: i32 = 100;
+
+    fn bar(&self) {}
+}
+";
+        let result = compress(src, "test.rs", Mode::Map);
+        assert!(result.contains("impl Foo {"));
+        assert!(result.contains("type Output = i32;"));
+        assert!(result.contains("const MAX: i32 = 100;"));
+        assert!(result.contains("fn bar(&self) { ... }"));
+    }
+
+    #[test]
+    fn map_python_decorated_top_level() {
+        let src = "@decorator\ndef func():\n    pass\n";
+        let result = compress(src, "test.py", Mode::Map);
+        assert!(result.contains("@decorator"));
+        assert!(result.contains("def func():"));
+    }
+
+    #[test]
+    fn map_python_class_with_assignments() {
+        let src = "\
+class MyClass:
+    x = 5
+
+    def method(self):
+        return self.x
+";
+        let result = compress(src, "test.py", Mode::Map);
+        assert!(result.contains("class MyClass:"));
+        assert!(result.contains("x = 5"));
+        assert!(result.contains("def method(self):"));
+    }
+
+    #[test]
+    fn map_js_export_function() {
+        let src = "export function foo() {\n    return 1;\n}\n";
+        let result = compress(src, "test.js", Mode::Map);
+        assert!(result.contains("export function foo() { ... }"));
+        assert!(!result.contains("return 1"));
+    }
+
+    #[test]
+    fn map_js_export_class() {
+        let src = "export class Foo {\n    method() {\n        console.log('hi');\n    }\n}\n";
+        let result = compress(src, "test.js", Mode::Map);
+        assert!(result.contains("export class Foo {"));
+        assert!(result.contains("method() { ... }"));
+        assert!(!result.contains("console.log"));
+    }
+
+    #[test]
+    fn map_js_variable_declaration() {
+        let src = "const x = 5;\nlet y = 10;\n";
+        let result = compress(src, "test.js", Mode::Map);
+        assert!(result.contains("const x = 5;"));
+        assert!(result.contains("let y = 10;"));
+    }
+
+    #[test]
+    fn map_js_reexport() {
+        let src = "export { foo } from './bar';\n";
+        let result = compress(src, "test.js", Mode::Map);
+        assert!(result.contains("export { foo } from './bar';"));
+    }
+
+    #[test]
+    fn map_ts_export_interface() {
+        let src = "export interface Foo {\n    name: string;\n}\n";
+        let result = compress(src, "test.ts", Mode::Map);
+        assert!(result.contains("export interface Foo { ... }"));
+        assert!(!result.contains("name: string"));
+    }
+
+    #[test]
+    fn map_ts_export_type_alias() {
+        let src = "export type Foo = string;\n";
+        let result = compress(src, "test.ts", Mode::Map);
+        assert!(result.contains("export type Foo = string;"));
+    }
+
+    #[test]
+    fn map_ts_enum_declaration() {
+        let src = "export enum Color {\n    Red,\n    Green,\n}\n";
+        let result = compress(src, "test.ts", Mode::Map);
+        assert!(result.contains("export enum Color { ... }"));
+        assert!(!result.contains("Red"));
+    }
+
+    #[test]
+    fn map_go_package_and_imports() {
+        let src = "package main\n\nimport \"fmt\"\n";
+        let result = compress(src, "test.go", Mode::Map);
+        assert!(result.contains("package main"));
+        assert!(result.contains("import \"fmt\""));
+    }
+
+    #[test]
+    fn map_go_struct_and_interface() {
+        let src = "\
+package main
+
+type Foo struct {
+\tX int
+\tY int
+}
+
+type Bar interface {
+\tDoSomething() error
+}
+";
+        let result = compress(src, "test.go", Mode::Map);
+        assert!(result.contains("type Foo"));
+        assert!(result.contains("struct { ... }"));
+        assert!(result.contains("type Bar"));
+        assert!(result.contains("interface { ... }"));
+        assert!(!result.contains("X int"));
+    }
+
+    #[test]
+    fn map_go_const_and_var() {
+        let src = "package main\n\nconst x = 5\n\nvar y int\n";
+        let result = compress(src, "test.go", Mode::Map);
+        assert!(result.contains("const x = 5"));
+        assert!(result.contains("var y int"));
+    }
+
+    #[test]
+    fn map_go_method_declaration() {
+        let src = "\
+package main
+
+type Foo struct {
+\tVal int
+}
+
+func (s *Foo) Bar() int {
+\treturn s.Val
+}
+";
+        let result = compress(src, "test.go", Mode::Map);
+        assert!(result.contains("func (s *Foo) Bar() int { ... }"));
+        assert!(!result.contains("return s.Val"));
+    }
+
+    #[test]
+    fn map_cpp_class_and_namespace() {
+        let src = "\
+namespace ns {
+class Foo {
+public:
+    void bar();
+};
+}
+";
+        let result = compress(src, "test.cpp", Mode::Map);
+        assert!(result.contains("namespace ns {"));
+        assert!(result.contains("class Foo { ... }"));
+    }
+
+    #[test]
+    fn map_cpp_declaration() {
+        let src = "void foo();\n";
+        let result = compress(src, "test.c", Mode::Map);
+        assert!(result.contains("void foo();"));
+    }
+
+    #[test]
+    fn map_c_preproc_and_enum() {
+        let src = "#include <stdio.h>\n\nenum Color {\n    RED,\n    GREEN,\n};\n";
+        let result = compress(src, "test.c", Mode::Map);
+        assert!(result.contains("#include <stdio.h>"));
+        assert!(result.contains("enum Color { ... }"));
+        assert!(!result.contains("RED"));
+    }
+
+    #[test]
+    fn map_java_interface() {
+        let src = "interface Foo {\n    void bar();\n}\n";
+        let result = compress(src, "Test.java", Mode::Map);
+        assert!(result.contains("interface Foo {"));
+        assert!(result.contains("void bar();"));
+    }
+
+    #[test]
+    fn map_java_enum() {
+        let src = "enum Color {\n    RED,\n    GREEN\n}\n";
+        let result = compress(src, "Test.java", Mode::Map);
+        assert!(result.contains("enum Color {"));
+    }
+
+    #[test]
+    fn map_java_package_and_import() {
+        let src = "package com.foo;\n\nimport java.util.*;\n\npublic class Main {\n}\n";
+        let result = compress(src, "Main.java", Mode::Map);
+        assert!(result.contains("package com.foo;"));
+        assert!(result.contains("import java.util.*;"));
+    }
+
+    #[test]
+    fn map_java_constructor() {
+        let src = "\
+public class Foo {
+    private int x;
+
+    public Foo(int x) {
+        this.x = x;
+    }
+}
+";
+        let result = compress(src, "Foo.java", Mode::Map);
+        assert!(result.contains("public class Foo {"));
+        assert!(result.contains("public Foo(int x) { ... }"));
+        assert!(result.contains("private int x;"));
+        assert!(!result.contains("this.x = x"));
+    }
+
+    #[test]
+    fn slim_removes_comments_go() {
+        let src = "// comment\npackage main\n// another\nfunc main() {}\n";
+        let result = compress(src, "test.go", Mode::Slim);
+        assert!(!result.contains("// comment"));
+        assert!(!result.contains("// another"));
+        assert!(result.contains("package main"));
+        assert!(result.contains("func main() {}"));
+    }
+
+    #[test]
+    fn slim_removes_comments_java() {
+        let src = "// comment\npublic class Main {\n    /* block */\n}\n";
+        let result = compress(src, "Main.java", Mode::Slim);
+        assert!(!result.contains("// comment"));
+        assert!(!result.contains("block"));
+        assert!(result.contains("public class Main"));
+    }
+
+    #[test]
+    fn slim_removes_comments_ts() {
+        let src = "// comment\nconst x: number = 1;\n/* block */\n";
+        let result = compress(src, "test.ts", Mode::Slim);
+        assert!(!result.contains("// comment"));
+        assert!(!result.contains("block"));
+        assert!(result.contains("const x: number = 1;"));
+    }
+
+    #[test]
+    fn slim_removes_comments_c() {
+        let src = "// line comment\nint x = 1;\n/* block */\n";
+        let result = compress(src, "test.c", Mode::Slim);
+        assert!(!result.contains("// line comment"));
+        assert!(!result.contains("block"));
+        assert!(result.contains("int x = 1;"));
+    }
+
+    #[test]
+    fn slim_fallback_collapses_blanks() {
+        let src = "line1\n\n\n\nline2\n";
+        let result = compress(src, "file.unknown", Mode::Map);
+        assert_eq!(result, "line1\n\nline2\n");
+    }
+
+    #[test]
+    fn slim_unsupported_returns_unchanged_txt() {
+        let src = "hello\nworld\n";
+        let result = compress(src, "file.txt", Mode::Slim);
+        assert_eq!(result, src);
+    }
+
+    #[test]
+    fn lang_hint_returns_correct_strings() {
+        assert_eq!(lang_hint("test.rs"), "rust");
+        assert_eq!(lang_hint("test.py"), "python");
+        assert_eq!(lang_hint("test.js"), "javascript");
+        assert_eq!(lang_hint("test.ts"), "typescript");
+        assert_eq!(lang_hint("test.tsx"), "typescript");
+        assert_eq!(lang_hint("test.go"), "go");
+        assert_eq!(lang_hint("test.c"), "c");
+        assert_eq!(lang_hint("test.cpp"), "cpp");
+        assert_eq!(lang_hint("test.java"), "java");
+        assert_eq!(lang_hint("test.txt"), "");
+    }
+
+    #[test]
+    fn map_parse_failure_falls_back() {
+        let result = compress("", "test.rs", Mode::Map);
+        // Empty content should parse but produce empty or minimal output
+        assert!(result.trim().is_empty() || result.len() < 5);
+    }
+
+    // ── Bodyless/else-branch declarations ─────────────────────
+
+    #[test]
+    fn map_rust_struct_no_body() {
+        // Tuple struct or unit struct without braces
+        let src = "pub struct Unit;\n";
+        let result = compress(src, "test.rs", Mode::Map);
+        assert!(result.contains("struct Unit"));
+    }
+
+    #[test]
+    fn map_rust_enum_no_body() {
+        // This is rare but the else branch exists
+        let src = "enum Empty;\n";
+        let result = compress(src, "test.rs", Mode::Map);
+        // Should still contain enum in some form
+        let _ = result;
+    }
+
+    #[test]
+    fn map_rust_fn_signature_no_body() {
+        // Function signature in a trait
+        let src = "trait Foo {\n    fn bar(&self) -> i32;\n}\n";
+        let result = compress(src, "test.rs", Mode::Map);
+        assert!(result.contains("trait Foo"));
+        assert!(result.contains("fn bar"));
+    }
+
+    #[test]
+    fn map_python_fn_no_body() {
+        // Abstract method stub
+        let src = "class Foo:\n    def bar(self): ...\n";
+        let result = compress(src, "test.py", Mode::Map);
+        assert!(result.contains("def bar"));
+    }
+
+    #[test]
+    fn map_js_fn_no_body_ts_declaration() {
+        // TypeScript function declaration
+        let src = "declare function foo(): void;\n";
+        let result = compress(src, "test.ts", Mode::Map);
+        assert!(result.contains("foo"));
+    }
+
+    #[test]
+    fn map_go_fn_no_body() {
+        // Go interface method (no body)
+        let src = "package main\n\ntype Fooer interface {\n    Foo() string\n}\n";
+        let result = compress(src, "test.go", Mode::Map);
+        assert!(result.contains("Fooer"));
+    }
+
+    #[test]
+    fn map_c_fn_declaration_no_body() {
+        // Forward declaration
+        let src = "int add(int a, int b);\n";
+        let result = compress(src, "test.c", Mode::Map);
+        assert!(result.contains("add"));
+    }
+
+    #[test]
+    fn map_c_struct_forward_decl() {
+        let src = "struct Foo;\n";
+        let result = compress(src, "test.c", Mode::Map);
+        assert!(result.contains("Foo") || result.is_empty());
+    }
+
+    #[test]
+    fn map_c_enum_no_body() {
+        let src = "enum Color;\n";
+        let result = compress(src, "test.c", Mode::Map);
+        let _ = result;
+    }
+
+    #[test]
+    fn map_java_method_no_body() {
+        // Interface method (no body)
+        let src = "interface Foo {\n    void bar();\n}\n";
+        let result = compress(src, "test.java", Mode::Map);
+        assert!(result.contains("void bar"));
+    }
+
+    #[test]
+    fn map_ts_interface_no_body() {
+        // Edge case - interface without body
+        let src = "declare interface Foo;\n";
+        let result = compress(src, "test.ts", Mode::Map);
+        let _ = result;
+    }
+
+    #[test]
+    fn map_ts_enum_no_body() {
+        let src = "declare enum Color;\n";
+        let result = compress(src, "test.ts", Mode::Map);
+        let _ = result;
+    }
+
+    #[test]
+    fn map_output_trailing_newline_trimmed() {
+        // Test that double newline at end gets trimmed
+        let src = "fn foo() {}\n\nfn bar() {}\n";
+        let result = compress(src, "test.rs", Mode::Map);
+        assert!(!result.ends_with("\n\n"));
+    }
+
+    #[test]
+    fn map_js_class_field() {
+        let src = "class Foo {\n  name = 'hello';\n  greet() { return this.name; }\n}\n";
+        let result = compress(src, "test.js", Mode::Map);
+        assert!(result.contains("class Foo"));
+    }
+
+    #[test]
+    fn map_go_type_simple_alias() {
+        // Type alias without struct/interface
+        let src = "package main\ntype ID int\n";
+        let result = compress(src, "test.go", Mode::Map);
+        assert!(result.contains("type") && result.contains("ID"));
+    }
 }

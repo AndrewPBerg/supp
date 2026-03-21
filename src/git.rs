@@ -4,8 +4,9 @@ use std::process::Command;
 use std::sync::mpsc;
 
 use anyhow::{Result, anyhow};
+use serde::Serialize;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 pub enum FileStatus {
     Modified,
     Added,
@@ -14,7 +15,7 @@ pub enum FileStatus {
     Untracked,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 pub enum DeltaStatus {
     Added,
     Deleted,
@@ -50,6 +51,7 @@ impl Default for DiffOptions {
     }
 }
 
+#[derive(Serialize)]
 pub struct FileEntry {
     pub path: String,
     pub old_path: Option<String>,
@@ -59,6 +61,7 @@ pub struct FileEntry {
     pub patch: String,
 }
 
+#[derive(Serialize)]
 pub struct DiffResult {
     pub label: String,
     pub files: Vec<FileEntry>,
@@ -66,6 +69,7 @@ pub struct DiffResult {
     pub has_conflicts: bool,
     pub is_branch_comparison: bool,
     pub commit_count: Option<usize>,
+    #[serde(skip)]
     pub stale_check: Option<mpsc::Receiver<bool>>,
 }
 
@@ -1006,5 +1010,263 @@ mod tests {
         let result = get_diff(dir.path().to_str().unwrap(), opts, Some(r"\.rs$")).unwrap();
         assert_eq!(result.files.len(), 1);
         assert_eq!(result.files[0].path, "main.rs");
+    }
+
+    // ── DiffOptions defaults ──────────────────────────────────
+
+    #[test]
+    fn diff_options_default_all_false() {
+        let opts = default_opts();
+        assert!(!opts.untracked);
+        assert!(!opts.tracked);
+        assert!(!opts.staged);
+        assert!(!opts.local);
+        assert!(!opts.all);
+        assert!(opts.branch.is_none());
+        assert!(opts.context_lines.is_none());
+    }
+
+    // ── get_diff with context lines ────────────────────────────
+
+    #[test]
+    fn get_diff_staged_with_context_lines() {
+        let dir = setup_test_repo();
+        write_and_stage(dir.path(), "file.txt", "line1\nline2\nline3\n");
+        commit(dir.path(), "add file");
+
+        write_and_stage(dir.path(), "file.txt", "line1\nmodified\nline3\n");
+        let mut opts = default_opts();
+        opts.staged = true;
+        opts.context_lines = Some(0);
+        let result = get_diff(dir.path().to_str().unwrap(), opts, None).unwrap();
+        assert!(!result.files.is_empty());
+    }
+
+    // ── collect_untracked ────────────────────────────────────────
+
+    #[test]
+    fn collect_untracked_top_level() {
+        let dir = setup_test_repo();
+        fs::write(dir.path().join("new.txt"), "content").unwrap();
+        let (files, text) = collect_untracked_files(dir.path(), 10 * 1024 * 1024).unwrap();
+        assert!(files.iter().any(|f| f.path.contains("new.txt")));
+        assert!(!text.is_empty());
+    }
+
+    // ── get_diff with regex ────────────────────────────────────
+
+    #[test]
+    fn get_diff_staged_with_regex() {
+        let dir = setup_test_repo();
+        write_and_stage(dir.path(), "src/main.rs", "fn main() {}");
+        write_and_stage(dir.path(), "src/lib.rs", "fn lib() {}");
+        write_and_stage(dir.path(), "docs/readme.md", "# readme");
+        let mut opts = default_opts();
+        opts.staged = true;
+        let result = get_diff(dir.path().to_str().unwrap(), opts, Some(r"main")).unwrap();
+        assert_eq!(result.files.len(), 1);
+        assert!(result.files[0].path.contains("main"));
+    }
+
+    // ── status_map with staged deleted ─────────────────────────
+
+    #[test]
+    fn status_map_with_staged_deleted() {
+        let dir = setup_test_repo();
+        write_and_stage(dir.path(), "to_delete.txt", "content");
+        commit(dir.path(), "add file");
+        // Stage the deletion
+        fs::remove_file(dir.path().join("to_delete.txt")).unwrap();
+        run_git(dir.path(), &["add", "to_delete.txt"]).unwrap();
+        let (map, _) = get_status_map(dir.path().to_str().unwrap())
+            .unwrap()
+            .unwrap();
+        assert_eq!(map.get("to_delete.txt"), Some(&FileStatus::Deleted));
+    }
+
+    // ── get_diff all mode ──────────────────────────────────────
+
+    #[test]
+    fn get_diff_all_empty_repo() {
+        let dir = setup_test_repo();
+        let mut opts = default_opts();
+        opts.all = true;
+        let result = get_diff(dir.path().to_str().unwrap(), opts, None).unwrap();
+        assert!(result.files.is_empty());
+    }
+
+    // ── parse_name_status ─────────────────────────────────────
+
+    #[test]
+    fn parse_name_status_added() {
+        let out = "A\tsrc/main.rs\n";
+        let result = parse_name_status(out);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].0, DeltaStatus::Added);
+        assert_eq!(result[0].1, "src/main.rs");
+        assert!(result[0].2.is_none());
+    }
+
+    #[test]
+    fn parse_name_status_deleted() {
+        let out = "D\told.rs\n";
+        let result = parse_name_status(out);
+        assert_eq!(result[0].0, DeltaStatus::Deleted);
+    }
+
+    #[test]
+    fn parse_name_status_modified() {
+        let out = "M\tlib.rs\n";
+        let result = parse_name_status(out);
+        assert_eq!(result[0].0, DeltaStatus::Modified);
+    }
+
+    #[test]
+    fn parse_name_status_renamed() {
+        let out = "R100\told.rs\tnew.rs\n";
+        let result = parse_name_status(out);
+        assert_eq!(result[0].0, DeltaStatus::Renamed);
+        assert_eq!(result[0].1, "new.rs");
+        assert_eq!(result[0].2.as_deref(), Some("old.rs"));
+    }
+
+    #[test]
+    fn parse_name_status_copied() {
+        let out = "C100\toriginal.rs\tcopy.rs\n";
+        let result = parse_name_status(out);
+        assert_eq!(result[0].0, DeltaStatus::Copied);
+        assert_eq!(result[0].1, "copy.rs");
+        assert_eq!(result[0].2.as_deref(), Some("original.rs"));
+    }
+
+    #[test]
+    fn parse_name_status_multiple() {
+        let out = "A\ta.rs\nM\tb.rs\nD\tc.rs\n";
+        let result = parse_name_status(out);
+        assert_eq!(result.len(), 3);
+    }
+
+    #[test]
+    fn parse_name_status_unknown_skipped() {
+        let out = "X\tunknown.rs\n";
+        let result = parse_name_status(out);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn parse_name_status_empty() {
+        let result = parse_name_status("");
+        assert!(result.is_empty());
+    }
+
+    // ── split_diff_per_file ───────────────────────────────────
+
+    #[test]
+    fn split_diff_empty() {
+        let result = split_diff_per_file("");
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn split_diff_single_file() {
+        let diff = "diff --git a/foo.rs b/foo.rs\n--- a/foo.rs\n+++ b/foo.rs\n@@ -1,1 +1,2 @@\n line1\n+line2\n";
+        let result = split_diff_per_file(diff);
+        assert_eq!(result.len(), 1);
+        let (patch, additions, deletions) = result.get("foo.rs").unwrap();
+        assert_eq!(*additions, 1);
+        assert_eq!(*deletions, 0);
+        assert!(patch.contains("diff --git"));
+    }
+
+    #[test]
+    fn split_diff_multiple_files() {
+        let diff = "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n-old\n+new\ndiff --git a/b.rs b/b.rs\n--- a/b.rs\n+++ b/b.rs\n@@ -1 +1 @@\n-x\n+y\n";
+        let result = split_diff_per_file(diff);
+        assert_eq!(result.len(), 2);
+        assert!(result.contains_key("a.rs"));
+        assert!(result.contains_key("b.rs"));
+    }
+
+    #[test]
+    fn split_diff_counts_additions_deletions() {
+        let diff = "diff --git a/f.rs b/f.rs\n--- a/f.rs\n+++ b/f.rs\n@@ -1,3 +1,3 @@\n-line1\n-line2\n+new1\n+new2\n+new3\n";
+        let result = split_diff_per_file(diff);
+        let (_, additions, deletions) = result.get("f.rs").unwrap();
+        assert_eq!(*additions, 3);
+        assert_eq!(*deletions, 2);
+    }
+
+    // ── apply_regex_filter ────────────────────────────────────
+
+    #[test]
+    fn apply_regex_filter_matches() {
+        let files = vec![
+            FileEntry {
+                path: "src/main.rs".to_string(),
+                old_path: None,
+                status: DeltaStatus::Modified,
+                additions: 1,
+                deletions: 0,
+                patch: String::new(),
+            },
+            FileEntry {
+                path: "docs/readme.md".to_string(),
+                old_path: None,
+                status: DeltaStatus::Added,
+                additions: 1,
+                deletions: 0,
+                patch: String::new(),
+            },
+        ];
+        let result = apply_regex_filter(files, r"\.rs$").unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].path, "src/main.rs");
+    }
+
+    #[test]
+    fn apply_regex_filter_invalid_pattern() {
+        let result = apply_regex_filter(vec![], r"[invalid");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn apply_regex_filter_no_matches() {
+        let files = vec![FileEntry {
+            path: "foo.txt".to_string(),
+            old_path: None,
+            status: DeltaStatus::Added,
+            additions: 0,
+            deletions: 0,
+            patch: String::new(),
+        }];
+        let result = apply_regex_filter(files, r"\.rs$").unwrap();
+        assert!(result.is_empty());
+    }
+
+    // ── get_diff modes ────────────────────────────────────────
+
+    #[test]
+    fn get_diff_with_regex_filters_results() {
+        let dir = setup_test_repo();
+        write_and_stage(dir.path(), "foo.rs", "fn foo() {}");
+        write_and_stage(dir.path(), "bar.md", "# bar");
+        let mut opts = default_opts();
+        opts.staged = true;
+        let result = get_diff(dir.path().to_str().unwrap(), opts, Some(r"\.rs$")).unwrap();
+        assert!(result.files.iter().all(|f| f.path.ends_with(".rs")));
+    }
+
+    // ── status_map edge cases ─────────────────────────────────
+
+    #[test]
+    fn status_map_modified_file() {
+        let dir = setup_test_repo();
+        write_and_stage(dir.path(), "file.txt", "original");
+        commit(dir.path(), "add file");
+        fs::write(dir.path().join("file.txt"), "modified").unwrap();
+        let (map, _) = get_status_map(dir.path().to_str().unwrap())
+            .unwrap()
+            .unwrap();
+        assert_eq!(map.get("file.txt"), Some(&FileStatus::Modified));
     }
 }

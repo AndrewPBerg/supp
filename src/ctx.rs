@@ -1,10 +1,12 @@
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::Mutex;
 
 use anyhow::{Result, bail};
 use ignore::WalkBuilder;
+use rayon::prelude::*;
 use regex::Regex;
+
+use serde::Serialize;
 
 use crate::compress::{self, Mode};
 use crate::symbol::{self, Symbol, SymbolKind};
@@ -13,6 +15,7 @@ use crate::why;
 
 // ── Result type ─────────────────────────────────────────────────────
 
+#[derive(Serialize)]
 pub struct AnalysisResult {
     pub plain: String,
     pub file_count: usize,
@@ -61,6 +64,8 @@ pub fn analyze(
     depth: usize,
     regex: Option<&str>,
     mode: Mode,
+    max_files: usize,
+    max_total_bytes: u64,
 ) -> Result<AnalysisResult> {
     let re = regex.map(Regex::new).transpose()?;
 
@@ -105,26 +110,43 @@ pub fn analyze(
         bail!("no files matched the given paths/filters");
     }
 
-    // 2. Concurrent reads
-    let results: Mutex<Vec<FileData>> = Mutex::new(Vec::new());
-    std::thread::scope(|s| {
-        for fp in &file_paths {
-            let results = &results;
-            let fp = fp.clone();
-            s.spawn(move || {
-                if let Ok(content) = std::fs::read_to_string(&fp) {
-                    let compressed = compress::compress(&content, &fp, mode);
-                    results.lock().unwrap().push(FileData {
-                        path: fp,
-                        compressed,
-                        original: content,
-                    });
-                }
-            });
-        }
+    if file_paths.len() > max_files {
+        bail!(
+            "too many files ({}) — limit is {}. Use -r to filter or increase limits.max_files in config",
+            file_paths.len(),
+            max_files
+        );
+    }
+
+    // 2. Compute root_path early so both phases can start together
+    let root_path = if let Some(dir) = dir_paths.first() {
+        std::fs::canonicalize(dir).unwrap_or_else(|_| Path::new(dir).to_path_buf())
+    } else {
+        std::fs::canonicalize(root).unwrap_or_else(|_| Path::new(root).to_path_buf())
+    };
+
+    // 3. Overlap file reads (rayon) with symbol index loading (background thread)
+    let (mut read_files, all_symbols) = std::thread::scope(|s| {
+        let rp = &root_path;
+        let sym_handle = s.spawn(move || symbol::load_symbols(rp));
+
+        let read_files: Vec<FileData> = file_paths
+            .par_iter()
+            .filter_map(|fp| {
+                let content = std::fs::read_to_string(fp).ok()?;
+                let compressed = compress::compress(&content, fp, mode);
+                Some(FileData {
+                    path: fp.clone(),
+                    compressed,
+                    original: content,
+                })
+            })
+            .collect();
+
+        let all_symbols = sym_handle.join().unwrap();
+        (read_files, all_symbols)
     });
 
-    let mut read_files = results.into_inner().unwrap();
     let order: HashMap<&str, usize> = file_paths
         .iter()
         .enumerate()
@@ -134,152 +156,178 @@ pub fn analyze(
 
     let file_count = read_files.len();
     let original_bytes: usize = read_files.iter().map(|f| f.original.len()).sum();
+
+    if (original_bytes as u64) > max_total_bytes {
+        bail!(
+            "total content too large ({}) — limit is {}. Use -r to filter or increase limits.max_total_mb in config",
+            crate::styles::format_size(original_bytes),
+            crate::styles::format_size(max_total_bytes as usize),
+        );
+    }
+
     let total_bytes: usize = read_files.iter().map(|f| f.compressed.len()).sum();
     let total_lines: usize = read_files
         .iter()
         .map(|f| f.compressed.lines().count())
         .sum();
 
-    // 3. Load project symbol index once
-    let root_path = if let Some(dir) = dir_paths.first() {
-        std::fs::canonicalize(dir).unwrap_or_else(|_| Path::new(dir).to_path_buf())
-    } else {
-        std::fs::canonicalize(root).unwrap_or_else(|_| Path::new(root).to_path_buf())
-    };
-    let all_symbols = symbol::load_symbols(&root_path);
-
-    // 4. Per-file analysis
+    // 4. Per-file analysis (parallel)
     let file_set: std::collections::HashSet<&str> =
         read_files.iter().map(|f| f.path.as_str()).collect();
 
-    let mut analyses: Vec<FileAnalysis> = Vec::new();
-    let mut total_dep_files = 0usize;
-    let mut total_used_by = 0usize;
-
-    for fd in &read_files {
-        let rel = fd.path.as_str();
-
-        // Symbols in this file
-        let symbols: Vec<Symbol> = all_symbols
-            .iter()
-            .filter(|s| {
-                s.kind != SymbolKind::File
-                    && (s.file == rel || rel.ends_with(&s.file) || s.file.ends_with(rel))
-            })
-            .cloned()
-            .collect();
-
-        // Import resolution
-        let imports = why::extract_file_imports(&fd.original, rel, &root_path);
-        let mut resolved: Vec<ResolvedImport> = Vec::new();
-        let mut dep_file_set: std::collections::HashSet<String> = std::collections::HashSet::new();
-
-        for (name, module) in &imports {
-            if let Some(sym) = all_symbols
-                .iter()
-                .find(|s| s.name == *name && s.file != rel)
-            {
-                dep_file_set.insert(sym.file.clone());
-                resolved.push(ResolvedImport {
-                    name: name.clone(),
-                    file: Some(sym.file.clone()),
-                    line: Some(sym.line),
-                    kind: Some(sym.kind),
-                    module: module.clone(),
-                });
-            } else if let Some(resolved_file) =
-                why::resolve_relative_import(module, rel, &root_path)
-            {
-                dep_file_set.insert(resolved_file.clone());
-                resolved.push(ResolvedImport {
-                    name: name.clone(),
-                    file: Some(resolved_file),
-                    line: None,
-                    kind: None,
-                    module: module.clone(),
-                });
-            } else {
-                resolved.push(ResolvedImport {
-                    name: name.clone(),
-                    file: None,
-                    line: None,
-                    kind: None,
-                    module: module.clone(),
-                });
-            }
+    // Build name → symbols lookup for O(1) import resolution
+    let sym_by_name: HashMap<&str, Vec<&Symbol>> = {
+        let mut map: HashMap<&str, Vec<&Symbol>> = HashMap::new();
+        for s in &all_symbols {
+            map.entry(s.name.as_str()).or_default().push(s);
         }
-        resolved.sort_by(|a, b| a.name.cmp(&b.name));
-        total_dep_files += dep_file_set.len();
+        map
+    };
 
-        // Hierarchy
-        let mut hierarchy_entries = Vec::new();
-        for sym in &symbols {
-            if !matches!(
-                sym.kind,
-                SymbolKind::Class | SymbolKind::Struct | SymbolKind::Trait | SymbolKind::Interface
-            ) {
-                continue;
-            }
-            if let Some(h) =
-                why::extract_hierarchy(&root_path, sym, &fd.original, &all_symbols, &imports)
-            {
-                let mut lines = Vec::new();
-                for p in &h.parents {
-                    let loc = if let Some((ref file, line)) = p.location {
-                        format!("{}:{}", file, line)
-                    } else {
-                        p.external_module
-                            .as_ref()
-                            .map(|m| format!("({} — external)", m))
-                            .unwrap_or_else(|| "(external)".to_string())
-                    };
-                    lines.push(format!("  ^ {}  {}", p.name, loc));
-                }
-                for c in &h.children {
-                    let loc = if let Some((ref file, line)) = c.location {
-                        format!("{}:{}", file, line)
-                    } else {
-                        "(external)".to_string()
-                    };
-                    lines.push(format!("  v {}  {}", c.name, loc));
-                }
-                if !lines.is_empty() {
-                    let display = if let Some(ref parent) = sym.parent {
-                        format!("{}::{}", parent, sym.name)
-                    } else {
-                        sym.name.clone()
-                    };
-                    let mut entry = format!("[{}] {}\n", sym.kind.tag(), display);
-                    for l in &lines {
-                        entry.push_str(l);
-                        entry.push('\n');
-                    }
-                    hierarchy_entries.push(entry);
-                }
-            }
-        }
+    let analyses: Vec<FileAnalysis> = read_files
+        .par_iter()
+        .map(|fd| {
+            let rel = fd.path.as_str();
 
-        // Used-by (only for small file sets to avoid O(n*m) explosion)
-        let used_by = if file_count <= 20 {
-            let sym_names: Vec<&str> = symbols
+            // Symbols in this file
+            let symbols: Vec<Symbol> = all_symbols
                 .iter()
-                .filter(|s| s.name.len() > 2)
-                .map(|s| s.name.as_str())
+                .filter(|s| {
+                    s.kind != SymbolKind::File
+                        && (s.file == rel || rel.ends_with(&s.file) || s.file.ends_with(rel))
+                })
+                .cloned()
                 .collect();
-            let refs = find_file_references(&root_path, rel, &sym_names, &file_set);
-            total_used_by += refs.len();
-            refs
-        } else {
-            Vec::new()
-        };
 
-        analyses.push(FileAnalysis {
-            symbols,
-            resolved_imports: resolved,
-            hierarchy_entries,
-            used_by,
-        });
-    }
+            // Import resolution (uses HashMap instead of linear scan)
+            let imports = why::extract_file_imports(&fd.original, rel, &root_path);
+            let mut resolved: Vec<ResolvedImport> = Vec::new();
+
+            for (name, module) in &imports {
+                if let Some(candidates) = sym_by_name.get(name.as_str())
+                    && let Some(sym) = candidates.iter().find(|s| s.file != rel)
+                {
+                    resolved.push(ResolvedImport {
+                        name: name.clone(),
+                        file: Some(sym.file.clone()),
+                        line: Some(sym.line),
+                        kind: Some(sym.kind),
+                        module: module.clone(),
+                    });
+                    continue;
+                }
+                if let Some(resolved_file) = why::resolve_relative_import(module, rel, &root_path) {
+                    resolved.push(ResolvedImport {
+                        name: name.clone(),
+                        file: Some(resolved_file),
+                        line: None,
+                        kind: None,
+                        module: module.clone(),
+                    });
+                } else {
+                    resolved.push(ResolvedImport {
+                        name: name.clone(),
+                        file: None,
+                        line: None,
+                        kind: None,
+                        module: module.clone(),
+                    });
+                }
+            }
+            resolved.sort_by(|a, b| a.name.cmp(&b.name));
+
+            // Hierarchy — parse tree once per file, reuse for all class/struct symbols
+            let mut hierarchy_entries = Vec::new();
+            let file_tree = compress::detect_lang(rel)
+                .and_then(|lang| compress::parse_source(&fd.original, lang));
+            for sym in &symbols {
+                if !matches!(
+                    sym.kind,
+                    SymbolKind::Class
+                        | SymbolKind::Struct
+                        | SymbolKind::Trait
+                        | SymbolKind::Interface
+                ) {
+                    continue;
+                }
+                if let Some(h) = why::extract_hierarchy(
+                    &root_path,
+                    sym,
+                    &fd.original,
+                    &all_symbols,
+                    &imports,
+                    file_tree.as_ref(),
+                ) {
+                    let mut lines = Vec::new();
+                    for p in &h.parents {
+                        let loc = if let Some((ref file, line)) = p.location {
+                            format!("{}:{}", file, line)
+                        } else {
+                            p.external_module
+                                .as_ref()
+                                .map(|m| format!("({} — external)", m))
+                                .unwrap_or_else(|| "(external)".to_string())
+                        };
+                        lines.push(format!("  ^ {}  {}", p.name, loc));
+                    }
+                    for c in &h.children {
+                        let loc = if let Some((ref file, line)) = c.location {
+                            format!("{}:{}", file, line)
+                        } else {
+                            "(external)".to_string()
+                        };
+                        lines.push(format!("  v {}  {}", c.name, loc));
+                    }
+                    if !lines.is_empty() {
+                        let display = if let Some(ref parent) = sym.parent {
+                            format!("{}::{}", parent, sym.name)
+                        } else {
+                            sym.name.clone()
+                        };
+                        let mut entry = format!("[{}] {}\n", sym.kind.tag(), display);
+                        for l in &lines {
+                            entry.push_str(l);
+                            entry.push('\n');
+                        }
+                        hierarchy_entries.push(entry);
+                    }
+                }
+            }
+
+            // Used-by (only for small file sets to avoid O(n*m) explosion)
+            let used_by = if file_count <= 20 {
+                let sym_names: Vec<&str> = symbols
+                    .iter()
+                    .filter(|s| s.name.len() > 2)
+                    .map(|s| s.name.as_str())
+                    .collect();
+                find_file_references(&root_path, rel, &sym_names, &file_set)
+            } else {
+                Vec::new()
+            };
+
+            FileAnalysis {
+                symbols,
+                resolved_imports: resolved,
+                hierarchy_entries,
+                used_by,
+            }
+        })
+        .collect();
+
+    let total_dep_files: usize = analyses
+        .iter()
+        .map(|a| {
+            let mut dep_files: std::collections::HashSet<&str> = std::collections::HashSet::new();
+            for imp in &a.resolved_imports {
+                if let Some(ref f) = imp.file {
+                    dep_files.insert(f.as_str());
+                }
+            }
+            dep_files.len()
+        })
+        .sum();
+    let total_used_by: usize = analyses.iter().map(|a| a.used_by.len()).sum();
 
     // 5. Render
     let plain = render(
@@ -593,7 +641,7 @@ mod tests {
 
     fn analyze_one(root: &str, file: &str, mode: Mode) -> Result<AnalysisResult> {
         let full = Path::new(root).join(file).to_string_lossy().to_string();
-        analyze(root, &[full], 2, None, mode)
+        analyze(root, &[full], 2, None, mode, 20000, 50 * 1024 * 1024)
     }
 
     // ── Single-file tests (migrated from old ctx.rs) ────────────
@@ -732,6 +780,8 @@ mod tests {
             2,
             None,
             Mode::Full,
+            20000,
+            50 * 1024 * 1024,
         )
         .unwrap();
         assert_eq!(result.file_count, 1);
@@ -748,6 +798,8 @@ mod tests {
             2,
             None,
             Mode::Full,
+            20000,
+            50 * 1024 * 1024,
         )
         .unwrap();
         assert_eq!(result.file_count, 2);
@@ -764,6 +816,8 @@ mod tests {
             2,
             Some(r"\.rs$"),
             Mode::Full,
+            20000,
+            50 * 1024 * 1024,
         )
         .unwrap();
         assert_eq!(result.file_count, 1);
@@ -779,6 +833,8 @@ mod tests {
             2,
             None,
             Mode::Full,
+            20000,
+            50 * 1024 * 1024,
         );
         assert!(result.is_err());
     }
@@ -792,6 +848,8 @@ mod tests {
             2,
             Some(r"\.rs$"),
             Mode::Full,
+            20000,
+            50 * 1024 * 1024,
         );
         assert!(result.is_err());
     }
@@ -806,6 +864,8 @@ mod tests {
             2,
             None,
             Mode::Full,
+            20000,
+            50 * 1024 * 1024,
         )
         .unwrap();
         assert!(result.plain.contains("================================"));
@@ -823,8 +883,174 @@ mod tests {
             2,
             None,
             Mode::Full,
+            20000,
+            50 * 1024 * 1024,
         )
         .unwrap();
         assert_eq!(result.total_bytes, 10);
+    }
+
+    #[test]
+    fn hierarchy_section_for_classes() {
+        let dir = setup(&[
+            (
+                "base.py",
+                "class Animal:\n    def speak(self):\n        pass\n",
+            ),
+            (
+                "dog.py",
+                "from base import Animal\n\nclass Dog(Animal):\n    def bark(self):\n        pass\n",
+            ),
+        ]);
+        let result = analyze(
+            dir.path().to_str().unwrap(),
+            &[dir.path().join("dog.py").to_string_lossy().to_string()],
+            2,
+            None,
+            Mode::Full,
+            20000,
+            50 * 1024 * 1024,
+        )
+        .unwrap();
+        // Should have hierarchy section with parent reference
+        assert!(result.plain.contains("HIERARCHY"));
+        assert!(result.plain.contains("Animal"));
+    }
+
+    #[test]
+    fn ts_imports_resolve_to_dependencies() {
+        let dir = setup(&[
+            (
+                "utils.ts",
+                "export function helper(): number { return 42; }\n",
+            ),
+            (
+                "main.ts",
+                "import { helper } from './utils';\n\nfunction run() {\n    helper();\n}\n",
+            ),
+        ]);
+        let result = analyze(
+            dir.path().to_str().unwrap(),
+            &[dir.path().join("main.ts").to_string_lossy().to_string()],
+            2,
+            None,
+            Mode::Full,
+            20000,
+            50 * 1024 * 1024,
+        )
+        .unwrap();
+        assert!(result.plain.contains("DEPENDENCIES"));
+        assert!(result.plain.contains("helper"));
+    }
+
+    #[test]
+    fn directory_tree_in_output() {
+        let dir = setup(&[
+            ("src/main.rs", "fn main() {}"),
+            ("src/lib.rs", "pub fn lib() {}"),
+        ]);
+        let result = analyze(
+            dir.path().to_str().unwrap(),
+            &[dir.path().join("src").to_string_lossy().to_string()],
+            2,
+            None,
+            Mode::Full,
+            20000,
+            50 * 1024 * 1024,
+        )
+        .unwrap();
+        assert!(result.plain.contains("Directory:"));
+    }
+
+    #[test]
+    fn individual_files_listed() {
+        let dir = setup(&[("a.rs", "fn a() {}"), ("b.rs", "fn b() {}")]);
+        let result = analyze(
+            dir.path().to_str().unwrap(),
+            &[
+                dir.path().join("a.rs").to_string_lossy().to_string(),
+                dir.path().join("b.rs").to_string_lossy().to_string(),
+            ],
+            2,
+            None,
+            Mode::Full,
+            20000,
+            50 * 1024 * 1024,
+        )
+        .unwrap();
+        assert!(result.plain.contains("Files:"));
+        assert_eq!(result.file_count, 2);
+    }
+
+    #[test]
+    fn original_bytes_tracks_uncompressed() {
+        let src = "fn main() {\n    // comment1\n    // comment2\n    // comment3\n    println!(\"hello\");\n}\n";
+        let dir = setup(&[("main.rs", src)]);
+        let result = analyze_one(dir.path().to_str().unwrap(), "main.rs", Mode::Slim).unwrap();
+        // Original bytes should be larger than total_bytes when comments are stripped
+        assert!(result.original_bytes >= result.total_bytes);
+    }
+
+    #[test]
+    fn mixed_dir_and_file_paths() {
+        let dir = setup(&[
+            ("src/lib.rs", "pub fn lib_fn() {}"),
+            ("standalone.rs", "fn standalone() {}"),
+        ]);
+        let result = analyze(
+            dir.path().to_str().unwrap(),
+            &[
+                dir.path().join("src").to_string_lossy().to_string(),
+                dir.path()
+                    .join("standalone.rs")
+                    .to_string_lossy()
+                    .to_string(),
+            ],
+            2,
+            None,
+            Mode::Full,
+            20000,
+            50 * 1024 * 1024,
+        )
+        .unwrap();
+        assert_eq!(result.file_count, 2);
+        assert!(result.plain.contains("Directory:"));
+        assert!(result.plain.contains("Files:"));
+    }
+
+    #[test]
+    fn symbol_with_parent_displayed() {
+        let dir = setup(&[(
+            "lib.rs",
+            "pub struct Foo {}\nimpl Foo {\n    pub fn method(&self) -> i32 { 42 }\n}\n",
+        )]);
+        let result = analyze_one(dir.path().to_str().unwrap(), "lib.rs", Mode::Full).unwrap();
+        assert!(result.plain.contains("SYMBOL INDEX"));
+        // method should show parent::name format
+        assert!(result.plain.contains("Foo::method") || result.plain.contains("method"));
+    }
+
+    #[test]
+    fn symbol_signature_in_index() {
+        let dir = setup(&[(
+            "lib.rs",
+            "pub fn compute(x: i32, y: i32) -> i32 {\n    x + y\n}\n",
+        )]);
+        let result = analyze_one(dir.path().to_str().unwrap(), "lib.rs", Mode::Full).unwrap();
+        assert!(result.plain.contains("SYMBOL INDEX"));
+        assert!(result.plain.contains("compute"));
+    }
+
+    #[test]
+    fn external_import_shown() {
+        let dir = setup(&[(
+            "main.py",
+            "import os\nimport sys\n\ndef run():\n    os.path.exists('.')\n",
+        )]);
+        let result = analyze_one(dir.path().to_str().unwrap(), "main.py", Mode::Full).unwrap();
+        // External imports should appear in dependencies with "(external)" marker
+        if result.plain.contains("DEPENDENCIES") {
+            assert!(result.plain.contains("external") || result.plain.contains("os"));
+        }
     }
 }

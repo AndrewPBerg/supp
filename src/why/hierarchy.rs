@@ -15,6 +15,7 @@ pub(crate) fn extract_hierarchy(
     content: &str,
     all_symbols: &[Symbol],
     imports: &HashMap<String, String>,
+    pre_parsed: Option<&tree_sitter::Tree>,
 ) -> Option<Hierarchy> {
     if !matches!(
         sym.kind,
@@ -24,7 +25,14 @@ pub(crate) fn extract_hierarchy(
     }
 
     let lang = compress::detect_lang(&sym.file)?;
-    let tree = compress::parse_source(content, lang)?;
+    let owned_tree;
+    let tree = match pre_parsed {
+        Some(t) => t,
+        None => {
+            owned_tree = compress::parse_source(content, lang)?;
+            &owned_tree
+        }
+    };
 
     // Extract direct parent names from the class definition
     let root_node = tree.root_node();

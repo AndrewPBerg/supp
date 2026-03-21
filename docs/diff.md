@@ -14,6 +14,7 @@ supp [-n] diff [PATH] [OPTIONS]
 |------|-------|-------------|
 | `--no-copy` | `-n` | Show stats only, skip clipboard copy |
 | `--no-color` | | Disable colored output |
+| `--json` | | Output as JSON (machine-readable) |
 | `--regex` | `-r` | Regex pattern to filter file paths |
 | `--slim` | | Strip comments and collapse blank lines |
 | `--map` | `-m` | Extract only signatures and definitions (codemap) |
@@ -59,7 +60,7 @@ supp [-n] diff [PATH] [OPTIONS]
   5 files  (5 modified)   +471 -68
 
   ✓ Copied to clipboard (27.6 KB)
-  ≈ ~8,432 tokens (cl100k est.)
+  ≈ ~8,432 tokens (est.)
 ```
 
-An estimated token count (using `cl100k_base`) is always shown. With `-n`, the clipboard step is skipped and the last line shows `– (27.6 KB, not copied)`.
+An estimated token count (bytes / 3.5) is always shown. With `-n`, the clipboard step is skipped and the last line shows `– (27.6 KB, not copied)`.

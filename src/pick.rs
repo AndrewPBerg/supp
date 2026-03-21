@@ -640,4 +640,147 @@ mod tests {
         let expanded = parse_history_line(hist_output).unwrap();
         assert_eq!(expanded, vec!["a.rs", "b.rs"]);
     }
+
+    // ── history_path ──────────────────────────────────────────
+
+    #[test]
+    fn history_path_non_git_dir() {
+        let dir = TempDir::new().unwrap();
+        let path = history_path(dir.path());
+        // Should fall back to /tmp/supp-pick-<hash>
+        assert!(path.to_string_lossy().starts_with("/tmp/supp-pick-"));
+    }
+
+    #[test]
+    fn history_path_git_dir() {
+        let dir = TempDir::new().unwrap();
+        // Init a git repo
+        std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        let path = history_path(dir.path());
+        assert!(path.to_string_lossy().contains("supp"));
+        assert!(path.to_string_lossy().contains("pick-history"));
+    }
+
+    // ── load_history edge cases ───────────────────────────────
+
+    #[test]
+    fn load_history_nonexistent_file() {
+        let path = PathBuf::from("/tmp/nonexistent_supp_pick_history_test");
+        let result = load_history(&path);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn load_history_empty_file() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("history");
+        fs::write(&path, "").unwrap();
+        let result = load_history(&path);
+        assert!(result.is_empty());
+    }
+
+    // ── save_history edge cases ───────────────────────────────
+
+    #[test]
+    fn save_history_creates_parent_dirs() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("nested").join("deep").join("history");
+        let mut history = Vec::new();
+        save_history(&path, &mut history, &["file.rs".to_string()]);
+        assert!(path.exists());
+        let loaded = load_history(&path);
+        assert_eq!(loaded.len(), 1);
+    }
+
+    // ── format_history_line ───────────────────────────────────
+
+    #[test]
+    fn format_history_line_single_file() {
+        let line = format_history_line(0, &["foo.rs".to_string()]);
+        assert_eq!(line, "[hist 1] foo.rs");
+    }
+
+    #[test]
+    fn format_history_line_multiple_files() {
+        let files = vec!["a.rs".to_string(), "b.rs".to_string(), "c.rs".to_string()];
+        let line = format_history_line(2, &files);
+        assert_eq!(line, "[hist 3] a.rs, b.rs, c.rs");
+    }
+
+    // ── parse_history_line edge cases ─────────────────────────
+
+    #[test]
+    fn parse_history_line_single_file() {
+        let parsed = parse_history_line("[hist 1] single.rs").unwrap();
+        assert_eq!(parsed, vec!["single.rs"]);
+    }
+
+    #[test]
+    fn parse_history_line_malformed_no_bracket() {
+        assert!(parse_history_line("[hist no_close").is_none());
+    }
+
+    // ── build_fzf_input ───────────────────────────────────────
+
+    #[test]
+    fn build_fzf_input_no_history() {
+        let files = vec!["a.rs".to_string(), "b.rs".to_string()];
+        let input = build_fzf_input(&[], &files);
+        let lines: Vec<&str> = input.lines().collect();
+        assert_eq!(lines.len(), 2);
+        // Each line should start with tab (field 1 empty)
+        assert!(lines[0].starts_with('\t'));
+    }
+
+    #[test]
+    fn build_fzf_input_multiple_history() {
+        let history = vec![vec!["a.rs".into()], vec!["b.rs".into(), "c.rs".into()]];
+        let files = vec!["d.rs".to_string()];
+        let input = build_fzf_input(&history, &files);
+        let lines: Vec<&str> = input.lines().collect();
+        // 2 history (reversed) + 1 file
+        assert_eq!(lines.len(), 3);
+        // Most recent history entry first
+        assert!(lines[0].contains("[hist 2]"));
+        assert!(lines[1].contains("[hist 1]"));
+    }
+
+    // ── collect_files skips .git ──────────────────────────────
+
+    #[test]
+    fn collect_files_skips_git_dir() {
+        let dir = setup(&["src/main.rs"]);
+        // Create a .git directory manually
+        fs::create_dir_all(dir.path().join(".git")).unwrap();
+        fs::write(dir.path().join(".git/config"), "fake").unwrap();
+        let files = collect_files(dir.path().to_str().unwrap(), None).unwrap();
+        assert!(!files.iter().any(|f| f.contains(".git")));
+    }
+
+    // ── merge_unique preserves order ──────────────────────────
+
+    #[test]
+    fn merge_unique_preserves_original_order() {
+        let mut acc = vec!["c.rs".into(), "a.rs".into()];
+        merge_unique(&mut acc, vec!["b.rs".into(), "d.rs".into()]);
+        assert_eq!(acc, vec!["c.rs", "a.rs", "b.rs", "d.rs"]);
+    }
+
+    // ── fzf_args preview contains correct line count ──────────
+
+    #[test]
+    fn fzf_args_preview_custom_lines() {
+        let args = build_fzf_args(false, 200, false);
+        assert!(args.iter().any(|a| a.contains("head -200")));
+    }
+
+    #[test]
+    fn fzf_args_history_preview_uses_field_refs() {
+        let args = build_fzf_args(false, 50, true);
+        assert!(args.iter().any(|a| a.contains("{1}{2}")));
+    }
 }

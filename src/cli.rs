@@ -14,6 +14,10 @@ pub struct Cli {
     #[arg(long = "no-color", global = true)]
     pub no_color: bool,
 
+    /// Output as JSON (machine-readable)
+    #[arg(short = 'j', long, global = true)]
+    pub json: bool,
+
     /// Regex pattern to filter file paths (e.g. "src/.*\.rs$")
     #[arg(short = 'r', long = "regex", global = true)]
     pub regex: Option<String>,
@@ -39,6 +43,7 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Commands {
+    /// Structured diff between branches or working tree
     Diff {
         /// Path or registered repo name (defaults to '.')
         path: Option<String>,
@@ -71,6 +76,7 @@ pub enum Commands {
         #[arg(short = 'U', long = "unified")]
         context_lines: Option<u32>,
     },
+    /// Directory tree with git status markers
     Tree {
         /// Directory to display (defaults to ".")
         path: Option<String>,
@@ -116,6 +122,12 @@ pub enum Commands {
     Update,
     /// Remove supp from your system
     Uninstall,
+    /// Delete the symbol cache for a project
+    #[command(name = "clean-cache")]
+    CleanCache {
+        /// Project root (defaults to ".")
+        path: Option<String>,
+    },
 }
 
 impl Cli {
@@ -129,6 +141,10 @@ impl Cli {
 
     pub fn resolve_no_color(&self, config: &crate::config::Config) -> bool {
         self.no_color || config.global.no_color
+    }
+
+    pub fn resolve_json(&self, config: &crate::config::Config) -> bool {
+        self.json || config.global.json
     }
 
     pub fn resolve_mode(&self, config: &crate::config::Config) -> crate::compress::Mode {
@@ -444,6 +460,111 @@ mod tests {
                 assert!(staged);
             }
             _ => panic!("expected diff"),
+        }
+    }
+
+    // ── resolve_mode ────────────────────────────────────────────
+
+    #[test]
+    fn resolve_mode_default_is_full() {
+        let cli = parse(&["supp", "src/"]).unwrap();
+        let config = crate::config::Config::default();
+        assert_eq!(cli.resolve_mode(&config), crate::compress::Mode::Full);
+    }
+
+    #[test]
+    fn resolve_mode_slim() {
+        let cli = parse(&["supp", "--slim", "src/"]).unwrap();
+        let config = crate::config::Config::default();
+        assert_eq!(cli.resolve_mode(&config), crate::compress::Mode::Slim);
+    }
+
+    #[test]
+    fn resolve_mode_map() {
+        let cli = parse(&["supp", "--map", "src/"]).unwrap();
+        let config = crate::config::Config::default();
+        assert_eq!(cli.resolve_mode(&config), crate::compress::Mode::Map);
+    }
+
+    // ── pick alias ──────────────────────────────────────────────
+
+    #[test]
+    fn pick_alias_p() {
+        let cli = parse(&["supp", "p"]).unwrap();
+        assert!(matches!(cli.command, Some(Commands::Pick { .. })));
+    }
+
+    // ── resolve_no_copy ────────────────────────────────────────
+
+    #[test]
+    fn resolve_no_copy_from_flag() {
+        let cli = parse(&["supp", "-n", "src/"]).unwrap();
+        let config = crate::config::Config::default();
+        assert!(cli.resolve_no_copy(&config));
+    }
+
+    #[test]
+    fn resolve_no_copy_from_config() {
+        let cli = parse(&["supp", "src/"]).unwrap();
+        let mut config = crate::config::Config::default();
+        config.global.no_copy = true;
+        assert!(cli.resolve_no_copy(&config));
+    }
+
+    #[test]
+    fn resolve_no_copy_default() {
+        let cli = parse(&["supp", "src/"]).unwrap();
+        let config = crate::config::Config::default();
+        assert!(!cli.resolve_no_copy(&config));
+    }
+
+    // ── resolve_no_color ───────────────────────────────────────
+
+    #[test]
+    fn resolve_no_color_from_flag() {
+        let cli = parse(&["supp", "--no-color", "src/"]).unwrap();
+        let config = crate::config::Config::default();
+        assert!(cli.resolve_no_color(&config));
+    }
+
+    #[test]
+    fn resolve_no_color_from_config() {
+        let cli = parse(&["supp", "src/"]).unwrap();
+        let mut config = crate::config::Config::default();
+        config.global.no_color = true;
+        assert!(cli.resolve_no_color(&config));
+    }
+
+    // ── resolve_depth ──────────────────────────────────────────
+
+    #[test]
+    fn resolve_depth_from_flag() {
+        let cli = parse(&["supp", "-d", "5", "src/"]).unwrap();
+        let config = crate::config::Config::default();
+        assert_eq!(cli.resolve_depth(&config), 5);
+    }
+
+    #[test]
+    fn resolve_depth_from_config() {
+        let cli = parse(&["supp", "src/"]).unwrap();
+        let config = crate::config::Config::default();
+        assert_eq!(cli.resolve_depth(&config), 2); // default depth
+    }
+
+    // ── clean-cache subcommand ─────────────────────────────────
+
+    #[test]
+    fn clean_cache_subcommand() {
+        let cli = parse(&["supp", "clean-cache"]).unwrap();
+        assert!(matches!(cli.command, Some(Commands::CleanCache { .. })));
+    }
+
+    #[test]
+    fn clean_cache_with_path() {
+        let cli = parse(&["supp", "clean-cache", "/tmp/repo"]).unwrap();
+        match cli.command {
+            Some(Commands::CleanCache { path }) => assert_eq!(path.as_deref(), Some("/tmp/repo")),
+            _ => panic!("expected clean-cache"),
         }
     }
 }

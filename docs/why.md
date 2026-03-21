@@ -14,6 +14,7 @@ supp [-n] why <symbol...>
 |------|-------|-------------|
 | `--no-copy` | `-n` | Show results only, skip clipboard copy |
 | `--no-color` | | Disable colored output |
+| `--json` | | Output as JSON (machine-readable) |
 
 ## What it extracts
 
@@ -104,7 +105,7 @@ supp w -n MyClass
     fn   merge               src/config.rs:70
 
   ✓ Copied to clipboard (1.2 KB)
-  ≈ ~384 tokens (cl100k est.)
+  ≈ ~384 tokens (est.)
   Done in 45ms
 ```
 

@@ -25,6 +25,7 @@ Fields are merged individually, not by file. If the global config sets `depth = 
 [global]
 no_copy = false        # skip clipboard by default
 no_color = false       # disable colored output
+json = false           # output as JSON (machine-readable)
 depth = 2              # tree depth in context header
 mode = "full"          # "full" | "slim" | "map"
 
@@ -46,6 +47,7 @@ max_untracked_file_size_mb = 10   # skip untracked files larger than this
 |-----|------|---------|--------------|
 | `no_copy` | bool | `false` | `-n` / `--no-copy` |
 | `no_color` | bool | `false` | `--no-color` |
+| `json` | bool | `false` | `--json` |
 | `depth` | integer | `2` | `-d` / `--depth` |
 | `mode` | string | `"full"` | `-S` / `--slim`, `-M` / `--map` |
 
@@ -77,7 +79,7 @@ Untracked files larger than this limit are skipped in `supp diff -u` and `supp d
 
 - If neither config file exists, supp works exactly as before (all hardcoded defaults).
 - If a file exists but contains invalid TOML, a warning is printed to stderr and that file is skipped.
-- Boolean config values (`no_copy`, `no_color`) are OR'd with CLI flags — setting either one enables the behavior.
+- Boolean config values (`no_copy`, `no_color`, `json`) are OR'd with CLI flags — setting either one enables the behavior.
 - Local config is only discovered when running inside a git repository. Outside a repo, only the global config is used.
 
 ## Examples

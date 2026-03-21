@@ -5,6 +5,14 @@ use crate::git::{DeltaStatus, DiffResult, FileEntry, FileStatus};
 use crate::tree::TreeResult;
 use colored::Colorize;
 
+// ── Token estimation ────────────────────────────────────────────────
+
+/// Estimate token count from byte length.
+/// Code tokenizes at roughly 3.5 chars/token with BPE tokenizers.
+pub fn estimate_tokens(byte_len: usize) -> usize {
+    (byte_len as f64 / 3.5).round() as usize
+}
+
 // ── Shared utilities ───────────────────────────────────────────────
 
 pub fn format_size(bytes: usize) -> String {
@@ -36,7 +44,7 @@ pub fn copy_to_clipboard(text: &str) -> anyhow::Result<()> {
             if let Some(mut stdin) = child.stdin.take() {
                 stdin.write_all(text.as_bytes())?;
             }
-            child.wait()?;
+            // Drop stdin (above) signals EOF; don't wait — wl-copy/xclip detach on their own
             return Ok(());
         }
     }
@@ -280,13 +288,7 @@ pub(crate) fn format_number(n: usize) -> String {
     result.chars().rev().collect()
 }
 
-pub fn print_diff_result(
-    result: DiffResult,
-    no_copy: bool,
-    start: std::time::Instant,
-    token_tx: std::sync::mpsc::Sender<String>,
-    token_handle: std::thread::JoinHandle<Option<usize>>,
-) {
+pub fn print_diff_result(result: DiffResult, no_copy: bool, start: std::time::Instant) {
     let now = chrono::Local::now().format("%Y-%m-%d %H:%M").to_string();
 
     let mut meta_parts: Vec<String> = Vec::new();
@@ -339,27 +341,12 @@ pub fn print_diff_result(
     clipboard_header.push_str("\n---\n\n");
     let clipboard_text = format!("{}{}", clipboard_header, result.text);
 
-    print_footer(
-        &clipboard_text,
-        no_copy,
-        start,
-        token_tx,
-        token_handle,
-        None,
-        false,
-    );
+    print_footer(&clipboard_text, no_copy, start, None, false);
 }
 
 // ── Tree display ───────────────────────────────────────────────────
 
-pub fn print_tree_result(
-    result: TreeResult,
-    root: &str,
-    no_copy: bool,
-    start: std::time::Instant,
-    token_tx: std::sync::mpsc::Sender<String>,
-    token_handle: std::thread::JoinHandle<Option<usize>>,
-) {
+pub fn print_tree_result(result: TreeResult, root: &str, no_copy: bool, start: std::time::Instant) {
     println!();
     println!("  {}  {}", "supp tree".bold().cyan(), root.dimmed());
     println!("  {}", "─".repeat(40).dimmed());
@@ -436,15 +423,7 @@ pub fn print_tree_result(
     }
     println!();
 
-    print_footer(
-        &result.plain,
-        no_copy,
-        start,
-        token_tx,
-        token_handle,
-        None,
-        false,
-    );
+    print_footer(&result.plain, no_copy, start, None, false);
 }
 
 // ── Shared footer (clipboard, compression, tokens, timing) ──────
@@ -453,13 +432,9 @@ fn print_footer(
     text: &str,
     no_copy: bool,
     start: std::time::Instant,
-    token_tx: std::sync::mpsc::Sender<String>,
-    token_handle: std::thread::JoinHandle<Option<usize>>,
     original_bytes: Option<(usize, usize)>,
     use_stderr: bool,
 ) {
-    // Send final clipboard text so token count reflects what's actually copied
-    let _ = token_tx.send(text.to_string());
     macro_rules! out {
         ($($arg:tt)*) => {
             if use_stderr { eprintln!($($arg)*); } else { println!($($arg)*); }
@@ -507,13 +482,12 @@ fn print_footer(
             .dimmed(),
         );
     }
-    if let Some(count) = token_handle.join().ok().flatten() {
-        out!(
-            "  {} {}",
-            "≈".dimmed(),
-            format!("~{} tokens (cl100k est.)", format_number(count)).dimmed(),
-        );
-    }
+    let tokens = estimate_tokens(text.len());
+    out!(
+        "  {} {}",
+        "≈".dimmed(),
+        format!("~{} tokens (est.)", format_number(tokens)).dimmed(),
+    );
     out!(
         "  {}",
         format!("Done in {}", format_elapsed(start.elapsed())).dimmed()
@@ -836,8 +810,6 @@ pub fn print_ctx_result(
     result: &crate::ctx::AnalysisResult,
     no_copy: bool,
     start: std::time::Instant,
-    token_tx: std::sync::mpsc::Sender<String>,
-    token_handle: std::thread::JoinHandle<Option<usize>>,
 ) {
     println!();
     println!(
@@ -862,26 +834,12 @@ pub fn print_ctx_result(
     println!();
 
     let compression = Some((result.original_bytes, result.total_bytes));
-    print_footer(
-        &result.plain,
-        no_copy,
-        start,
-        token_tx,
-        token_handle,
-        compression,
-        false,
-    );
+    print_footer(&result.plain, no_copy, start, compression, false);
 }
 
 // ── Context display ─────────────────────────────────────────────
 
-pub fn print_context_result(
-    result: &AnalysisResult,
-    no_copy: bool,
-    start: std::time::Instant,
-    token_tx: std::sync::mpsc::Sender<String>,
-    token_handle: std::thread::JoinHandle<Option<usize>>,
-) {
+pub fn print_context_result(result: &AnalysisResult, no_copy: bool, start: std::time::Instant) {
     println!();
     println!(
         "  {}  {} file{}, {} line{}, {}",
@@ -896,26 +854,12 @@ pub fn print_context_result(
     println!();
 
     let compression = Some((result.original_bytes, result.total_bytes));
-    print_footer(
-        &result.plain,
-        no_copy,
-        start,
-        token_tx,
-        token_handle,
-        compression,
-        false,
-    );
+    print_footer(&result.plain, no_copy, start, compression, false);
 }
 
 // ── Pick display ────────────────────────────────────────────────
 
-pub fn print_pick_stats(
-    result: &AnalysisResult,
-    no_copy: bool,
-    start: std::time::Instant,
-    token_tx: std::sync::mpsc::Sender<String>,
-    token_handle: std::thread::JoinHandle<Option<usize>>,
-) {
+pub fn print_pick_stats(result: &AnalysisResult, no_copy: bool, start: std::time::Instant) {
     eprintln!();
     eprintln!(
         "  {}  {} file{}, {} line{}, {}",
@@ -930,15 +874,7 @@ pub fn print_pick_stats(
     eprintln!();
 
     let compression = Some((result.original_bytes, result.total_bytes));
-    print_footer(
-        &result.plain,
-        no_copy,
-        start,
-        token_tx,
-        token_handle,
-        compression,
-        true,
-    );
+    print_footer(&result.plain, no_copy, start, compression, true);
 }
 
 #[cfg(test)]
@@ -1079,44 +1015,645 @@ mod tests {
         assert_eq!(plain, "[?]");
     }
 
-    // ── token count reflects final clipboard text ───────────────
+    // ── token estimation ────────────────────────────────────────
 
     #[test]
-    fn print_footer_sends_final_text_for_token_counting() {
-        let (tx, rx) = std::sync::mpsc::channel::<String>();
-        let token_handle = std::thread::spawn(move || {
-            let text: String = rx.recv().ok()?;
-            Some(text)
-        });
-
-        let clipboard_text = "header\n---\nactual diff content";
-        // Verify the channel mechanism: send the text like print_footer does
-        let _ = tx.send(clipboard_text.to_string());
-
-        let received = token_handle.join().unwrap().unwrap();
-        assert_eq!(received, clipboard_text);
+    fn estimate_tokens_code() {
+        // 350 bytes of code → ~100 tokens at 3.5 bytes/token
+        assert_eq!(estimate_tokens(350), 100);
     }
 
     #[test]
-    fn diff_token_count_includes_clipboard_header() {
-        // Simulate what print_diff_result does: clipboard_text = header + result.text
-        let label = "working tree";
-        let diff_body = "diff --git a/foo.rs b/foo.rs\n-old\n+new";
-        let meta = "2026-03-21 12:00";
+    fn estimate_tokens_zero() {
+        assert_eq!(estimate_tokens(0), 0);
+    }
 
-        let mut clipboard_header = format!("supp diff  {}\n", label);
-        clipboard_header.push_str(meta);
-        clipboard_header.push_str("\n---\n\n");
-        let clipboard_text = format!("{}{}", clipboard_header, diff_body);
+    #[test]
+    fn estimate_tokens_small() {
+        // 7 bytes → 2 tokens
+        assert_eq!(estimate_tokens(7), 2);
+    }
+    // ── file_status_indicator colored output ────────────────────
 
-        // The token channel should receive clipboard_text, not just diff_body
-        let (tx, rx) = std::sync::mpsc::channel::<String>();
-        let _ = tx.send(clipboard_text.clone());
+    #[test]
+    fn file_status_indicator_colored_not_empty() {
+        for status in [
+            FileStatus::Modified,
+            FileStatus::Added,
+            FileStatus::Deleted,
+            FileStatus::Renamed,
+            FileStatus::Untracked,
+        ] {
+            let (_, colored) = file_status_indicator(status);
+            assert!(!colored.is_empty());
+        }
+    }
 
-        let received = rx.recv().unwrap();
-        assert_eq!(received, clipboard_text);
-        assert!(received.starts_with("supp diff"));
-        assert!(received.contains(diff_body));
-        assert!(received.len() > diff_body.len());
+    // ── status_label ────────────────────────────────────────────
+
+    #[test]
+    fn status_label_added() {
+        let s = status_label(DeltaStatus::Added);
+        assert!(s.to_string().contains("added"));
+    }
+
+    #[test]
+    fn status_label_deleted() {
+        let s = status_label(DeltaStatus::Deleted);
+        assert!(s.to_string().contains("deleted"));
+    }
+
+    #[test]
+    fn status_label_modified() {
+        let s = status_label(DeltaStatus::Modified);
+        assert!(s.to_string().contains("modified"));
+    }
+
+    #[test]
+    fn status_label_renamed() {
+        let s = status_label(DeltaStatus::Renamed);
+        assert!(s.to_string().contains("renamed"));
+    }
+
+    #[test]
+    fn status_label_copied() {
+        let s = status_label(DeltaStatus::Copied);
+        assert!(s.to_string().contains("copied"));
+    }
+
+    #[test]
+    fn status_label_untracked() {
+        let s = status_label(DeltaStatus::Untracked);
+        assert!(s.to_string().contains("added"));
+    }
+
+    // ── print_file_tree ─────────────────────────────────────────
+
+    #[test]
+    fn print_file_tree_single_file() {
+        let files = vec![FileEntry {
+            path: "src/main.rs".to_string(),
+            old_path: None,
+            status: DeltaStatus::Modified,
+            additions: 5,
+            deletions: 2,
+            patch: String::new(),
+        }];
+        let (name_col, add_w, del_w) = print_file_tree(&files);
+        assert!(name_col > 0);
+        assert!(add_w > 0);
+        assert!(del_w > 0);
+    }
+
+    #[test]
+    fn print_file_tree_root_level_file() {
+        let files = vec![FileEntry {
+            path: "README.md".to_string(),
+            old_path: None,
+            status: DeltaStatus::Added,
+            additions: 10,
+            deletions: 0,
+            patch: String::new(),
+        }];
+        let (name_col, _, _) = print_file_tree(&files);
+        assert!(name_col > 0);
+    }
+
+    #[test]
+    fn print_file_tree_renamed() {
+        let files = vec![FileEntry {
+            path: "new_name.rs".to_string(),
+            old_path: Some("old_name.rs".to_string()),
+            status: DeltaStatus::Renamed,
+            additions: 0,
+            deletions: 0,
+            patch: String::new(),
+        }];
+        let _ = print_file_tree(&files);
+    }
+
+    #[test]
+    fn print_file_tree_multiple_dirs() {
+        let files = vec![
+            FileEntry {
+                path: "src/main.rs".to_string(),
+                old_path: None,
+                status: DeltaStatus::Modified,
+                additions: 3,
+                deletions: 1,
+                patch: String::new(),
+            },
+            FileEntry {
+                path: "tests/test.rs".to_string(),
+                old_path: None,
+                status: DeltaStatus::Added,
+                additions: 10,
+                deletions: 0,
+                patch: String::new(),
+            },
+        ];
+        let _ = print_file_tree(&files);
+    }
+
+    // ── print_summary ───────────────────────────────────────────
+
+    #[test]
+    fn print_summary_all_statuses() {
+        let files = vec![
+            FileEntry {
+                path: "a.rs".to_string(),
+                old_path: None,
+                status: DeltaStatus::Added,
+                additions: 10,
+                deletions: 0,
+                patch: String::new(),
+            },
+            FileEntry {
+                path: "b.rs".to_string(),
+                old_path: None,
+                status: DeltaStatus::Modified,
+                additions: 5,
+                deletions: 2,
+                patch: String::new(),
+            },
+            FileEntry {
+                path: "c.rs".to_string(),
+                old_path: None,
+                status: DeltaStatus::Deleted,
+                additions: 0,
+                deletions: 8,
+                patch: String::new(),
+            },
+            FileEntry {
+                path: "d.rs".to_string(),
+                old_path: Some("old.rs".to_string()),
+                status: DeltaStatus::Renamed,
+                additions: 0,
+                deletions: 0,
+                patch: String::new(),
+            },
+            FileEntry {
+                path: "e.rs".to_string(),
+                old_path: None,
+                status: DeltaStatus::Untracked,
+                additions: 3,
+                deletions: 0,
+                patch: String::new(),
+            },
+        ];
+        print_summary(&files, 30, 3, 3);
+    }
+
+    #[test]
+    fn print_summary_single_file() {
+        let files = vec![FileEntry {
+            path: "a.rs".to_string(),
+            old_path: None,
+            status: DeltaStatus::Modified,
+            additions: 1,
+            deletions: 1,
+            patch: String::new(),
+        }];
+        print_summary(&files, 20, 2, 2);
+    }
+
+    // ── print_diff_result ───────────────────────────────────────
+
+    #[test]
+    fn print_diff_result_empty_files() {
+        let result = DiffResult {
+            label: "test".to_string(),
+            files: vec![],
+            text: "".to_string(),
+            has_conflicts: false,
+            is_branch_comparison: false,
+            commit_count: None,
+            stale_check: None,
+        };
+        print_diff_result(result, true, std::time::Instant::now());
+    }
+
+    #[test]
+    fn print_diff_result_with_conflicts() {
+        let result = DiffResult {
+            label: "origin/main ... feature".to_string(),
+            files: vec![],
+            text: "".to_string(),
+            has_conflicts: true,
+            is_branch_comparison: true,
+            commit_count: Some(3),
+            stale_check: None,
+        };
+        print_diff_result(result, true, std::time::Instant::now());
+    }
+
+    #[test]
+    fn print_diff_result_no_conflicts() {
+        let result = DiffResult {
+            label: "origin/main ... feature".to_string(),
+            files: vec![],
+            text: "".to_string(),
+            has_conflicts: false,
+            is_branch_comparison: true,
+            commit_count: Some(1),
+            stale_check: None,
+        };
+        print_diff_result(result, true, std::time::Instant::now());
+    }
+
+    #[test]
+    fn print_diff_result_with_files() {
+        let result = DiffResult {
+            label: "test".to_string(),
+            files: vec![FileEntry {
+                path: "src/main.rs".to_string(),
+                old_path: None,
+                status: DeltaStatus::Modified,
+                additions: 5,
+                deletions: 2,
+                patch: "+new line\n".to_string(),
+            }],
+            text: "+new line\n".to_string(),
+            has_conflicts: false,
+            is_branch_comparison: false,
+            commit_count: None,
+            stale_check: None,
+        };
+        print_diff_result(result, true, std::time::Instant::now());
+    }
+
+    // ── print_tree_result ───────────────────────────────────────
+
+    #[test]
+    fn print_tree_result_basic() {
+        let mut status_counts = std::collections::HashMap::new();
+        status_counts.insert(FileStatus::Modified, 1);
+        let result = TreeResult {
+            display: "root/\n└── file.txt [M]\n".to_string(),
+            plain: "root/\n└── file.txt\n".to_string(),
+            file_count: 1,
+            dir_count: 0,
+            status_counts,
+        };
+        print_tree_result(result, ".", true, std::time::Instant::now());
+    }
+
+    #[test]
+    fn print_tree_result_no_statuses() {
+        let result = TreeResult {
+            display: "root/\n└── file.txt\n".to_string(),
+            plain: "root/\n└── file.txt\n".to_string(),
+            file_count: 1,
+            dir_count: 1,
+            status_counts: std::collections::HashMap::new(),
+        };
+        print_tree_result(result, "src", true, std::time::Instant::now());
+    }
+
+    #[test]
+    fn print_tree_result_all_status_types() {
+        let mut status_counts = std::collections::HashMap::new();
+        status_counts.insert(FileStatus::Modified, 2);
+        status_counts.insert(FileStatus::Added, 1);
+        status_counts.insert(FileStatus::Untracked, 3);
+        status_counts.insert(FileStatus::Renamed, 1);
+        let result = TreeResult {
+            display: "root/\n".to_string(),
+            plain: "root/\n".to_string(),
+            file_count: 7,
+            dir_count: 2,
+            status_counts,
+        };
+        print_tree_result(result, ".", true, std::time::Instant::now());
+    }
+
+    // ── print_footer edge cases ─────────────────────────────────
+
+    #[test]
+    fn print_footer_with_tokens() {
+        print_footer("test text", true, std::time::Instant::now(), None, false);
+    }
+
+    #[test]
+    fn print_footer_with_compression() {
+        print_footer(
+            "test text",
+            true,
+            std::time::Instant::now(),
+            Some((200, 100)),
+            false,
+        );
+    }
+
+    #[test]
+    fn print_footer_stderr_mode() {
+        print_footer(
+            "test text",
+            true,
+            std::time::Instant::now(),
+            Some((200, 100)),
+            true,
+        );
+    }
+
+    #[test]
+    fn print_footer_no_compression_when_equal() {
+        print_footer(
+            "test text",
+            true,
+            std::time::Instant::now(),
+            Some((100, 100)),
+            false,
+        );
+    }
+
+    // ── color_kind_tag ──────────────────────────────────────────
+
+    #[test]
+    fn color_kind_tag_all_variants() {
+        use crate::symbol::SymbolKind;
+        let variants = [
+            SymbolKind::Function,
+            SymbolKind::Struct,
+            SymbolKind::Enum,
+            SymbolKind::Trait,
+            SymbolKind::Class,
+            SymbolKind::Interface,
+            SymbolKind::Method,
+            SymbolKind::Type,
+            SymbolKind::Const,
+            SymbolKind::Macro,
+            SymbolKind::File,
+        ];
+        for kind in variants {
+            let tag = color_kind_tag(kind);
+            assert!(
+                !tag.is_empty(),
+                "color_kind_tag returned empty for {:?}",
+                kind
+            );
+        }
+    }
+
+    // ── print_clipboard_status ──────────────────────────────────
+
+    #[test]
+    fn print_clipboard_status_no_copy() {
+        // no_copy=true just prints a "not copied" message
+        print_clipboard_status("some text", true);
+    }
+
+    #[test]
+    fn print_clipboard_status_empty() {
+        // empty text triggers early return
+        print_clipboard_status("", false);
+    }
+
+    // ── print_sym_results ───────────────────────────────────────
+
+    #[test]
+    fn print_sym_results_empty() {
+        use crate::symbol::SearchResult;
+        let result = SearchResult {
+            matches: vec![],
+            total_symbols: 100,
+        };
+        print_sym_results(&result, true, std::time::Instant::now());
+    }
+
+    #[test]
+    fn print_sym_results_with_matches() {
+        use crate::symbol::{SearchResult, Symbol, SymbolKind};
+        let sym_with_parent = Symbol {
+            name: "do_thing".to_string(),
+            kind: SymbolKind::Method,
+            file: "src/lib.rs".to_string(),
+            line: 42,
+            signature: "fn do_thing(&self)".to_string(),
+            parent: Some("MyStruct".to_string()),
+            keywords: vec![],
+        };
+        let sym_without_parent = Symbol {
+            name: "helper".to_string(),
+            kind: SymbolKind::Function,
+            file: "src/util.rs".to_string(),
+            line: 10,
+            signature: "fn helper() -> bool".to_string(),
+            parent: None,
+            keywords: vec![],
+        };
+        let result = SearchResult {
+            matches: vec![(sym_with_parent, 1.0), (sym_without_parent, 0.8)],
+            total_symbols: 200,
+        };
+        print_sym_results(&result, true, std::time::Instant::now());
+    }
+
+    // ── print_why_result ────────────────────────────────────────
+
+    fn make_test_symbol() -> crate::symbol::Symbol {
+        crate::symbol::Symbol {
+            name: "test_fn".to_string(),
+            kind: crate::symbol::SymbolKind::Function,
+            file: "src/lib.rs".to_string(),
+            line: 10,
+            signature: "fn test_fn()".to_string(),
+            parent: None,
+            keywords: vec![],
+        }
+    }
+
+    #[test]
+    fn print_why_result_basic() {
+        use crate::why::WhyResult;
+        let result = WhyResult {
+            symbol: make_test_symbol(),
+            full_definition: "fn test_fn() {\n    todo!()\n}".to_string(),
+            doc_comment: None,
+            call_sites: vec![],
+            dependencies: vec![],
+            hierarchy: None,
+            plain: "test_fn plain text".to_string(),
+        };
+        print_why_result(&result, true, std::time::Instant::now());
+    }
+
+    #[test]
+    fn print_why_result_with_all_sections() {
+        use crate::why::{CallSite, Dependency, Hierarchy, HierarchyEntry, WhyResult};
+        let result = WhyResult {
+            symbol: make_test_symbol(),
+            full_definition: "fn test_fn() {\n    todo!()\n}".to_string(),
+            doc_comment: Some("/// A test function\n/// with docs".to_string()),
+            call_sites: vec![CallSite {
+                file: "src/main.rs".to_string(),
+                line: 20,
+                context: "test_fn()".to_string(),
+                caller: Some("main".to_string()),
+            }],
+            dependencies: vec![Dependency {
+                name: "HashMap".to_string(),
+                kind: Some(crate::symbol::SymbolKind::Struct),
+                location: Some(("src/map.rs".to_string(), 5)),
+                import_from: None,
+            }],
+            hierarchy: Some(Hierarchy {
+                parents: vec![
+                    HierarchyEntry {
+                        name: "ParentTrait".to_string(),
+                        location: Some(("src/traits.rs".to_string(), 1)),
+                        external_module: Some("core".to_string()),
+                    },
+                    HierarchyEntry {
+                        name: "ExternalParent".to_string(),
+                        location: None,
+                        external_module: Some("serde".to_string()),
+                    },
+                ],
+                children: vec![
+                    HierarchyEntry {
+                        name: "ChildImpl".to_string(),
+                        location: Some(("src/impl.rs".to_string(), 30)),
+                        external_module: None,
+                    },
+                    HierarchyEntry {
+                        name: "ExternalChild".to_string(),
+                        location: None,
+                        external_module: None,
+                    },
+                ],
+            }),
+            plain: "why result plain".to_string(),
+        };
+        print_why_result(&result, true, std::time::Instant::now());
+    }
+
+    #[test]
+    fn print_why_result_many_call_sites() {
+        use crate::why::{CallSite, WhyResult};
+        let call_sites: Vec<CallSite> = (0..15)
+            .map(|i| CallSite {
+                file: format!("src/file_{}.rs", i),
+                line: i + 1,
+                context: format!("call_{}", i),
+                caller: if i % 2 == 0 {
+                    Some(format!("caller_{}", i))
+                } else {
+                    None
+                },
+            })
+            .collect();
+        let result = WhyResult {
+            symbol: make_test_symbol(),
+            full_definition: "fn test_fn() {}".to_string(),
+            doc_comment: None,
+            call_sites,
+            dependencies: vec![],
+            hierarchy: None,
+            plain: "plain".to_string(),
+        };
+        print_why_result(&result, true, std::time::Instant::now());
+    }
+
+    #[test]
+    fn print_why_result_many_deps() {
+        use crate::why::{Dependency, WhyResult};
+        let dependencies: Vec<Dependency> = (0..20)
+            .map(|i| Dependency {
+                name: format!("Dep{}", i),
+                kind: if i % 3 == 0 {
+                    Some(crate::symbol::SymbolKind::Function)
+                } else {
+                    None
+                },
+                location: if i % 2 == 0 {
+                    Some((format!("src/dep_{}.rs", i), i + 1))
+                } else {
+                    None
+                },
+                import_from: if i % 2 != 0 {
+                    Some(format!("mod_{}", i))
+                } else {
+                    None
+                },
+            })
+            .collect();
+        let result = WhyResult {
+            symbol: make_test_symbol(),
+            full_definition: "fn test_fn() {}".to_string(),
+            doc_comment: None,
+            call_sites: vec![],
+            dependencies,
+            hierarchy: None,
+            plain: "plain".to_string(),
+        };
+        print_why_result(&result, true, std::time::Instant::now());
+    }
+
+    #[test]
+    fn print_why_result_long_definition() {
+        use crate::why::WhyResult;
+        let long_def = (0..30)
+            .map(|i| format!("    line {}", i))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let result = WhyResult {
+            symbol: make_test_symbol(),
+            full_definition: long_def,
+            doc_comment: None,
+            call_sites: vec![],
+            dependencies: vec![],
+            hierarchy: None,
+            plain: "plain".to_string(),
+        };
+        print_why_result(&result, true, std::time::Instant::now());
+    }
+
+    // ── print_ctx_result ────────────────────────────────────────
+
+    #[test]
+    fn print_ctx_result_basic() {
+        let result = AnalysisResult {
+            plain: "ctx plain output".to_string(),
+            file_count: 3,
+            total_lines: 150,
+            total_bytes: 4096,
+            original_bytes: 8192,
+            dep_file_count: 2,
+            used_by_count: 5,
+        };
+        print_ctx_result(&result, true, std::time::Instant::now());
+    }
+
+    // ── print_context_result ────────────────────────────────────
+
+    #[test]
+    fn print_context_result_basic() {
+        let result = AnalysisResult {
+            plain: "context plain output".to_string(),
+            file_count: 1,
+            total_lines: 50,
+            total_bytes: 1024,
+            original_bytes: 2048,
+            dep_file_count: 0,
+            used_by_count: 1,
+        };
+        print_context_result(&result, true, std::time::Instant::now());
+    }
+
+    // ── print_pick_stats ────────────────────────────────────────
+
+    #[test]
+    fn print_pick_stats_basic() {
+        let result = AnalysisResult {
+            plain: "pick plain output".to_string(),
+            file_count: 2,
+            total_lines: 75,
+            total_bytes: 2048,
+            original_bytes: 4096,
+            dep_file_count: 1,
+            used_by_count: 3,
+        };
+        print_pick_stats(&result, true, std::time::Instant::now());
     }
 }
