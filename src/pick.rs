@@ -45,7 +45,7 @@ fn build_fzf_args(multi: bool, preview_lines: usize) -> Vec<String> {
         args.extend([
             "--multi".into(),
             "--bind".into(),
-            "space:toggle".into(),
+            "ctrl-space:toggle".into(),
             "--bind".into(),
             "enter:toggle-all".into(),
             "--bind".into(),
@@ -53,7 +53,7 @@ fn build_fzf_args(multi: bool, preview_lines: usize) -> Vec<String> {
             "--bind".into(),
             "esc:abort".into(),
             "--header".into(),
-            "space: select | enter: toggle all | tab: confirm | esc: cancel".into(),
+            "ctrl-space: select | enter: toggle all | tab: confirm | esc: cancel".into(),
         ]);
     }
     args.push("--preview".into());
@@ -429,11 +429,13 @@ mod tests {
     fn fzf_args_multi_mode() {
         let args = build_fzf_args(true, 30);
         assert!(args.contains(&"--multi".to_string()));
-        assert!(args.contains(&"space:toggle".to_string()));
+        assert!(args.contains(&"ctrl-space:toggle".to_string()));
         assert!(args.contains(&"enter:toggle-all".to_string()));
         assert!(args.contains(&"tab:accept".to_string()));
         assert!(args.contains(&"esc:abort".to_string()));
-        assert!(args.contains(&"space: select | enter: toggle all | tab: confirm | esc: cancel".to_string()));
+        assert!(args.contains(
+            &"ctrl-space: select | enter: toggle all | tab: confirm | esc: cancel".to_string()
+        ));
     }
 
     #[test]

@@ -61,6 +61,19 @@ fzf shows a file preview pane. The number of preview lines (default: 100) is con
 preview_lines = 50
 ```
 
+### Search and bulk-select in fzf
+
+Use fzf's search syntax to filter, then `enter` to select all visible matches:
+
+```bash
+# In the fzf picker, type:
+agent !migration        # all agent files, excluding migrations
+'services/ .py$         # exact "services/" and ends with .py
+^src/ !test             # starts with src/, no test files
+```
+
+Keys: `ctrl-space` toggles one item, `enter` toggles all visible, `tab` confirms, `esc` cancels.
+
 ## Tree view
 
 ```bash
