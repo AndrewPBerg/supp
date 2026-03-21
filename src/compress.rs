@@ -57,6 +57,20 @@ pub fn parse_source(content: &str, lang: Lang) -> Option<Tree> {
     parser.parse(content, None)
 }
 
+pub fn lang_hint(file_path: &str) -> &'static str {
+    match detect_lang(file_path) {
+        Some(Lang::Rust) => "rust",
+        Some(Lang::Python) => "python",
+        Some(Lang::JavaScript) => "javascript",
+        Some(Lang::TypeScript | Lang::Tsx) => "typescript",
+        Some(Lang::Go) => "go",
+        Some(Lang::C) => "c",
+        Some(Lang::Cpp) => "cpp",
+        Some(Lang::Java) => "java",
+        None => "",
+    }
+}
+
 pub fn compress(content: &str, file_path: &str, mode: Mode) -> String {
     if mode == Mode::Full {
         return content.to_string();

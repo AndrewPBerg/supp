@@ -2,6 +2,7 @@ mod cli;
 mod compress;
 mod config;
 mod context;
+mod ctx;
 mod git;
 mod pick;
 mod styles;
@@ -75,6 +76,22 @@ fn main() -> anyhow::Result<()> {
         Some(Commands::Why { ref query }) => {
             let result = why::explain(".", query)?;
             styles::print_why_result(&result, no_copy, start);
+            return Ok(());
+        }
+        Some(Commands::Ctx { ref file }) => {
+            let file = match file {
+                Some(f) => f.clone(),
+                None => {
+                    let selected = pick::run_fzf(".", false, cli.regex.as_deref(), config.pick.preview_lines)?;
+                    if selected.is_empty() {
+                        return Ok(());
+                    }
+                    selected.into_iter().next().unwrap()
+                }
+            };
+            let result = ctx::analyze(".", &file)?;
+            let _ = text_tx.send(result.plain.clone());
+            styles::print_ctx_result(&result, no_copy, start, token_handle);
             return Ok(());
         }
         Some(Commands::Pick { ref path, single }) => {

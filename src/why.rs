@@ -391,7 +391,7 @@ fn extract_definition_by_lines(content: &str, sym: &Symbol) -> String {
 // ── Import extraction ───────────────────────────────────────────────
 
 /// Maps imported name → module path (e.g. "BaseModel" → "pydantic")
-fn extract_file_imports(content: &str, file_path: &str) -> HashMap<String, String> {
+pub(crate) fn extract_file_imports(content: &str, file_path: &str) -> HashMap<String, String> {
     let lang = compress::detect_lang(file_path);
     match lang {
         Some(Lang::Python) => extract_python_imports(content),
@@ -495,7 +495,7 @@ fn extract_js_imports(content: &str) -> HashMap<String, String> {
 }
 
 /// Try to resolve a relative import to a project file path.
-fn resolve_relative_import(module: &str, from_file: &str, root: &Path) -> Option<String> {
+pub(crate) fn resolve_relative_import(module: &str, from_file: &str, root: &Path) -> Option<String> {
     if !module.starts_with('.') {
         return None;
     }
@@ -539,7 +539,7 @@ fn resolve_relative_import(module: &str, from_file: &str, root: &Path) -> Option
 
 // ── Call site discovery ─────────────────────────────────────────────
 
-fn find_call_sites(root: &Path, sym: &Symbol) -> Vec<CallSite> {
+pub(crate) fn find_call_sites(root: &Path, sym: &Symbol) -> Vec<CallSite> {
     let mut sites = Vec::new();
     let name = &sym.name;
 
@@ -620,7 +620,7 @@ fn find_definition_span(root: &Path, sym: &Symbol) -> Option<(usize, usize)> {
     ))
 }
 
-fn contains_identifier(line: &str, name: &str) -> bool {
+pub(crate) fn contains_identifier(line: &str, name: &str) -> bool {
     let mut start = 0;
     while let Some(pos) = line[start..].find(name) {
         let abs_pos = start + pos;

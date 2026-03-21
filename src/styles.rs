@@ -722,6 +722,29 @@ pub fn print_why_result(result: &crate::why::WhyResult, no_copy: bool, start: st
     println!();
 }
 
+// ── Ctx display ─────────────────────────────────────────────────
+
+pub fn print_ctx_result(result: &crate::ctx::CtxResult, no_copy: bool, start: std::time::Instant, token_handle: std::thread::JoinHandle<Option<usize>>) {
+    println!();
+    println!(
+        "  {}  {}  {} dep{}, {} reference{}",
+        "supp ctx".bold().cyan(),
+        result.target_file.bold(),
+        result.dep_file_count,
+        if result.dep_file_count == 1 { "" } else { "s" },
+        result.used_by_count,
+        if result.used_by_count == 1 { "" } else { "s" },
+    );
+    println!("  {}", "─".repeat(40).dimmed());
+    println!();
+
+    // Brief summary
+    println!("  {} lines in target", result.target_lines.to_string().bold());
+    println!();
+
+    print_footer(&result.plain, no_copy, start, token_handle, None, false);
+}
+
 // ── Context display ─────────────────────────────────────────────
 
 pub fn print_context_result(result: ContextResult, no_copy: bool, start: std::time::Instant, token_handle: std::thread::JoinHandle<Option<usize>>) {

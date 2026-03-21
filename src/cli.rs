@@ -100,6 +100,12 @@ pub enum Commands {
         /// Symbol name to look up (exact or fuzzy match)
         query: Vec<String>,
     },
+    /// LLM-optimized context: file contents + dependency signatures + reverse references
+    #[command(alias = "c")]
+    Ctx {
+        /// File to analyze (launches fzf picker if omitted)
+        file: Option<String>,
+    },
     /// Interactively pick files with fzf for context generation
     #[command(alias = "p")]
     Pick {
