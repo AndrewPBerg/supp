@@ -1,10 +1,10 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 use std::time::SystemTime;
 
 use anyhow::Result;
 use ignore::WalkBuilder;
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::compress::{self, Lang};
@@ -137,52 +137,39 @@ fn collect_files(root: &Path) -> Vec<(PathBuf, String)> {
 fn build_index(root: &Path) -> (Vec<Symbol>, Vec<f64>) {
     let files = collect_files(root);
 
-    // Parse files in parallel
-    #[allow(clippy::type_complexity)]
-    let results: Mutex<Vec<(String, Vec<Symbol>, Vec<String>)>> = Mutex::new(Vec::new());
+    // Parse files in parallel (rayon thread pool)
+    let mut all_results: Vec<(String, Vec<Symbol>, Vec<String>)> = files
+        .par_iter()
+        .filter_map(|(abs_path, rel_path)| {
+            let content = std::fs::read_to_string(abs_path).ok()?;
 
-    std::thread::scope(|s| {
-        for (abs_path, rel_path) in &files {
-            let results = &results;
-            let abs = abs_path.clone();
-            let rel = rel_path.clone();
-            s.spawn(move || {
-                let content = match std::fs::read_to_string(&abs) {
-                    Ok(c) => c,
-                    Err(_) => return,
-                };
+            if let Some(lang) = compress::detect_lang(rel_path)
+                && let Some(tree) = compress::parse_source(&content, lang)
+            {
+                let symbols = extract_symbols(rel_path, &content, lang, &tree);
+                let refs = extract_references(&content, lang, &tree);
+                return Some((rel_path.clone(), symbols, refs));
+            }
 
-                if let Some(lang) = compress::detect_lang(&rel)
-                    && let Some(tree) = compress::parse_source(&content, lang)
-                {
-                    let symbols = extract_symbols(&rel, &content, lang, &tree);
-                    let refs = extract_references(&content, lang, &tree);
-                    results.lock().unwrap().push((rel, symbols, refs));
-                    return;
-                }
-
-                // Non-code file: create a file-level symbol and extract plain-text refs
-                let filename = Path::new(&rel)
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or(&rel);
-                let first_line = content.lines().next().unwrap_or("").to_string();
-                let refs = extract_plaintext_refs(&content);
-                let sym = Symbol {
-                    name: filename.to_string(),
-                    kind: SymbolKind::File,
-                    file: rel.clone(),
-                    line: 1,
-                    signature: signature_line(&first_line),
-                    parent: None,
-                    keywords: refs.clone(),
-                };
-                results.lock().unwrap().push((rel, vec![sym], refs));
-            });
-        }
-    });
-
-    let mut all_results = results.into_inner().unwrap();
+            // Non-code file: create a file-level symbol and extract plain-text refs
+            let filename = Path::new(rel_path)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or(rel_path);
+            let first_line = content.lines().next().unwrap_or("").to_string();
+            let refs = extract_plaintext_refs(&content);
+            let sym = Symbol {
+                name: filename.to_string(),
+                kind: SymbolKind::File,
+                file: rel_path.clone(),
+                line: 1,
+                signature: signature_line(&first_line),
+                parent: None,
+                keywords: refs.clone(),
+            };
+            Some((rel_path.clone(), vec![sym], refs))
+        })
+        .collect();
     all_results.sort_by(|a, b| a.0.cmp(&b.0));
 
     let mut symbols: Vec<Symbol> = Vec::new();

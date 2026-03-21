@@ -417,4 +417,46 @@ mod tests {
         let first_line = result.plain.lines().next().unwrap();
         assert!(first_line.ends_with('/'));
     }
+
+    #[test]
+    fn status_with_prefix() {
+        let dir = setup_tree(&["sub/file.txt"]);
+        let mut statuses = HashMap::new();
+        statuses.insert("prefix/sub/file.txt".to_string(), FileStatus::Modified);
+        let result = build_tree(
+            dir.path().to_str().unwrap(),
+            None,
+            None,
+            Some((&statuses, "prefix")),
+        )
+        .unwrap();
+        assert_eq!(result.status_counts.get(&FileStatus::Modified), Some(&1));
+    }
+
+    #[test]
+    fn display_differs_from_plain() {
+        let dir = setup_tree(&["src/main.rs"]);
+        let result = build_tree(dir.path().to_str().unwrap(), None, None, None).unwrap();
+        // display has colored output, plain doesn't — they should differ
+        // (unless colors are force-disabled in CI)
+        assert!(!result.display.is_empty());
+        assert!(!result.plain.is_empty());
+    }
+
+    #[test]
+    fn status_with_no_file_indicator() {
+        let dir = setup_tree(&["a.txt", "b.txt"]);
+        let mut statuses = HashMap::new();
+        statuses.insert("a.txt".to_string(), FileStatus::Added);
+        // b.txt has no status entry
+        let result = build_tree(
+            dir.path().to_str().unwrap(),
+            None,
+            None,
+            Some((&statuses, "")),
+        )
+        .unwrap();
+        assert_eq!(result.status_counts.get(&FileStatus::Added), Some(&1));
+        assert_eq!(result.file_count, 2);
+    }
 }

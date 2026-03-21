@@ -1,9 +1,9 @@
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::Mutex;
 
 use anyhow::{Result, bail};
 use ignore::WalkBuilder;
+use rayon::prelude::*;
 use regex::Regex;
 
 use crate::compress::{self, Mode};
@@ -105,26 +105,19 @@ pub fn analyze(
         bail!("no files matched the given paths/filters");
     }
 
-    // 2. Concurrent reads
-    let results: Mutex<Vec<FileData>> = Mutex::new(Vec::new());
-    std::thread::scope(|s| {
-        for fp in &file_paths {
-            let results = &results;
-            let fp = fp.clone();
-            s.spawn(move || {
-                if let Ok(content) = std::fs::read_to_string(&fp) {
-                    let compressed = compress::compress(&content, &fp, mode);
-                    results.lock().unwrap().push(FileData {
-                        path: fp,
-                        compressed,
-                        original: content,
-                    });
-                }
-            });
-        }
-    });
-
-    let mut read_files = results.into_inner().unwrap();
+    // 2. Concurrent reads (rayon thread pool)
+    let mut read_files: Vec<FileData> = file_paths
+        .par_iter()
+        .filter_map(|fp| {
+            let content = std::fs::read_to_string(fp).ok()?;
+            let compressed = compress::compress(&content, fp, mode);
+            Some(FileData {
+                path: fp.clone(),
+                compressed,
+                original: content,
+            })
+        })
+        .collect();
     let order: HashMap<&str, usize> = file_paths
         .iter()
         .enumerate()
@@ -148,138 +141,156 @@ pub fn analyze(
     };
     let all_symbols = symbol::load_symbols(&root_path);
 
-    // 4. Per-file analysis
+    // 4. Per-file analysis (parallel)
     let file_set: std::collections::HashSet<&str> =
         read_files.iter().map(|f| f.path.as_str()).collect();
 
-    let mut analyses: Vec<FileAnalysis> = Vec::new();
-    let mut total_dep_files = 0usize;
-    let mut total_used_by = 0usize;
-
-    for fd in &read_files {
-        let rel = fd.path.as_str();
-
-        // Symbols in this file
-        let symbols: Vec<Symbol> = all_symbols
-            .iter()
-            .filter(|s| {
-                s.kind != SymbolKind::File
-                    && (s.file == rel || rel.ends_with(&s.file) || s.file.ends_with(rel))
-            })
-            .cloned()
-            .collect();
-
-        // Import resolution
-        let imports = why::extract_file_imports(&fd.original, rel, &root_path);
-        let mut resolved: Vec<ResolvedImport> = Vec::new();
-        let mut dep_file_set: std::collections::HashSet<String> = std::collections::HashSet::new();
-
-        for (name, module) in &imports {
-            if let Some(sym) = all_symbols
-                .iter()
-                .find(|s| s.name == *name && s.file != rel)
-            {
-                dep_file_set.insert(sym.file.clone());
-                resolved.push(ResolvedImport {
-                    name: name.clone(),
-                    file: Some(sym.file.clone()),
-                    line: Some(sym.line),
-                    kind: Some(sym.kind),
-                    module: module.clone(),
-                });
-            } else if let Some(resolved_file) =
-                why::resolve_relative_import(module, rel, &root_path)
-            {
-                dep_file_set.insert(resolved_file.clone());
-                resolved.push(ResolvedImport {
-                    name: name.clone(),
-                    file: Some(resolved_file),
-                    line: None,
-                    kind: None,
-                    module: module.clone(),
-                });
-            } else {
-                resolved.push(ResolvedImport {
-                    name: name.clone(),
-                    file: None,
-                    line: None,
-                    kind: None,
-                    module: module.clone(),
-                });
-            }
+    // Build name → symbols lookup for O(1) import resolution
+    let sym_by_name: HashMap<&str, Vec<&Symbol>> = {
+        let mut map: HashMap<&str, Vec<&Symbol>> = HashMap::new();
+        for s in &all_symbols {
+            map.entry(s.name.as_str()).or_default().push(s);
         }
-        resolved.sort_by(|a, b| a.name.cmp(&b.name));
-        total_dep_files += dep_file_set.len();
+        map
+    };
 
-        // Hierarchy
-        let mut hierarchy_entries = Vec::new();
-        for sym in &symbols {
-            if !matches!(
-                sym.kind,
-                SymbolKind::Class | SymbolKind::Struct | SymbolKind::Trait | SymbolKind::Interface
-            ) {
-                continue;
-            }
-            if let Some(h) =
-                why::extract_hierarchy(&root_path, sym, &fd.original, &all_symbols, &imports)
-            {
-                let mut lines = Vec::new();
-                for p in &h.parents {
-                    let loc = if let Some((ref file, line)) = p.location {
-                        format!("{}:{}", file, line)
-                    } else {
-                        p.external_module
-                            .as_ref()
-                            .map(|m| format!("({} — external)", m))
-                            .unwrap_or_else(|| "(external)".to_string())
-                    };
-                    lines.push(format!("  ^ {}  {}", p.name, loc));
-                }
-                for c in &h.children {
-                    let loc = if let Some((ref file, line)) = c.location {
-                        format!("{}:{}", file, line)
-                    } else {
-                        "(external)".to_string()
-                    };
-                    lines.push(format!("  v {}  {}", c.name, loc));
-                }
-                if !lines.is_empty() {
-                    let display = if let Some(ref parent) = sym.parent {
-                        format!("{}::{}", parent, sym.name)
-                    } else {
-                        sym.name.clone()
-                    };
-                    let mut entry = format!("[{}] {}\n", sym.kind.tag(), display);
-                    for l in &lines {
-                        entry.push_str(l);
-                        entry.push('\n');
-                    }
-                    hierarchy_entries.push(entry);
-                }
-            }
-        }
+    let analyses: Vec<FileAnalysis> = read_files
+        .par_iter()
+        .map(|fd| {
+            let rel = fd.path.as_str();
 
-        // Used-by (only for small file sets to avoid O(n*m) explosion)
-        let used_by = if file_count <= 20 {
-            let sym_names: Vec<&str> = symbols
+            // Symbols in this file
+            let symbols: Vec<Symbol> = all_symbols
                 .iter()
-                .filter(|s| s.name.len() > 2)
-                .map(|s| s.name.as_str())
+                .filter(|s| {
+                    s.kind != SymbolKind::File
+                        && (s.file == rel || rel.ends_with(&s.file) || s.file.ends_with(rel))
+                })
+                .cloned()
                 .collect();
-            let refs = find_file_references(&root_path, rel, &sym_names, &file_set);
-            total_used_by += refs.len();
-            refs
-        } else {
-            Vec::new()
-        };
 
-        analyses.push(FileAnalysis {
-            symbols,
-            resolved_imports: resolved,
-            hierarchy_entries,
-            used_by,
-        });
-    }
+            // Import resolution (uses HashMap instead of linear scan)
+            let imports = why::extract_file_imports(&fd.original, rel, &root_path);
+            let mut resolved: Vec<ResolvedImport> = Vec::new();
+
+            for (name, module) in &imports {
+                if let Some(candidates) = sym_by_name.get(name.as_str())
+                    && let Some(sym) = candidates.iter().find(|s| s.file != rel)
+                {
+                    resolved.push(ResolvedImport {
+                        name: name.clone(),
+                        file: Some(sym.file.clone()),
+                        line: Some(sym.line),
+                        kind: Some(sym.kind),
+                        module: module.clone(),
+                    });
+                    continue;
+                }
+                if let Some(resolved_file) = why::resolve_relative_import(module, rel, &root_path) {
+                    resolved.push(ResolvedImport {
+                        name: name.clone(),
+                        file: Some(resolved_file),
+                        line: None,
+                        kind: None,
+                        module: module.clone(),
+                    });
+                } else {
+                    resolved.push(ResolvedImport {
+                        name: name.clone(),
+                        file: None,
+                        line: None,
+                        kind: None,
+                        module: module.clone(),
+                    });
+                }
+            }
+            resolved.sort_by(|a, b| a.name.cmp(&b.name));
+
+            // Hierarchy
+            let mut hierarchy_entries = Vec::new();
+            for sym in &symbols {
+                if !matches!(
+                    sym.kind,
+                    SymbolKind::Class
+                        | SymbolKind::Struct
+                        | SymbolKind::Trait
+                        | SymbolKind::Interface
+                ) {
+                    continue;
+                }
+                if let Some(h) =
+                    why::extract_hierarchy(&root_path, sym, &fd.original, &all_symbols, &imports)
+                {
+                    let mut lines = Vec::new();
+                    for p in &h.parents {
+                        let loc = if let Some((ref file, line)) = p.location {
+                            format!("{}:{}", file, line)
+                        } else {
+                            p.external_module
+                                .as_ref()
+                                .map(|m| format!("({} — external)", m))
+                                .unwrap_or_else(|| "(external)".to_string())
+                        };
+                        lines.push(format!("  ^ {}  {}", p.name, loc));
+                    }
+                    for c in &h.children {
+                        let loc = if let Some((ref file, line)) = c.location {
+                            format!("{}:{}", file, line)
+                        } else {
+                            "(external)".to_string()
+                        };
+                        lines.push(format!("  v {}  {}", c.name, loc));
+                    }
+                    if !lines.is_empty() {
+                        let display = if let Some(ref parent) = sym.parent {
+                            format!("{}::{}", parent, sym.name)
+                        } else {
+                            sym.name.clone()
+                        };
+                        let mut entry = format!("[{}] {}\n", sym.kind.tag(), display);
+                        for l in &lines {
+                            entry.push_str(l);
+                            entry.push('\n');
+                        }
+                        hierarchy_entries.push(entry);
+                    }
+                }
+            }
+
+            // Used-by (only for small file sets to avoid O(n*m) explosion)
+            let used_by = if file_count <= 20 {
+                let sym_names: Vec<&str> = symbols
+                    .iter()
+                    .filter(|s| s.name.len() > 2)
+                    .map(|s| s.name.as_str())
+                    .collect();
+                find_file_references(&root_path, rel, &sym_names, &file_set)
+            } else {
+                Vec::new()
+            };
+
+            FileAnalysis {
+                symbols,
+                resolved_imports: resolved,
+                hierarchy_entries,
+                used_by,
+            }
+        })
+        .collect();
+
+    let total_dep_files: usize = analyses
+        .iter()
+        .map(|a| {
+            let mut dep_files: std::collections::HashSet<&str> = std::collections::HashSet::new();
+            for imp in &a.resolved_imports {
+                if let Some(ref f) = imp.file {
+                    dep_files.insert(f.as_str());
+                }
+            }
+            dep_files.len()
+        })
+        .sum();
+    let total_used_by: usize = analyses.iter().map(|a| a.used_by.len()).sum();
 
     // 5. Render
     let plain = render(

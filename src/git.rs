@@ -1007,4 +1007,87 @@ mod tests {
         assert_eq!(result.files.len(), 1);
         assert_eq!(result.files[0].path, "main.rs");
     }
+
+    // ── DiffOptions defaults ──────────────────────────────────
+
+    #[test]
+    fn diff_options_default_all_false() {
+        let opts = default_opts();
+        assert!(!opts.untracked);
+        assert!(!opts.tracked);
+        assert!(!opts.staged);
+        assert!(!opts.local);
+        assert!(!opts.all);
+        assert!(opts.branch.is_none());
+        assert!(opts.context_lines.is_none());
+    }
+
+    // ── get_diff with context lines ────────────────────────────
+
+    #[test]
+    fn get_diff_staged_with_context_lines() {
+        let dir = setup_test_repo();
+        write_and_stage(dir.path(), "file.txt", "line1\nline2\nline3\n");
+        commit(dir.path(), "add file");
+
+        write_and_stage(dir.path(), "file.txt", "line1\nmodified\nline3\n");
+        let mut opts = default_opts();
+        opts.staged = true;
+        opts.context_lines = Some(0);
+        let result = get_diff(dir.path().to_str().unwrap(), opts, None).unwrap();
+        assert!(!result.files.is_empty());
+    }
+
+    // ── collect_untracked ────────────────────────────────────────
+
+    #[test]
+    fn collect_untracked_top_level() {
+        let dir = setup_test_repo();
+        fs::write(dir.path().join("new.txt"), "content").unwrap();
+        let (files, text) = collect_untracked_files(dir.path(), 10 * 1024 * 1024).unwrap();
+        assert!(files.iter().any(|f| f.path.contains("new.txt")));
+        assert!(!text.is_empty());
+    }
+
+    // ── get_diff with regex ────────────────────────────────────
+
+    #[test]
+    fn get_diff_staged_with_regex() {
+        let dir = setup_test_repo();
+        write_and_stage(dir.path(), "src/main.rs", "fn main() {}");
+        write_and_stage(dir.path(), "src/lib.rs", "fn lib() {}");
+        write_and_stage(dir.path(), "docs/readme.md", "# readme");
+        let mut opts = default_opts();
+        opts.staged = true;
+        let result = get_diff(dir.path().to_str().unwrap(), opts, Some(r"main")).unwrap();
+        assert_eq!(result.files.len(), 1);
+        assert!(result.files[0].path.contains("main"));
+    }
+
+    // ── status_map with staged deleted ─────────────────────────
+
+    #[test]
+    fn status_map_with_staged_deleted() {
+        let dir = setup_test_repo();
+        write_and_stage(dir.path(), "to_delete.txt", "content");
+        commit(dir.path(), "add file");
+        // Stage the deletion
+        fs::remove_file(dir.path().join("to_delete.txt")).unwrap();
+        run_git(dir.path(), &["add", "to_delete.txt"]).unwrap();
+        let (map, _) = get_status_map(dir.path().to_str().unwrap())
+            .unwrap()
+            .unwrap();
+        assert_eq!(map.get("to_delete.txt"), Some(&FileStatus::Deleted));
+    }
+
+    // ── get_diff all mode ──────────────────────────────────────
+
+    #[test]
+    fn get_diff_all_empty_repo() {
+        let dir = setup_test_repo();
+        let mut opts = default_opts();
+        opts.all = true;
+        let result = get_diff(dir.path().to_str().unwrap(), opts, None).unwrap();
+        assert!(result.files.is_empty());
+    }
 }

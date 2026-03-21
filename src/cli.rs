@@ -446,4 +446,35 @@ mod tests {
             _ => panic!("expected diff"),
         }
     }
+
+    // ── resolve_mode ────────────────────────────────────────────
+
+    #[test]
+    fn resolve_mode_default_is_full() {
+        let cli = parse(&["supp", "src/"]).unwrap();
+        let config = crate::config::Config::default();
+        assert_eq!(cli.resolve_mode(&config), crate::compress::Mode::Full);
+    }
+
+    #[test]
+    fn resolve_mode_slim() {
+        let cli = parse(&["supp", "--slim", "src/"]).unwrap();
+        let config = crate::config::Config::default();
+        assert_eq!(cli.resolve_mode(&config), crate::compress::Mode::Slim);
+    }
+
+    #[test]
+    fn resolve_mode_map() {
+        let cli = parse(&["supp", "--map", "src/"]).unwrap();
+        let config = crate::config::Config::default();
+        assert_eq!(cli.resolve_mode(&config), crate::compress::Mode::Map);
+    }
+
+    // ── pick alias ──────────────────────────────────────────────
+
+    #[test]
+    fn pick_alias_p() {
+        let cli = parse(&["supp", "p"]).unwrap();
+        assert!(matches!(cli.command, Some(Commands::Pick { .. })));
+    }
 }

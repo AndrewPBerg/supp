@@ -1,80 +1,85 @@
 # supp
 
+Structured code context for LLMs. Extracts files, diffs, symbols, and trees from your codebase and copies them to the clipboard — ready to paste into any chat.
+
 [![CI](https://github.com/AndrewPBerg/supp/actions/workflows/ci.yml/badge.svg)](https://github.com/AndrewPBerg/supp/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/AndrewPBerg/supp/branch/main/graph/badge.svg)](https://codecov.io/gh/AndrewPBerg/supp)
-[![clippy](https://img.shields.io/badge/clippy-passing-brightgreen?logo=rust)](https://github.com/AndrewPBerg/supp/actions/workflows/ci.yml)
-[![fmt](https://img.shields.io/badge/fmt-checked-brightgreen?logo=rust)](https://github.com/AndrewPBerg/supp/actions/workflows/ci.yml)
-[![audit](https://img.shields.io/badge/audit-passing-brightgreen?logo=rust)](https://github.com/AndrewPBerg/supp/actions/workflows/ci.yml)
-[![deny](https://img.shields.io/badge/deny-passing-brightgreen?logo=rust)](https://github.com/AndrewPBerg/supp/actions/workflows/ci.yml)
-
-A code-aware supplemental context tool for LLMs — extracts symbols, dependencies, token counts, and structural diffs from your codebase.
 
 ## Install
 
-### Quick install (latest release)
-
 ```sh
+# From crates.io
+cargo install supp
+
+# Or via install script
 curl -fsSL https://raw.githubusercontent.com/AndrewPBerg/supp/main/install.sh | bash
 ```
 
-### Specific version
+Binaries are available for Linux (x86_64, ARM64, musl), macOS (Intel, Apple Silicon), and Windows.
+See [GitHub Releases](https://github.com/AndrewPBerg/supp/releases) for downloads.
+
+## Quick start
 
 ```sh
-VERSION=0.1.0 curl -fsSL https://raw.githubusercontent.com/AndrewPBerg/supp/main/install.sh | bash
+# Get context from files — copies to clipboard automatically
+supp src/main.rs
+
+# Multiple files and directories
+supp src/ Cargo.toml
+
+# See what changed on your branch
+supp diff
+
+# Show the project tree with git status
+supp tree
+
+# Search for a symbol by name
+supp sym UserService
+
+# Deep-dive a symbol — definition, call sites, dependencies
+supp why handle_request
+
+# Pick files interactively with fzf
+supp pick
 ```
 
-### Custom install directory
+Add `-n` to any command to print output without copying to clipboard.
 
-```sh
-INSTALL_DIR=~/.local/bin curl -fsSL https://raw.githubusercontent.com/AndrewPBerg/supp/main/install.sh | bash
-```
+## Commands
 
-### From crates.io
+| Command | What it does |
+|---------|-------------|
+| `supp <paths>` | Extract file contents with token count |
+| `supp diff` | Structured diff between branches |
+| `supp tree` | Directory tree with git status markers |
+| `supp sym <query>` | Search symbols with PageRank ranking |
+| `supp why <symbol>` | Full context for a symbol |
+| `supp pick` | Interactive file picker (requires fzf) |
+| `supp mcp` | Start as an MCP server |
 
-```sh
-cargo install supp
-```
+## Useful flags
 
-### From source
+| Flag | Short | Description |
+|------|-------|-------------|
+| `--no-copy` | `-n` | Print only, skip clipboard |
+| `--regex` | `-r` | Filter paths by regex |
+| `--slim` | | Strip comments, collapse blanks |
+| `--map` | `-m` | Signatures and definitions only |
+| `--depth` | `-d` | Limit tree depth |
 
-```sh
-git clone https://github.com/AndrewPBerg/supp.git
-cd supp
-cargo install --path .
-```
+## Docs
 
-### Supported platforms
+Detailed usage for each command:
 
-| Target | OS | Arch |
-|--------|----|------|
-| `x86_64-unknown-linux-gnu` | Linux | x86_64 |
-| `aarch64-unknown-linux-gnu` | Linux | ARM64 |
-| `x86_64-unknown-linux-musl` | Linux (Alpine/musl) | x86_64 |
-| `x86_64-apple-darwin` | macOS | Intel |
-| `aarch64-apple-darwin` | macOS | Apple Silicon |
-| `x86_64-pc-windows-msvc` | Windows | x86_64 |
-
-Windows users: download the `.zip` from [GitHub Releases](https://github.com/AndrewPBerg/supp/releases) and add `supp.exe` to your PATH.
+- [Context](https://github.com/AndrewPBerg/supp/blob/main/docs/context.md) — file extraction
+- [Diff](https://github.com/AndrewPBerg/supp/blob/main/docs/diff.md) — git diffs and modes
+- [Tree](https://github.com/AndrewPBerg/supp/blob/main/docs/tree.md) — directory tree
+- [Config](https://github.com/AndrewPBerg/supp/blob/main/docs/config.md) — configuration
 
 ## Managing supp
 
 ```sh
-# Check installed version (auto-checks for updates)
-supp version
-
-# Update to the latest release
-supp update
-
-# Remove supp from your system
-supp uninstall
+supp version    # check version (auto-checks for updates)
+supp update     # update to latest release
+supp uninstall  # remove from system
 ```
-
-## Quality Gates
-
-| Tool | Purpose|
-|------|---------|
-| `cargo fmt` | Enforces consistent formatting |
-| `cargo clippy` | Lint checks with `-D warnings` |
-| `cargo tarpaulin` | Code coverage uploaded to Codecov |
-| `cargo audit` | Checks dependencies for known vulnerabilities |
-| `cargo deny` | License compliance, ban, and source checks |

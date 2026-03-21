@@ -1119,4 +1119,378 @@ mod tests {
         assert!(received.contains(diff_body));
         assert!(received.len() > diff_body.len());
     }
+    // ── file_status_indicator colored output ────────────────────
+
+    #[test]
+    fn file_status_indicator_colored_not_empty() {
+        for status in [
+            FileStatus::Modified,
+            FileStatus::Added,
+            FileStatus::Deleted,
+            FileStatus::Renamed,
+            FileStatus::Untracked,
+        ] {
+            let (_, colored) = file_status_indicator(status);
+            assert!(!colored.is_empty());
+        }
+    }
+
+    // ── status_label ────────────────────────────────────────────
+
+    #[test]
+    fn status_label_added() {
+        let s = status_label(DeltaStatus::Added);
+        assert!(s.to_string().contains("added"));
+    }
+
+    #[test]
+    fn status_label_deleted() {
+        let s = status_label(DeltaStatus::Deleted);
+        assert!(s.to_string().contains("deleted"));
+    }
+
+    #[test]
+    fn status_label_modified() {
+        let s = status_label(DeltaStatus::Modified);
+        assert!(s.to_string().contains("modified"));
+    }
+
+    #[test]
+    fn status_label_renamed() {
+        let s = status_label(DeltaStatus::Renamed);
+        assert!(s.to_string().contains("renamed"));
+    }
+
+    #[test]
+    fn status_label_copied() {
+        let s = status_label(DeltaStatus::Copied);
+        assert!(s.to_string().contains("copied"));
+    }
+
+    #[test]
+    fn status_label_untracked() {
+        let s = status_label(DeltaStatus::Untracked);
+        assert!(s.to_string().contains("added"));
+    }
+
+    // ── print_file_tree ─────────────────────────────────────────
+
+    #[test]
+    fn print_file_tree_single_file() {
+        let files = vec![FileEntry {
+            path: "src/main.rs".to_string(),
+            old_path: None,
+            status: DeltaStatus::Modified,
+            additions: 5,
+            deletions: 2,
+            patch: String::new(),
+        }];
+        let (name_col, add_w, del_w) = print_file_tree(&files);
+        assert!(name_col > 0);
+        assert!(add_w > 0);
+        assert!(del_w > 0);
+    }
+
+    #[test]
+    fn print_file_tree_root_level_file() {
+        let files = vec![FileEntry {
+            path: "README.md".to_string(),
+            old_path: None,
+            status: DeltaStatus::Added,
+            additions: 10,
+            deletions: 0,
+            patch: String::new(),
+        }];
+        let (name_col, _, _) = print_file_tree(&files);
+        assert!(name_col > 0);
+    }
+
+    #[test]
+    fn print_file_tree_renamed() {
+        let files = vec![FileEntry {
+            path: "new_name.rs".to_string(),
+            old_path: Some("old_name.rs".to_string()),
+            status: DeltaStatus::Renamed,
+            additions: 0,
+            deletions: 0,
+            patch: String::new(),
+        }];
+        let _ = print_file_tree(&files);
+    }
+
+    #[test]
+    fn print_file_tree_multiple_dirs() {
+        let files = vec![
+            FileEntry {
+                path: "src/main.rs".to_string(),
+                old_path: None,
+                status: DeltaStatus::Modified,
+                additions: 3,
+                deletions: 1,
+                patch: String::new(),
+            },
+            FileEntry {
+                path: "tests/test.rs".to_string(),
+                old_path: None,
+                status: DeltaStatus::Added,
+                additions: 10,
+                deletions: 0,
+                patch: String::new(),
+            },
+        ];
+        let _ = print_file_tree(&files);
+    }
+
+    // ── print_summary ───────────────────────────────────────────
+
+    #[test]
+    fn print_summary_all_statuses() {
+        let files = vec![
+            FileEntry {
+                path: "a.rs".to_string(),
+                old_path: None,
+                status: DeltaStatus::Added,
+                additions: 10,
+                deletions: 0,
+                patch: String::new(),
+            },
+            FileEntry {
+                path: "b.rs".to_string(),
+                old_path: None,
+                status: DeltaStatus::Modified,
+                additions: 5,
+                deletions: 2,
+                patch: String::new(),
+            },
+            FileEntry {
+                path: "c.rs".to_string(),
+                old_path: None,
+                status: DeltaStatus::Deleted,
+                additions: 0,
+                deletions: 8,
+                patch: String::new(),
+            },
+            FileEntry {
+                path: "d.rs".to_string(),
+                old_path: Some("old.rs".to_string()),
+                status: DeltaStatus::Renamed,
+                additions: 0,
+                deletions: 0,
+                patch: String::new(),
+            },
+            FileEntry {
+                path: "e.rs".to_string(),
+                old_path: None,
+                status: DeltaStatus::Untracked,
+                additions: 3,
+                deletions: 0,
+                patch: String::new(),
+            },
+        ];
+        print_summary(&files, 30, 3, 3);
+    }
+
+    #[test]
+    fn print_summary_single_file() {
+        let files = vec![FileEntry {
+            path: "a.rs".to_string(),
+            old_path: None,
+            status: DeltaStatus::Modified,
+            additions: 1,
+            deletions: 1,
+            patch: String::new(),
+        }];
+        print_summary(&files, 20, 2, 2);
+    }
+
+    // ── print_diff_result ───────────────────────────────────────
+
+    fn make_token_pair() -> (
+        std::sync::mpsc::Sender<String>,
+        std::thread::JoinHandle<Option<usize>>,
+    ) {
+        let (tx, rx) = std::sync::mpsc::channel::<String>();
+        let handle = std::thread::spawn(move || {
+            let _text: String = rx.recv().ok()?;
+            Some(0usize)
+        });
+        (tx, handle)
+    }
+
+    #[test]
+    fn print_diff_result_empty_files() {
+        let result = DiffResult {
+            label: "test".to_string(),
+            files: vec![],
+            text: "".to_string(),
+            has_conflicts: false,
+            is_branch_comparison: false,
+            commit_count: None,
+            stale_check: None,
+        };
+        let (tx, handle) = make_token_pair();
+        print_diff_result(result, true, std::time::Instant::now(), tx, handle);
+    }
+
+    #[test]
+    fn print_diff_result_with_conflicts() {
+        let result = DiffResult {
+            label: "origin/main ... feature".to_string(),
+            files: vec![],
+            text: "".to_string(),
+            has_conflicts: true,
+            is_branch_comparison: true,
+            commit_count: Some(3),
+            stale_check: None,
+        };
+        let (tx, handle) = make_token_pair();
+        print_diff_result(result, true, std::time::Instant::now(), tx, handle);
+    }
+
+    #[test]
+    fn print_diff_result_no_conflicts() {
+        let result = DiffResult {
+            label: "origin/main ... feature".to_string(),
+            files: vec![],
+            text: "".to_string(),
+            has_conflicts: false,
+            is_branch_comparison: true,
+            commit_count: Some(1),
+            stale_check: None,
+        };
+        let (tx, handle) = make_token_pair();
+        print_diff_result(result, true, std::time::Instant::now(), tx, handle);
+    }
+
+    #[test]
+    fn print_diff_result_with_files() {
+        let result = DiffResult {
+            label: "test".to_string(),
+            files: vec![FileEntry {
+                path: "src/main.rs".to_string(),
+                old_path: None,
+                status: DeltaStatus::Modified,
+                additions: 5,
+                deletions: 2,
+                patch: "+new line\n".to_string(),
+            }],
+            text: "+new line\n".to_string(),
+            has_conflicts: false,
+            is_branch_comparison: false,
+            commit_count: None,
+            stale_check: None,
+        };
+        let (tx, handle) = make_token_pair();
+        print_diff_result(result, true, std::time::Instant::now(), tx, handle);
+    }
+
+    // ── print_tree_result ───────────────────────────────────────
+
+    #[test]
+    fn print_tree_result_basic() {
+        let mut status_counts = std::collections::HashMap::new();
+        status_counts.insert(FileStatus::Modified, 1);
+        let result = TreeResult {
+            display: "root/\n└── file.txt [M]\n".to_string(),
+            plain: "root/\n└── file.txt\n".to_string(),
+            file_count: 1,
+            dir_count: 0,
+            status_counts,
+        };
+        let (tx, handle) = make_token_pair();
+        print_tree_result(result, ".", true, std::time::Instant::now(), tx, handle);
+    }
+
+    #[test]
+    fn print_tree_result_no_statuses() {
+        let result = TreeResult {
+            display: "root/\n└── file.txt\n".to_string(),
+            plain: "root/\n└── file.txt\n".to_string(),
+            file_count: 1,
+            dir_count: 1,
+            status_counts: std::collections::HashMap::new(),
+        };
+        let (tx, handle) = make_token_pair();
+        print_tree_result(result, "src", true, std::time::Instant::now(), tx, handle);
+    }
+
+    #[test]
+    fn print_tree_result_all_status_types() {
+        let mut status_counts = std::collections::HashMap::new();
+        status_counts.insert(FileStatus::Modified, 2);
+        status_counts.insert(FileStatus::Added, 1);
+        status_counts.insert(FileStatus::Untracked, 3);
+        status_counts.insert(FileStatus::Renamed, 1);
+        let result = TreeResult {
+            display: "root/\n".to_string(),
+            plain: "root/\n".to_string(),
+            file_count: 7,
+            dir_count: 2,
+            status_counts,
+        };
+        let (tx, handle) = make_token_pair();
+        print_tree_result(result, ".", true, std::time::Instant::now(), tx, handle);
+    }
+
+    // ── print_footer edge cases ─────────────────────────────────
+
+    #[test]
+    fn print_footer_with_tokens() {
+        let (tx, _) = std::sync::mpsc::channel::<String>();
+        let token_handle = std::thread::spawn(|| Some(1234usize));
+        print_footer(
+            "test text",
+            true,
+            std::time::Instant::now(),
+            tx,
+            token_handle,
+            None,
+            false,
+        );
+    }
+
+    #[test]
+    fn print_footer_with_compression() {
+        let (tx, _) = std::sync::mpsc::channel::<String>();
+        let token_handle = std::thread::spawn(|| None);
+        print_footer(
+            "test text",
+            true,
+            std::time::Instant::now(),
+            tx,
+            token_handle,
+            Some((200, 100)),
+            false,
+        );
+    }
+
+    #[test]
+    fn print_footer_stderr_mode() {
+        let (tx, _) = std::sync::mpsc::channel::<String>();
+        let token_handle = std::thread::spawn(|| None);
+        print_footer(
+            "test text",
+            true,
+            std::time::Instant::now(),
+            tx,
+            token_handle,
+            Some((200, 100)),
+            true,
+        );
+    }
+
+    #[test]
+    fn print_footer_no_compression_when_equal() {
+        let (tx, _) = std::sync::mpsc::channel::<String>();
+        let token_handle = std::thread::spawn(|| None);
+        print_footer(
+            "test text",
+            true,
+            std::time::Instant::now(),
+            tx,
+            token_handle,
+            Some((100, 100)),
+            false,
+        );
+    }
 }
