@@ -62,11 +62,15 @@ pub struct HierarchyEntry {
 
 // ── Public API ──────────────────────────────────────────────────────
 
-pub fn explain(root: &str, query: &[String]) -> Result<WhyResult> {
+pub fn explain(
+    root: &str,
+    query: &[String],
+    perf: &crate::config::PerfProfile,
+) -> Result<WhyResult> {
     let root_path = std::fs::canonicalize(root)?;
 
     // 1. Find the symbol using the existing index
-    let search = symbol::search(root, query)?;
+    let search = symbol::search(root, query, perf.pagerank_iters)?;
     let sym = pick_best_match(&search, query)?;
 
     // 2. Read the source file
@@ -80,10 +84,15 @@ pub fn explain(root: &str, query: &[String]) -> Result<WhyResult> {
     let full_definition = definition::extract_full_definition(&content, &sym);
 
     // 5. Find call sites across the codebase
-    let call_sites = call_sites::find_call_sites(&root_path, &sym);
+    let call_sites = call_sites::find_call_sites(
+        &root_path,
+        &sym,
+        perf.call_sites_cap,
+        perf.call_sites_early_exit,
+    );
 
     // 6. Load full symbol index + file imports for dependency resolution
-    let all_symbols = symbol::load_symbols(&root_path);
+    let all_symbols = symbol::load_symbols(&root_path, perf.pagerank_iters);
     let file_imports = imports::extract_file_imports(&content, &sym.file, &root_path);
 
     // 7. Find dependencies (what this symbol calls/uses)
@@ -297,14 +306,18 @@ mod tests {
         dir
     }
 
+    fn default_perf() -> crate::config::PerfProfile {
+        crate::config::PerfMode::Full.profile()
+    }
+
     fn run(dir: &TempDir, query: &[&str]) -> WhyResult {
         let query: Vec<String> = query.iter().map(|s| s.to_string()).collect();
-        explain(dir.path().to_str().unwrap(), &query).unwrap()
+        explain(dir.path().to_str().unwrap(), &query, &default_perf()).unwrap()
     }
 
     fn run_err(dir: &TempDir, query: &[&str]) -> String {
         let query: Vec<String> = query.iter().map(|s| s.to_string()).collect();
-        match explain(dir.path().to_str().unwrap(), &query) {
+        match explain(dir.path().to_str().unwrap(), &query, &default_perf()) {
             Ok(_) => panic!("expected error"),
             Err(e) => e.to_string(),
         }
@@ -1538,7 +1551,7 @@ export function Counter() {
             "#ifndef TYPES_H\n#define TYPES_H\ntypedef struct {\n    int x;\n    int y;\n} Vec2;\n#endif\n",
         )]);
         let query: Vec<String> = vec!["Vec2".to_string()];
-        let result = explain(dir.path().to_str().unwrap(), &query);
+        let result = explain(dir.path().to_str().unwrap(), &query, &default_perf());
         let _ = result;
     }
 
@@ -1805,7 +1818,12 @@ export function Counter() {
                 "from dog import Dog\n\ndef run():\n    d = Dog()\n    d.bark()\n",
             ),
         ]);
-        let result = explain(dir.path().to_str().unwrap(), &["Dog".to_string()]).unwrap();
+        let result = explain(
+            dir.path().to_str().unwrap(),
+            &["Dog".to_string()],
+            &default_perf(),
+        )
+        .unwrap();
         assert_eq!(result.symbol.name, "Dog");
         assert!(result.plain.contains("Dog"));
         assert!(result.plain.contains("## Definition"));
@@ -1824,7 +1842,12 @@ export function Counter() {
                 "use crate::lib::compute;\nfn main() {\n    compute(5);\n}\n",
             ),
         ]);
-        let result = explain(dir.path().to_str().unwrap(), &["compute".to_string()]).unwrap();
+        let result = explain(
+            dir.path().to_str().unwrap(),
+            &["compute".to_string()],
+            &default_perf(),
+        )
+        .unwrap();
         assert_eq!(result.symbol.name, "compute");
         assert!(result.plain.contains("## Definition"));
         // Should have call sites from main.rs
@@ -1839,7 +1862,12 @@ export function Counter() {
             "lib.rs",
             "/// Does something important\npub fn important() -> bool {\n    true\n}\n",
         )]);
-        let result = explain(dir.path().to_str().unwrap(), &["important".to_string()]).unwrap();
+        let result = explain(
+            dir.path().to_str().unwrap(),
+            &["important".to_string()],
+            &default_perf(),
+        )
+        .unwrap();
         assert!(result.doc_comment.is_some());
         assert!(result.plain.contains("Documentation"));
     }
@@ -1854,6 +1882,7 @@ export function Counter() {
         let result = explain(
             dir.path().to_str().unwrap(),
             &["Foo".to_string(), "method".to_string()],
+            &default_perf(),
         )
         .unwrap();
         assert!(result.symbol.name == "method" || result.symbol.name == "Foo");

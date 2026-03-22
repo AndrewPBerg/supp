@@ -156,7 +156,11 @@ fn parse_file_entry(abs_path: &Path, rel_path: &str) -> Option<(Vec<Symbol>, Vec
     Some((vec![sym], refs))
 }
 
-fn compute_ranks(symbols: &[Symbol], file_refs: &HashMap<String, Vec<String>>) -> Vec<f64> {
+fn compute_ranks(
+    symbols: &[Symbol],
+    file_refs: &HashMap<String, Vec<String>>,
+    pagerank_iters: usize,
+) -> Vec<f64> {
     // Build name → symbol indices map
     let mut name_to_indices: HashMap<&str, Vec<usize>> = HashMap::new();
     for (i, sym) in symbols.iter().enumerate() {
@@ -201,7 +205,7 @@ fn compute_ranks(symbols: &[Symbol], file_refs: &HashMap<String, Vec<String>>) -
         }
     }
 
-    pagerank(&edges, symbols.len(), 15, 0.85)
+    pagerank(&edges, symbols.len(), pagerank_iters, 0.85)
 }
 
 // ── Index ───────────────────────────────────────────────────────────
@@ -225,7 +229,7 @@ fn collect_files(root: &Path) -> Vec<(PathBuf, String)> {
     files
 }
 
-fn build_index(root: &Path) -> IndexResult {
+fn build_index(root: &Path, pagerank_iters: usize) -> IndexResult {
     let files = collect_files(root);
 
     // Parse files in parallel (rayon thread pool)
@@ -245,7 +249,7 @@ fn build_index(root: &Path) -> IndexResult {
         file_refs.insert(file, refs);
     }
 
-    let ranks = compute_ranks(&symbols, &file_refs);
+    let ranks = compute_ranks(&symbols, &file_refs, pagerank_iters);
 
     let file_meta_map: HashMap<String, (u64, u64)> = files
         .iter()
@@ -261,12 +265,12 @@ fn build_index(root: &Path) -> IndexResult {
     }
 }
 
-fn build_index_incremental(root: &Path, old_cache: &Cache) -> IndexResult {
+fn build_index_incremental(root: &Path, old_cache: &Cache, pagerank_iters: usize) -> IndexResult {
     let files = collect_files(root);
 
     // If old cache has no file_refs (pre-upgrade cache format), full rebuild
     if old_cache.file_refs.is_empty() && !old_cache.symbols.is_empty() {
-        return build_index(root);
+        return build_index(root, pagerank_iters);
     }
 
     // Partition files into unchanged and changed/new
@@ -344,7 +348,7 @@ fn build_index_incremental(root: &Path, old_cache: &Cache) -> IndexResult {
     }
 
     // Recompute PageRank on merged data
-    let ranks = compute_ranks(&symbols, &file_refs);
+    let ranks = compute_ranks(&symbols, &file_refs, pagerank_iters);
 
     let file_meta_map: HashMap<String, (u64, u64)> = files
         .iter()
@@ -1586,11 +1590,11 @@ fn score_query(symbols: &[Symbol], ranks: &[f64], query_tokens: &[String]) -> Ve
 // ── Public API ──────────────────────────────────────────────────────
 
 /// Build (or incrementally update) the symbol index and save the cache if anything changed.
-fn build_and_save(root: &Path) -> IndexResult {
+fn build_and_save(root: &Path, pagerank_iters: usize) -> IndexResult {
     let result = if let Some(cache) = load_cache(root) {
-        build_index_incremental(root, &cache)
+        build_index_incremental(root, &cache, pagerank_iters)
     } else {
-        build_index(root)
+        build_index(root, pagerank_iters)
     };
 
     if result.changed {
@@ -1608,9 +1612,9 @@ fn build_and_save(root: &Path) -> IndexResult {
     result
 }
 
-pub fn search(root: &str, query: &[String]) -> Result<SearchResult> {
+pub fn search(root: &str, query: &[String], pagerank_iters: usize) -> Result<SearchResult> {
     let root_path = std::fs::canonicalize(root)?;
-    let result = build_and_save(&root_path);
+    let result = build_and_save(&root_path, pagerank_iters);
 
     let total_symbols = result.symbols.len();
     let scored = score_query(&result.symbols, &result.ranks, query);
@@ -1627,8 +1631,8 @@ pub fn search(root: &str, query: &[String]) -> Result<SearchResult> {
 }
 
 /// Load all indexed symbols (from cache or fresh build). Used by `why` for dependency lookup.
-pub fn load_symbols(root: &Path) -> Vec<Symbol> {
-    let result = build_and_save(root);
+pub fn load_symbols(root: &Path, pagerank_iters: usize) -> Vec<Symbol> {
+    let result = build_and_save(root, pagerank_iters);
     result.symbols
 }
 
@@ -2044,7 +2048,7 @@ mod tests {
         file_refs.insert("a.rs".to_string(), vec!["foo".to_string()]);
         file_refs.insert("b.rs".to_string(), vec![]);
 
-        let ranks = compute_ranks(&symbols, &file_refs);
+        let ranks = compute_ranks(&symbols, &file_refs, 15);
         assert_eq!(ranks.len(), 2);
         // foo (target) should have higher rank than bar (source)
         assert!(ranks[1] > ranks[0], "foo should rank higher than bar");
@@ -2062,7 +2066,7 @@ mod tests {
             keywords: Vec::new(),
         }];
         let file_refs = HashMap::new();
-        let ranks = compute_ranks(&symbols, &file_refs);
+        let ranks = compute_ranks(&symbols, &file_refs, 15);
         assert_eq!(ranks.len(), 1);
     }
 
@@ -2093,7 +2097,7 @@ mod tests {
         // a.rs references foo, but only has a struct (not function), so no edge
         file_refs.insert("a.rs".to_string(), vec!["foo".to_string()]);
 
-        let ranks = compute_ranks(&symbols, &file_refs);
+        let ranks = compute_ranks(&symbols, &file_refs, 15);
         assert_eq!(ranks.len(), 2);
         // Without edges, ranks should be roughly equal
         assert!(
@@ -2117,7 +2121,7 @@ mod tests {
         let mut file_refs = HashMap::new();
         file_refs.insert("a.rs".to_string(), vec!["recurse".to_string()]);
 
-        let ranks = compute_ranks(&symbols, &file_refs);
+        let ranks = compute_ranks(&symbols, &file_refs, 15);
         assert_eq!(ranks.len(), 1);
         // Should still get a valid rank (no self-edge means no boost)
         assert!(ranks[0] > 0.0);
@@ -2520,7 +2524,7 @@ function hello() {}
             "pub fn find_me() -> i32 { 42 }\npub fn other() {}\n",
         )
         .unwrap();
-        let result = search(tmp.path().to_str().unwrap(), &["find_me".to_string()]);
+        let result = search(tmp.path().to_str().unwrap(), &["find_me".to_string()], 15);
         assert!(result.is_ok());
         let result = result.unwrap();
         assert!(result.total_symbols > 0);
@@ -2535,6 +2539,7 @@ function hello() {}
         let result = search(
             tmp.path().to_str().unwrap(),
             &["zzzznonexistent".to_string()],
+            15,
         )
         .unwrap();
         assert!(result.matches.is_empty());
@@ -2548,7 +2553,7 @@ function hello() {}
             "pub fn my_func() {}\npub struct MyStruct {}\n",
         )
         .unwrap();
-        let symbols = load_symbols(tmp.path());
+        let symbols = load_symbols(tmp.path(), 15);
         assert!(symbols.len() >= 2);
         let names: Vec<&str> = symbols.iter().map(|s| s.name.as_str()).collect();
         assert!(names.contains(&"my_func"));
@@ -2612,7 +2617,7 @@ function hello() {}
     fn build_and_save_creates_cache() {
         let tmp = tempfile::TempDir::new().unwrap();
         std::fs::write(tmp.path().join("main.rs"), "fn main() {}\n").unwrap();
-        let result = build_and_save(tmp.path());
+        let result = build_and_save(tmp.path(), 15);
         assert!(!result.symbols.is_empty());
         // Cache should have been saved
         let cp = cache_path(tmp.path());
@@ -2624,10 +2629,10 @@ function hello() {}
         let tmp = tempfile::TempDir::new().unwrap();
         std::fs::write(tmp.path().join("main.rs"), "fn main() {}\n").unwrap();
         // First build
-        let result1 = build_and_save(tmp.path());
+        let result1 = build_and_save(tmp.path(), 15);
         assert!(result1.changed);
         // Second build without changes - should use cache
-        let result2 = build_and_save(tmp.path());
+        let result2 = build_and_save(tmp.path(), 15);
         assert!(
             !result2.changed,
             "second build should use cache and not be marked changed"
