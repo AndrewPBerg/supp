@@ -1,1 +1,7 @@
 /target
+.env
+coverage.html
+coverage.xml
+
+# wt-forge config (user-specific)
+.wt-forge.*
