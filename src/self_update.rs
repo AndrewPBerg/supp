@@ -54,21 +54,38 @@ pub fn self_update() -> Result<()> {
         .parent()
         .ok_or_else(|| anyhow::anyhow!("cannot determine install directory"))?;
 
-    let script_url = format!("https://raw.githubusercontent.com/{REPO}/main/install.sh");
-
     println!("Downloading and running install script...");
 
-    let status = Command::new("bash")
-        .args([
-            "-c",
-            &format!(
-                "VERSION={latest} INSTALL_DIR={dir} bash <(curl -fsSL {url})",
-                latest = latest,
-                dir = install_dir.display(),
-                url = script_url,
-            ),
-        ])
-        .status()?;
+    let status = if cfg!(windows) {
+        let script_url = format!("https://raw.githubusercontent.com/{REPO}/main/install.ps1");
+        Command::new("powershell")
+            .args([
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                &format!(
+                    "&([scriptblock]::Create((irm '{url}'))) -Version '{latest}' -InstallDir '{dir}'",
+                    url = script_url,
+                    latest = latest,
+                    dir = install_dir.display(),
+                ),
+            ])
+            .status()?
+    } else {
+        let script_url = format!("https://raw.githubusercontent.com/{REPO}/main/install.sh");
+        Command::new("bash")
+            .args([
+                "-c",
+                &format!(
+                    "VERSION={latest} INSTALL_DIR={dir} bash <(curl -fsSL {url})",
+                    latest = latest,
+                    dir = install_dir.display(),
+                    url = script_url,
+                ),
+            ])
+            .status()?
+    };
 
     if !status.success() {
         bail!("Update failed — install script exited with error");
