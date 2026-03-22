@@ -11,8 +11,16 @@ Structured code context for LLMs. Extracts files, diffs, symbols, and trees from
 # From crates.io
 cargo install supp
 
-# Or via install script
+# Or via install script (Linux / macOS)
 curl -fsSL https://raw.githubusercontent.com/AndrewPBerg/supp/main/install.sh | bash
+```
+
+**Windows (PowerShell):**
+
+```powershell
+Invoke-WebRequest -Uri https://raw.githubusercontent.com/AndrewPBerg/supp/main/install.ps1 -OutFile install.ps1
+.\install.ps1
+Remove-Item install.ps1
 ```
 
 Binaries are available for Linux (x86_64, ARM64, musl), macOS (Intel, Apple Silicon), and Windows.
