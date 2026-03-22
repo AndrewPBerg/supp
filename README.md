@@ -63,6 +63,7 @@ Add `-n` to any command to print output without copying to clipboard.
 | `supp sym <query>` | Find functions, types, and constants by name |
 | `supp why <symbol>` | Explain a symbol — definition, call sites, and dependencies |
 | `supp pick` | Interactive file picker (requires fzf) |
+| `supp perf [mode]` | Set or check the global performance mode |
 | `supp clean-cache` | Delete the symbol cache for a project |
 
 > **NOTE:** `supp pick` requires [fzf](https://github.com/junegunn/fzf) to be installed and available on your `PATH`. Install it via your package manager (e.g. `brew install fzf`, `winget install fzf`, `pacman -S fzf`, `xbps-install fzf`) before using this command.
@@ -78,6 +79,7 @@ Add `-n` to any command to print output without copying to clipboard.
 | `--slim` | | Reduce noise: strip comments, collapse blanks |
 | `--map` | `-m` | Outline mode: signatures, types, and API surface only |
 | `--depth` | `-d` | Limit tree depth |
+| `--perf` | `-p` | Override performance mode for this command |
 
 ## Docs
 
@@ -90,6 +92,7 @@ Detailed usage for each command:
 - [Tree](https://github.com/AndrewPBerg/supp/blob/main/docs/tree.md) — directory tree
 - [Examples](https://github.com/AndrewPBerg/supp/blob/main/docs/examples.md) — workflows and multi-language demos
 - [Config](https://github.com/AndrewPBerg/supp/blob/main/docs/config.md) — configuration
+- [Performance](https://github.com/AndrewPBerg/supp/blob/main/docs/perf.md) — performance modes for large codebases
 
 ## Claude Code integration
 
@@ -120,6 +123,24 @@ These work well as starting points for Claude Code conversations:
 # Explore a domain concept across languages
 "Use /sym User to find all User-related types, then /why the most important one."
 ```
+
+## Performance modes
+
+On large codebases, supp can use significant CPU and memory. Set a global mode with `supp perf` or override per-command with `-p`:
+
+```sh
+supp perf lite                      # set globally (persisted)
+supp perf                           # check current mode
+supp -p full sym handler            # override for one command
+```
+
+| Mode | Threads | Best for |
+|------|---------|----------|
+| `full` | all cores | Small-to-medium projects (default) |
+| `balanced` | half cores | Large projects (20k-100k files) |
+| `lite` | 2 | Monorepos (100k+ files), constrained environments |
+
+See [Performance Modes](https://github.com/AndrewPBerg/supp/blob/main/docs/perf.md) for technical details on what each mode tunes.
 
 ## Token estimation
 

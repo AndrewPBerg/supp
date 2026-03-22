@@ -9,6 +9,7 @@ use regex::Regex;
 use serde::Serialize;
 
 use crate::compress::{self, Mode};
+use crate::config::PerfProfile;
 use crate::symbol::{self, Symbol, SymbolKind};
 use crate::tree;
 use crate::why;
@@ -64,9 +65,12 @@ pub fn analyze(
     depth: usize,
     regex: Option<&str>,
     mode: Mode,
-    max_files: usize,
-    max_total_bytes: u64,
+    perf: &PerfProfile,
 ) -> Result<AnalysisResult> {
+    let max_files = perf.max_files;
+    let max_total_bytes = perf.max_total_mb * 1024 * 1024;
+    let used_by_file_threshold = perf.used_by_file_threshold;
+    let pagerank_iters = perf.pagerank_iters;
     let re = regex.map(Regex::new).transpose()?;
 
     // 1. Resolve paths
@@ -128,7 +132,7 @@ pub fn analyze(
     // 3. Overlap file reads (rayon) with symbol index loading (background thread)
     let (mut read_files, all_symbols) = std::thread::scope(|s| {
         let rp = &root_path;
-        let sym_handle = s.spawn(move || symbol::load_symbols(rp));
+        let sym_handle = s.spawn(move || symbol::load_symbols(rp, pagerank_iters));
 
         let read_files: Vec<FileData> = file_paths
             .par_iter()
@@ -295,7 +299,7 @@ pub fn analyze(
             }
 
             // Used-by (only for small file sets to avoid O(n*m) explosion)
-            let used_by = if file_count <= 20 {
+            let used_by = if used_by_file_threshold > 0 && file_count <= used_by_file_threshold {
                 let sym_names: Vec<&str> = symbols
                     .iter()
                     .filter(|s| s.name.len() > 2)
@@ -639,9 +643,13 @@ mod tests {
         dir
     }
 
+    fn test_perf() -> PerfProfile {
+        crate::config::PerfMode::Full.profile()
+    }
+
     fn analyze_one(root: &str, file: &str, mode: Mode) -> Result<AnalysisResult> {
         let full = Path::new(root).join(file).to_string_lossy().to_string();
-        analyze(root, &[full], 2, None, mode, 20000, 50 * 1024 * 1024)
+        analyze(root, &[full], 2, None, mode, &test_perf())
     }
 
     // ── Single-file tests (migrated from old ctx.rs) ────────────
@@ -780,8 +788,7 @@ mod tests {
             2,
             None,
             Mode::Full,
-            20000,
-            50 * 1024 * 1024,
+            &test_perf(),
         )
         .unwrap();
         assert_eq!(result.file_count, 1);
@@ -798,8 +805,7 @@ mod tests {
             2,
             None,
             Mode::Full,
-            20000,
-            50 * 1024 * 1024,
+            &test_perf(),
         )
         .unwrap();
         assert_eq!(result.file_count, 2);
@@ -816,8 +822,7 @@ mod tests {
             2,
             Some(r"\.rs$"),
             Mode::Full,
-            20000,
-            50 * 1024 * 1024,
+            &test_perf(),
         )
         .unwrap();
         assert_eq!(result.file_count, 1);
@@ -833,8 +838,7 @@ mod tests {
             2,
             None,
             Mode::Full,
-            20000,
-            50 * 1024 * 1024,
+            &test_perf(),
         );
         assert!(result.is_err());
     }
@@ -848,8 +852,7 @@ mod tests {
             2,
             Some(r"\.rs$"),
             Mode::Full,
-            20000,
-            50 * 1024 * 1024,
+            &test_perf(),
         );
         assert!(result.is_err());
     }
@@ -864,8 +867,7 @@ mod tests {
             2,
             None,
             Mode::Full,
-            20000,
-            50 * 1024 * 1024,
+            &test_perf(),
         )
         .unwrap();
         assert!(result.plain.contains("================================"));
@@ -883,8 +885,7 @@ mod tests {
             2,
             None,
             Mode::Full,
-            20000,
-            50 * 1024 * 1024,
+            &test_perf(),
         )
         .unwrap();
         assert_eq!(result.total_bytes, 10);
@@ -908,8 +909,7 @@ mod tests {
             2,
             None,
             Mode::Full,
-            20000,
-            50 * 1024 * 1024,
+            &test_perf(),
         )
         .unwrap();
         // Should have hierarchy section with parent reference
@@ -935,8 +935,7 @@ mod tests {
             2,
             None,
             Mode::Full,
-            20000,
-            50 * 1024 * 1024,
+            &test_perf(),
         )
         .unwrap();
         assert!(result.plain.contains("DEPENDENCIES"));
@@ -955,8 +954,7 @@ mod tests {
             2,
             None,
             Mode::Full,
-            20000,
-            50 * 1024 * 1024,
+            &test_perf(),
         )
         .unwrap();
         assert!(result.plain.contains("Directory:"));
@@ -974,8 +972,7 @@ mod tests {
             2,
             None,
             Mode::Full,
-            20000,
-            50 * 1024 * 1024,
+            &test_perf(),
         )
         .unwrap();
         assert!(result.plain.contains("Files:"));
@@ -1009,8 +1006,7 @@ mod tests {
             2,
             None,
             Mode::Full,
-            20000,
-            50 * 1024 * 1024,
+            &test_perf(),
         )
         .unwrap();
         assert_eq!(result.file_count, 2);
@@ -1062,14 +1058,15 @@ mod tests {
             ("b.rs", "fn b() {}"),
             ("c.rs", "fn c() {}"),
         ]);
+        let mut small_perf = test_perf();
+        small_perf.max_files = 2; // max_files = 2, but we have 3 files
         let result = analyze(
             dir.path().to_str().unwrap(),
             &[dir.path().to_string_lossy().to_string()],
             2,
             None,
             Mode::Full,
-            2, // max_files = 2, but we have 3 files
-            50 * 1024 * 1024,
+            &small_perf,
         );
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
@@ -1079,14 +1076,15 @@ mod tests {
     #[test]
     fn max_total_bytes_exceeded() {
         let dir = setup(&[("big.rs", &"x".repeat(1000))]);
+        let mut small_perf = test_perf();
+        small_perf.max_total_mb = 0; // 0 bytes, content is 1000
         let result = analyze(
             dir.path().to_str().unwrap(),
             &[dir.path().join("big.rs").to_string_lossy().to_string()],
             2,
             None,
             Mode::Full,
-            20000,
-            500, // max_total_bytes = 500, but content is 1000 bytes
+            &small_perf,
         );
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
@@ -1101,8 +1099,7 @@ mod tests {
             2,
             None,
             Mode::Full,
-            20000,
-            50 * 1024 * 1024,
+            &test_perf(),
         );
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
@@ -1118,8 +1115,7 @@ mod tests {
             2,
             Some(r"\.rs$"), // regex only matches .rs files, but we only have .txt
             Mode::Full,
-            20000,
-            50 * 1024 * 1024,
+            &test_perf(),
         );
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
@@ -1140,14 +1136,15 @@ mod tests {
             .iter()
             .map(|n| dir.path().join(n).to_string_lossy().to_string())
             .collect();
+        let mut big_perf = test_perf();
+        big_perf.max_files = 30000;
         let result = analyze(
             dir.path().to_str().unwrap(),
             &paths,
             2,
             None,
             Mode::Full,
-            30000,
-            50 * 1024 * 1024,
+            &big_perf,
         )
         .unwrap();
         assert_eq!(result.file_count, 22);
@@ -1171,8 +1168,7 @@ mod tests {
             2,
             None,
             Mode::Full,
-            20000,
-            50 * 1024 * 1024,
+            &test_perf(),
         )
         .unwrap();
         // Should find used-by references from main.rs

@@ -7,7 +7,12 @@ use super::CallSite;
 
 // ── Call site discovery ─────────────────────────────────────────────
 
-pub(crate) fn find_call_sites(root: &Path, sym: &Symbol) -> Vec<CallSite> {
+pub(crate) fn find_call_sites(
+    root: &Path,
+    sym: &Symbol,
+    cap: usize,
+    early_exit: bool,
+) -> Vec<CallSite> {
     let mut sites = Vec::new();
     let name = &sym.name;
 
@@ -22,7 +27,7 @@ pub(crate) fn find_call_sites(root: &Path, sym: &Symbol) -> Vec<CallSite> {
         .sort_by_file_name(|a, b| a.cmp(b))
         .build();
 
-    for entry in walker.flatten() {
+    'walk: for entry in walker.flatten() {
         let path = entry.path();
         if !path.is_file() {
             continue;
@@ -67,11 +72,15 @@ pub(crate) fn find_call_sites(root: &Path, sym: &Symbol) -> Vec<CallSite> {
                     context: line.trim().to_string(),
                     caller,
                 });
+
+                if early_exit && sites.len() >= cap {
+                    break 'walk;
+                }
             }
         }
     }
 
-    sites.truncate(30);
+    sites.truncate(cap);
     sites
 }
 
@@ -278,7 +287,7 @@ mod tests {
         )
         .unwrap();
         let s = sym("helper", "lib.rs", 1);
-        let sites = find_call_sites(dir.path(), &s);
+        let sites = find_call_sites(dir.path(), &s, 30, false);
         assert!(!sites.is_empty());
         assert!(sites.iter().any(|s| s.file == "main.rs"));
     }
@@ -292,7 +301,7 @@ mod tests {
         )
         .unwrap();
         let s = sym("helper", "lib.rs", 1);
-        let sites = find_call_sites(dir.path(), &s);
+        let sites = find_call_sites(dir.path(), &s, 30, false);
         // Should find the call in caller() but not the definition itself
         assert!(sites.iter().all(|s| s.line > 3));
     }
@@ -302,7 +311,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         fs::write(dir.path().join("test.rs"), "let x = 1;\n").unwrap();
         let s = sym("x", "test.rs", 1);
-        let sites = find_call_sites(dir.path(), &s);
+        let sites = find_call_sites(dir.path(), &s, 30, false);
         assert!(sites.is_empty());
     }
 
@@ -315,7 +324,7 @@ mod tests {
         }
         fs::write(dir.path().join("test.rs"), &content).unwrap();
         let s = sym("target", "test.rs", 1);
-        let sites = find_call_sites(dir.path(), &s);
+        let sites = find_call_sites(dir.path(), &s, 30, false);
         assert!(sites.len() <= 30);
     }
 
@@ -328,7 +337,7 @@ mod tests {
         )
         .unwrap();
         let s = sym("target", "test.rs", 1);
-        let sites = find_call_sites(dir.path(), &s);
+        let sites = find_call_sites(dir.path(), &s, 30, false);
         assert!(
             sites
                 .iter()

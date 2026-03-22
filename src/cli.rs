@@ -37,6 +37,10 @@ pub struct Cli {
     #[arg(short = 'd', long = "depth")]
     pub depth: Option<usize>,
 
+    /// Performance mode override: full, balanced, lite
+    #[arg(short = 'p', long = "perf", global = true)]
+    pub perf: Option<String>,
+
     #[command(subcommand)]
     pub command: Option<Commands>,
 }
@@ -127,6 +131,11 @@ pub enum Commands {
         /// Project root (defaults to ".")
         path: Option<String>,
     },
+    /// Set or check the global performance mode
+    Perf {
+        /// Mode to set (full, balanced, lite). Omit to check current mode.
+        mode: Option<String>,
+    },
 }
 
 impl Cli {
@@ -157,6 +166,18 @@ impl Cli {
                 "map" => crate::compress::Mode::Map,
                 _ => crate::compress::Mode::Full,
             }
+        }
+    }
+
+    pub fn resolve_perf(&self, _config: &crate::config::Config) -> crate::config::PerfMode {
+        // CLI flag (-p/--perf) > SUPP_PERF env var > persisted file > default (full)
+        let raw = self
+            .perf
+            .clone()
+            .or_else(|| std::env::var("SUPP_PERF").ok());
+        match raw {
+            Some(r) => r.parse().unwrap_or(crate::config::PerfMode::Full),
+            None => crate::config::load_perf_mode(),
         }
     }
 

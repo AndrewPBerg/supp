@@ -31,6 +31,17 @@ fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
+    let perf_mode = cli.resolve_perf(&config);
+    let perf = perf_mode.profile();
+
+    // Configure rayon thread pool based on perf mode
+    if perf.rayon_threads > 0 {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(perf.rayon_threads)
+            .build_global()
+            .ok();
+    }
+
     let json = cli.resolve_json(&config);
     let piped = !std::io::stdout().is_terminal();
 
@@ -40,8 +51,6 @@ fn main() -> anyhow::Result<()> {
 
     let no_copy = json || piped || cli.resolve_no_copy(&config);
     let max_untracked_size = config.limits.max_untracked_file_size_mb * 1024 * 1024;
-    let max_files = config.limits.max_files;
-    let max_total_bytes = config.limits.max_total_mb * 1024 * 1024;
 
     // Commands that don't need token counting — handle early without spawning the thread
     match cli.command {
@@ -50,7 +59,7 @@ fn main() -> anyhow::Result<()> {
             return Ok(());
         }
         Some(Commands::Sym { ref query }) => {
-            let result = symbol::search(".", query)?;
+            let result = symbol::search(".", query, perf.pagerank_iters)?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&result)?);
             } else {
@@ -59,7 +68,7 @@ fn main() -> anyhow::Result<()> {
             return Ok(());
         }
         Some(Commands::Why { ref query }) => {
-            let result = why::explain(".", query)?;
+            let result = why::explain(".", query, &perf)?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&result)?);
             } else {
@@ -87,6 +96,21 @@ fn main() -> anyhow::Result<()> {
                 "Symbol cache deleted for {}",
                 std::fs::canonicalize(root)?.display()
             );
+            return Ok(());
+        }
+        Some(Commands::Perf { ref mode }) => {
+            match mode {
+                Some(m) => {
+                    let parsed: config::PerfMode =
+                        m.parse().map_err(|e: String| anyhow::anyhow!(e))?;
+                    config::save_perf_mode(parsed)?;
+                    eprintln!("Performance mode set to: {}", parsed);
+                }
+                None => {
+                    let current = config::load_perf_mode();
+                    eprintln!("Current performance mode: {}", current);
+                }
+            }
             return Ok(());
         }
         _ => {}
@@ -146,15 +170,7 @@ fn main() -> anyhow::Result<()> {
             let pick_start = std::time::Instant::now();
             let depth = cli.resolve_depth(&config);
             let mode = picked_mode.unwrap_or_else(|| cli.resolve_mode(&config));
-            let result = ctx::analyze(
-                ".",
-                &selected,
-                depth,
-                cli.regex.as_deref(),
-                mode,
-                max_files,
-                max_total_bytes,
-            )?;
+            let result = ctx::analyze(".", &selected, depth, cli.regex.as_deref(), mode, &perf)?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&result)?);
             } else {
@@ -216,15 +232,7 @@ fn main() -> anyhow::Result<()> {
 
             if paths.len() == 1 && std::path::Path::new(&paths[0]).is_file() {
                 let depth = cli.resolve_depth(&config);
-                let result = ctx::analyze(
-                    ".",
-                    &paths,
-                    depth,
-                    cli.regex.as_deref(),
-                    mode,
-                    max_files,
-                    max_total_bytes,
-                )?;
+                let result = ctx::analyze(".", &paths, depth, cli.regex.as_deref(), mode, &perf)?;
                 if json {
                     println!("{}", serde_json::to_string_pretty(&result)?);
                 } else {
@@ -232,15 +240,7 @@ fn main() -> anyhow::Result<()> {
                 }
             } else {
                 let depth = cli.resolve_depth(&config);
-                let result = ctx::analyze(
-                    ".",
-                    &paths,
-                    depth,
-                    cli.regex.as_deref(),
-                    mode,
-                    max_files,
-                    max_total_bytes,
-                )?;
+                let result = ctx::analyze(".", &paths, depth, cli.regex.as_deref(), mode, &perf)?;
                 if json {
                     println!("{}", serde_json::to_string_pretty(&result)?);
                 } else {
@@ -255,7 +255,8 @@ fn main() -> anyhow::Result<()> {
             | Commands::Version
             | Commands::Update
             | Commands::Uninstall
-            | Commands::CleanCache { .. },
+            | Commands::CleanCache { .. }
+            | Commands::Perf { .. },
         ) => {
             unreachable!()
         }
