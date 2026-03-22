@@ -18,7 +18,7 @@
 - [x] `supp ctx` — fzf-powered single-file context (pick → context in one step)
 - [x] Regex file filtering (`-r`) — works globally across context, diff, pick, tree
 - [x] Claude Code skills — `/project:diff`, `/project:ctx`, `/project:why`, `/project:sym`, `/project:tree`
-- [x] MCP server (`supp mcp`) — 6 tools over stdio for autonomous AI context gathering
+
 - [x] Incremental `why` — reuse cached symbol index, skip unchanged files
 - [x] `--json` flag — machine-readable JSON output across all commands for editor/IDE integrations
 - [x] Smarter hierarchy — multi-level inheritance chains, mixin/trait resolution
@@ -27,7 +27,7 @@
 ## TODO
 - [ ] Upgrade wording and prompting around supp -mapping, context, and symbols
 - [ ] make base `supp` dfeault to `.` path
-- [ ] make MCP ref --json outpt
+
 - [ ] expand README and docs around supp claude code usage
   - [ ] define some happy paths for claude prompts to use supp w/ like
     - [ ] "map out this codebase"

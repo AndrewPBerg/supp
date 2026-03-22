@@ -2,7 +2,7 @@
 timeout = "300s"
 exclude-files = [
     "src/main.rs",       # CLI dispatch — no testable logic
-    "src/mcp.rs",        # Async MCP server — requires runtime
+
     "src/self_update.rs", # Network calls to GitHub
     "src/pick.rs",       # Interactive terminal/fzf code
 ]

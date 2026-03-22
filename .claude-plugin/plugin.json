@@ -10,7 +10,6 @@
   "keywords": ["context", "llm", "git", "symbols", "rust"],
   "license": "MIT",
   "components": {
-    "skills": ["skills/"],
-    "mcpServers": [".mcp.json"]
+    "skills": ["skills/"]
   }
 }

@@ -1,9 +1,0 @@
-{
-  "mcpServers": {
-    "supp": {
-      "type": "stdio",
-      "command": "supp",
-      "args": ["mcp"]
-    }
-  }
-}

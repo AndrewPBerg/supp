@@ -3,7 +3,7 @@ mod compress;
 mod config;
 mod ctx;
 mod git;
-mod mcp;
+
 mod pick;
 mod self_update;
 mod styles;
@@ -67,13 +67,7 @@ fn main() -> anyhow::Result<()> {
             }
             return Ok(());
         }
-        Some(Commands::Mcp) => {
-            tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()?
-                .block_on(mcp::run())?;
-            return Ok(());
-        }
+
         Some(Commands::Version) => {
             self_update::print_version();
             return Ok(());
@@ -274,7 +268,6 @@ fn main() -> anyhow::Result<()> {
             Commands::Completions { .. }
             | Commands::Sym { .. }
             | Commands::Why { .. }
-            | Commands::Mcp
             | Commands::Version
             | Commands::Update
             | Commands::Uninstall

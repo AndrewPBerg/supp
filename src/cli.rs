@@ -104,8 +104,7 @@ pub enum Commands {
         /// Symbol name to look up (exact or fuzzy match)
         query: Vec<String>,
     },
-    /// Start MCP (Model Context Protocol) server over stdio
-    Mcp,
+
     /// Interactively pick files with fzf for context generation
     #[command(alias = "p")]
     Pick {
@@ -648,12 +647,6 @@ mod tests {
     fn why_alias_w() {
         let cli = parse(&["supp", "w", "test"]).unwrap();
         assert!(matches!(cli.command, Some(Commands::Why { .. })));
-    }
-
-    #[test]
-    fn mcp_subcommand() {
-        let cli = parse(&["supp", "mcp"]).unwrap();
-        assert!(matches!(cli.command, Some(Commands::Mcp)));
     }
 
     #[test]

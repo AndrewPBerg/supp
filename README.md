@@ -67,7 +67,6 @@ Add `-n` to any command to print output without copying to clipboard.
 
 > **NOTE:** `supp pick` requires [fzf](https://github.com/junegunn/fzf) to be installed and available on your `PATH`. Install it via your package manager (e.g. `brew install fzf`, `winget install fzf`, `pacman -S fzf`, `xbps-install fzf`) before using this command.
 | `supp completions <shell>` | Generate shell completions (bash, zsh, fish) |
-| `supp mcp` | Start as an MCP server |
 
 ## Useful flags
 
