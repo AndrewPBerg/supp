@@ -17,16 +17,16 @@ clap_complete = "4"
 colored = "3"
 ignore = "0.4.25"
 regex = "1"
-tree-sitter = "0.24"
-tree-sitter-rust = "0.23"
-tree-sitter-python = "0.23"
-tree-sitter-javascript = "0.23"
+tree-sitter = "0.26"
+tree-sitter-rust = "0.24"
+tree-sitter-python = "0.25"
+tree-sitter-javascript = "0.25"
 tree-sitter-typescript = "0.23"
-tree-sitter-go = "0.23"
-tree-sitter-c = "0.23"
+tree-sitter-go = "0.25"
+tree-sitter-c = "0.24"
 tree-sitter-cpp = "0.23"
 tree-sitter-java = "0.23"
-bincode = "1"
+wincode = { version = "0.4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 gix = { version = "0.80", default-features = false, features = ["status", "revision"] }
 gix-status = "0.27" # must match version used by gix; needed for EntryStatus/Change types
