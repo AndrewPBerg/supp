@@ -1,6 +1,6 @@
 # supp why
 
-Deep-dive a symbol: full definition, doc comments, call sites, dependencies, and class hierarchy. Alias: `supp w`.
+Explain a symbol in full: its definition, documentation, every place it's called, everything it depends on, and where it sits in the class/struct hierarchy. Use this when you need to understand how something works or assess the impact of changing it. Alias: `supp w`.
 
 ## Usage
 
@@ -53,7 +53,7 @@ supp [-n] why <symbol...>
 - C++ class hierarchy via `: public Base` is fully supported (parents + children)
 - Out-of-class method definitions (`Foo::bar()`) link back to their class
 
-Everything is formatted and copied to the clipboard as structured context for an LLM.
+Everything is formatted and copied to the clipboard — a complete briefing on one symbol, ready to paste into any LLM conversation.
 
 ## Supported languages
 

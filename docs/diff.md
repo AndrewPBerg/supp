@@ -1,6 +1,6 @@
 # supp diff
 
-Compare changes in a git repository and copy the result to the clipboard.
+See what changed on your branch — file tree with line counts, full unified patches, and a token estimate. Copies everything to the clipboard for LLM-assisted code review.
 
 ## Usage
 
@@ -16,8 +16,8 @@ supp [-n] diff [PATH] [OPTIONS]
 | `--no-color` | | Disable colored output |
 | `--json` | | Output as JSON (machine-readable) |
 | `--regex` | `-r` | Regex pattern to filter file paths |
-| `--slim` | | Strip comments and collapse blank lines |
-| `--map` | `-m` | Extract only signatures and definitions (codemap) |
+| `--slim` | | Reduce noise: strip comments and collapse blank lines |
+| `--map` | `-m` | Outline mode: extract only signatures, types, and API surface |
 
 ## Options
 

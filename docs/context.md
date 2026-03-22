@@ -1,6 +1,6 @@
 # supp context
 
-Generate context from files and directories, then copy it to the clipboard. This is the default command — no subcommand needed.
+Bundle source files into structured, clipboard-ready context for an LLM. This is the default command — just pass paths, no subcommand needed. Output includes a project tree header, file contents, and a token estimate.
 
 ## Usage
 
@@ -17,8 +17,8 @@ supp [-n] <paths...> [OPTIONS]
 | `--json` | | Output as JSON (machine-readable) |
 | `--regex` | `-r` | Regex pattern to filter file paths |
 | `--depth` | `-d` | Tree depth in context header (default: 2, configurable) |
-| `--slim` | | Strip comments and collapse blank lines |
-| `--map` | `-m` | Extract only signatures and definitions (codemap) |
+| `--slim` | | Reduce noise: strip comments and collapse blank lines |
+| `--map` | `-m` | Outline mode: extract only signatures, types, and API surface |
 
 ## Examples
 

@@ -1,6 +1,6 @@
 # supp sym
 
-Search symbols by name with PageRank-powered ranking. Alias: `supp s`.
+Find functions, types, and constants by name across your codebase. Results are ranked by cross-file importance using a PageRank-inspired algorithm — heavily-referenced symbols surface first. Alias: `supp s`.
 
 ## Usage
 
@@ -56,4 +56,4 @@ supp s -n handler
   ≈ ~128 tokens (est.)
 ```
 
-Results are sorted by relevance (PageRank score). The index is cached and rebuilt incrementally when files change.
+Results are ranked by importance — symbols referenced across more files score higher. The index is cached and rebuilt incrementally when files change.

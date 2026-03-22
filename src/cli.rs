@@ -25,11 +25,11 @@ pub struct Cli {
     /// Paths for context generation (files and/or directories)
     pub paths: Vec<String>,
 
-    /// Strip comments and collapse blank lines
+    /// Reduce noise: strip comments and collapse blank lines
     #[arg(long, global = true)]
     pub slim: bool,
 
-    /// Extract only signatures and definitions (codemap)
+    /// Outline mode: extract only signatures, types, and API surface
     #[arg(short = 'm', long, global = true, conflicts_with = "slim")]
     pub map: bool,
 
@@ -43,7 +43,7 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Commands {
-    /// Structured diff between branches or working tree
+    /// Git diff with file tree, line counts, and full patch context
     Diff {
         /// Path or registered repo name (defaults to '.')
         path: Option<String>,
@@ -76,7 +76,7 @@ pub enum Commands {
         #[arg(short = 'U', long = "unified")]
         context_lines: Option<u32>,
     },
-    /// Directory tree with git status markers
+    /// Project layout with git status markers (modified, added, untracked)
     Tree {
         /// Directory to display (defaults to ".")
         path: Option<String>,
@@ -92,13 +92,13 @@ pub enum Commands {
         /// Shell to generate completions for
         shell: clap_complete::Shell,
     },
-    /// Search symbols by name with PageRank-powered ranking
+    /// Find functions, types, and constants by name across the codebase
     #[command(alias = "s")]
     Sym {
         /// Search query (free-form text, split into tokens)
         query: Vec<String>,
     },
-    /// Deep-dive a symbol: full definition, doc comments, call sites, dependencies
+    /// Explain a symbol: definition, docs, who calls it, and what it depends on
     #[command(alias = "w")]
     Why {
         /// Symbol name to look up (exact or fuzzy match)

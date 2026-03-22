@@ -57,11 +57,11 @@ Add `-n` to any command to print output without copying to clipboard.
 
 | Command | What it does |
 |---------|-------------|
-| `supp <paths>` | Extract file contents with token estimate |
-| `supp diff` | Structured diff between branches |
-| `supp tree` | Directory tree with git status markers |
-| `supp sym <query>` | Search symbols with PageRank ranking |
-| `supp why <symbol>` | Full context for a symbol |
+| `supp <paths>` | Bundle files into structured context with token estimate |
+| `supp diff` | Git diff with file tree, line counts, and full patches |
+| `supp tree` | Project layout with git status markers |
+| `supp sym <query>` | Find functions, types, and constants by name |
+| `supp why <symbol>` | Explain a symbol — definition, call sites, and dependencies |
 | `supp pick` | Interactive file picker (requires fzf) |
 | `supp clean-cache` | Delete the symbol cache for a project |
 
@@ -75,18 +75,51 @@ Add `-n` to any command to print output without copying to clipboard.
 | `--no-copy` | `-n` | Print only, skip clipboard |
 | `--json` | | Output as JSON (machine-readable) |
 | `--regex` | `-r` | Filter paths by regex |
-| `--slim` | | Strip comments, collapse blanks |
-| `--map` | `-m` | Signatures and definitions only |
+| `--slim` | | Reduce noise: strip comments, collapse blanks |
+| `--map` | `-m` | Outline mode: signatures, types, and API surface only |
 | `--depth` | `-d` | Limit tree depth |
 
 ## Docs
 
 Detailed usage for each command:
 
-- [Context](https://github.com/AndrewPBerg/supp/blob/main/docs/context.md) — file extraction
-- [Diff](https://github.com/AndrewPBerg/supp/blob/main/docs/diff.md) — git diffs and modes
+- [Context](https://github.com/AndrewPBerg/supp/blob/main/docs/context.md) — bundling files into LLM context
+- [Diff](https://github.com/AndrewPBerg/supp/blob/main/docs/diff.md) — git diffs and comparison modes
+- [Sym](https://github.com/AndrewPBerg/supp/blob/main/docs/sym.md) — finding symbols by name
+- [Why](https://github.com/AndrewPBerg/supp/blob/main/docs/why.md) — deep-diving a symbol
 - [Tree](https://github.com/AndrewPBerg/supp/blob/main/docs/tree.md) — directory tree
+- [Examples](https://github.com/AndrewPBerg/supp/blob/main/docs/examples.md) — workflows and multi-language demos
 - [Config](https://github.com/AndrewPBerg/supp/blob/main/docs/config.md) — configuration
+
+## Claude Code integration
+
+supp ships with [Claude Code skills](https://docs.anthropic.com/en/docs/claude-code/skills) that let Claude use supp directly. Once supp is installed, these slash commands are available in any Claude Code session inside a project:
+
+| Slash command | What it does |
+|---------------|-------------|
+| `/ctx <paths>` | Read files with project tree and token estimate |
+| `/diff` | Review git changes with structured patches |
+| `/tree` | See project layout with git status |
+| `/sym <query>` | Find a symbol by name |
+| `/why <symbol>` | Explain a symbol — definition, call sites, dependencies |
+
+### Suggested prompts
+
+These work well as starting points for Claude Code conversations:
+
+```
+# Orient yourself in an unfamiliar project
+"Use /tree and /ctx --map . to map out this codebase, then summarize the architecture."
+
+# Understand a specific function before changing it
+"Use /why handle_request to explain how it works, then suggest how to add rate limiting."
+
+# Review your own changes
+"Use /diff to review my changes and suggest improvements."
+
+# Explore a domain concept across languages
+"Use /sym User to find all User-related types, then /why the most important one."
+```
 
 ## Token estimation
 

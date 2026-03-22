@@ -29,7 +29,7 @@ supp examples/python/models.py examples/rust/models.rs
 # Only .ts files from the examples dir
 supp -r '\.ts$' examples/
 
-# Codemap mode — signatures only, 58% smaller
+# Outline mode — just signatures and types, ~58% smaller
 supp --map examples/python/
 ```
 
@@ -262,9 +262,9 @@ supp diff -f "examples/*"
 supp -n examples/
 ```
 
-## Workflow: feeding an LLM
+## Workflow: giving an LLM context about unfamiliar code
 
-A typical workflow for giving an LLM context about unfamiliar code:
+A typical three-step workflow — orient, gather, deep-dive:
 
 ```bash
 # 1. Get the lay of the land

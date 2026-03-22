@@ -205,32 +205,16 @@ fn main() -> anyhow::Result<()> {
                 cli.paths.clone()
             };
 
-            if paths.is_empty() {
+            let paths = if paths.is_empty() {
                 if has_p {
                     return Ok(());
                 }
-                let selected =
-                    pick::run_fzf(".", false, cli.regex.as_deref(), config.pick.preview_lines)?;
-                if selected.is_empty() {
-                    return Ok(());
-                }
-                let file = selected.into_iter().next().unwrap();
-                let depth = cli.resolve_depth(&config);
-                let result = ctx::analyze(
-                    ".",
-                    &[file],
-                    depth,
-                    cli.regex.as_deref(),
-                    mode,
-                    max_files,
-                    max_total_bytes,
-                )?;
-                if json {
-                    println!("{}", serde_json::to_string_pretty(&result)?);
-                } else {
-                    styles::print_ctx_result(&result, no_copy, start);
-                }
-            } else if paths.len() == 1 && std::path::Path::new(&paths[0]).is_file() {
+                vec![".".to_string()]
+            } else {
+                paths
+            };
+
+            if paths.len() == 1 && std::path::Path::new(&paths[0]).is_file() {
                 let depth = cli.resolve_depth(&config);
                 let result = ctx::analyze(
                     ".",

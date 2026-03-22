@@ -28,8 +28,8 @@ tree-sitter-cpp = "0.23"
 tree-sitter-java = "0.23"
 wincode = { version = "0.4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
-gix = { version = "0.80", default-features = false, features = ["status", "revision"] }
-gix-status = "0.27" # must match version used by gix; needed for EntryStatus/Change types
+gix = { version = "0.81", default-features = false, features = ["status", "revision", "sha1"] }
+gix-status = "0.28" # must match version used by gix; needed for EntryStatus/Change types
 strsim = "0.11"
 crossterm = "0.29"
 
