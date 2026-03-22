@@ -6,12 +6,13 @@ use anyhow::Result;
 use ignore::WalkBuilder;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
+use wincode::{SchemaRead, SchemaWrite};
 
 use crate::compress::{self, Lang};
 
 // ── Data model ──────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, SchemaWrite, SchemaRead)]
 pub enum SymbolKind {
     Function,
     Struct,
@@ -44,7 +45,7 @@ impl SymbolKind {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, SchemaWrite, SchemaRead)]
 pub struct Symbol {
     pub name: String,
     pub kind: SymbolKind,
@@ -66,18 +67,18 @@ pub struct SearchResult {
 
 // ── Cache ───────────────────────────────────────────────────────────
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, SchemaWrite, SchemaRead)]
 struct Cache {
     symbols: Vec<Symbol>,
     ranks: Vec<f64>,
-    file_meta: HashMap<PathBuf, (u64, u64)>, // mtime_secs, size
+    file_meta: HashMap<String, (u64, u64)>, // path string → mtime_secs, size
     file_refs: HashMap<String, Vec<String>>, // rel_path → reference names
 }
 
 struct IndexResult {
     symbols: Vec<Symbol>,
     ranks: Vec<f64>,
-    file_meta: HashMap<PathBuf, (u64, u64)>,
+    file_meta: HashMap<String, (u64, u64)>,
     file_refs: HashMap<String, Vec<String>>,
     changed: bool,
 }
@@ -110,7 +111,7 @@ fn file_meta(path: &Path) -> Option<(u64, u64)> {
 fn load_cache(root: &Path) -> Option<Cache> {
     let path = cache_path(root);
     let data = std::fs::read(&path).ok()?;
-    bincode::deserialize(&data).ok()
+    wincode::deserialize(&data).ok()
 }
 
 fn save_cache(root: &Path, cache: &Cache) {
@@ -118,7 +119,7 @@ fn save_cache(root: &Path, cache: &Cache) {
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    if let Ok(data) = bincode::serialize(cache) {
+    if let Ok(data) = wincode::serialize(cache) {
         let _ = std::fs::write(&path, data);
     }
 }
@@ -246,9 +247,9 @@ fn build_index(root: &Path) -> IndexResult {
 
     let ranks = compute_ranks(&symbols, &file_refs);
 
-    let file_meta_map: HashMap<PathBuf, (u64, u64)> = files
+    let file_meta_map: HashMap<String, (u64, u64)> = files
         .iter()
-        .filter_map(|(abs, _)| file_meta(abs).map(|m| (abs.clone(), m)))
+        .filter_map(|(abs, _)| file_meta(abs).map(|m| (abs.to_string_lossy().into_owned(), m)))
         .collect();
 
     IndexResult {
@@ -285,7 +286,7 @@ fn build_index_incremental(root: &Path, old_cache: &Cache) -> IndexResult {
             .and_then(|meta| {
                 old_cache
                     .file_meta
-                    .get(abs_path)
+                    .get(&abs_path.to_string_lossy().into_owned())
                     .map(|cached| meta == *cached)
             })
             .unwrap_or(false)
@@ -300,9 +301,9 @@ fn build_index_incremental(root: &Path, old_cache: &Cache) -> IndexResult {
 
     if changed.is_empty() && !has_deletions {
         // Nothing changed — return cached data
-        let file_meta_map: HashMap<PathBuf, (u64, u64)> = files
+        let file_meta_map: HashMap<String, (u64, u64)> = files
             .iter()
-            .filter_map(|(abs, _)| file_meta(abs).map(|m| (abs.clone(), m)))
+            .filter_map(|(abs, _)| file_meta(abs).map(|m| (abs.to_string_lossy().into_owned(), m)))
             .collect();
         return IndexResult {
             symbols: old_cache.symbols.clone(),
@@ -345,9 +346,9 @@ fn build_index_incremental(root: &Path, old_cache: &Cache) -> IndexResult {
     // Recompute PageRank on merged data
     let ranks = compute_ranks(&symbols, &file_refs);
 
-    let file_meta_map: HashMap<PathBuf, (u64, u64)> = files
+    let file_meta_map: HashMap<String, (u64, u64)> = files
         .iter()
-        .filter_map(|(abs, _)| file_meta(abs).map(|m| (abs.clone(), m)))
+        .filter_map(|(abs, _)| file_meta(abs).map(|m| (abs.to_string_lossy().into_owned(), m)))
         .collect();
 
     IndexResult {
@@ -2365,7 +2366,7 @@ function hello() {}
             ranks: vec![0.42],
             file_meta: {
                 let mut m = HashMap::new();
-                m.insert(PathBuf::from("/tmp/test.rs"), (1234u64, 5678u64));
+                m.insert("/tmp/test.rs".to_string(), (1234u64, 5678u64));
                 m
             },
             file_refs: {
@@ -2375,15 +2376,15 @@ function hello() {}
             },
         };
 
-        let data = bincode::serialize(&cache).expect("serialize");
-        let restored: Cache = bincode::deserialize(&data).expect("deserialize");
+        let data = wincode::serialize(&cache).expect("serialize");
+        let restored: Cache = wincode::deserialize(&data).expect("deserialize");
 
         assert_eq!(restored.symbols.len(), 1);
         assert_eq!(restored.symbols[0].name, "test_fn");
         assert_eq!(restored.symbols[0].keywords, vec!["helper"]);
         assert_eq!(restored.ranks, vec![0.42]);
         assert_eq!(
-            restored.file_meta.get(&PathBuf::from("/tmp/test.rs")),
+            restored.file_meta.get("/tmp/test.rs"),
             Some(&(1234u64, 5678u64))
         );
         assert_eq!(
