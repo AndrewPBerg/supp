@@ -66,6 +66,7 @@ pub fn analyze(
     regex: Option<&str>,
     mode: Mode,
     perf: &PerfProfile,
+    map_threshold: Option<f64>,
 ) -> Result<AnalysisResult> {
     let max_files = perf.max_files;
     let max_total_bytes = perf.max_total_mb * 1024 * 1024;
@@ -130,7 +131,7 @@ pub fn analyze(
     };
 
     // 3. Overlap file reads (rayon) with symbol index loading (background thread)
-    let (mut read_files, all_symbols) = std::thread::scope(|s| {
+    let (mut read_files, all_symbols, all_ranks) = std::thread::scope(|s| {
         let rp = &root_path;
         let sym_handle = s.spawn(move || symbol::load_symbols(rp, pagerank_iters));
 
@@ -147,8 +148,8 @@ pub fn analyze(
             })
             .collect();
 
-        let all_symbols = sym_handle.join().unwrap();
-        (read_files, all_symbols)
+        let sym_index = sym_handle.join().unwrap();
+        (read_files, sym_index.symbols, sym_index.ranks)
     });
 
     let order: HashMap<&str, usize> = file_paths
@@ -338,11 +339,13 @@ pub fn analyze(
         &read_files,
         &analyses,
         &all_symbols,
+        &all_ranks,
         mode,
         depth,
         regex,
         &dir_paths,
         &individual_files,
+        map_threshold,
     );
 
     Ok(AnalysisResult {
@@ -438,15 +441,45 @@ fn find_file_references(
 fn render(
     files: &[FileData],
     analyses: &[FileAnalysis],
-    _all_symbols: &[Symbol],
+    all_symbols: &[Symbol],
+    all_ranks: &[f64],
     mode: Mode,
     depth: usize,
     regex: Option<&str>,
     dir_paths: &[String],
     individual_files: &[String],
+    map_threshold: Option<f64>,
 ) -> String {
+    use std::collections::HashSet;
     use std::fmt::Write;
     let mut out = String::new();
+
+    // Compute rank cutoff for importance gating (map mode only)
+    let rank_cutoff: Option<f64> = if mode == Mode::Map {
+        map_threshold.map(|pct| {
+            let mut sorted: Vec<f64> = all_ranks
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| all_symbols[*i].kind != SymbolKind::File)
+                .map(|(_, &r)| r)
+                .collect();
+            sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            if sorted.is_empty() {
+                return 0.0;
+            }
+            let idx = ((pct * sorted.len() as f64) as usize).min(sorted.len() - 1);
+            sorted[idx]
+        })
+    } else {
+        None
+    };
+
+    // Build per-symbol rank lookup
+    let sym_rank: HashMap<(&str, &str), f64> = all_symbols
+        .iter()
+        .zip(all_ranks.iter())
+        .map(|(s, &r)| ((s.file.as_str(), s.name.as_str()), r))
+        .collect();
 
     // Header
     out.push_str("CONTEXT FOR LLM\n");
@@ -466,6 +499,15 @@ fn render(
             out.push_str(
                 "Function bodies have been replaced with { ... } (or : ... for Python).\n",
             );
+            if let Some(pct) = map_threshold {
+                use std::fmt::Write as _;
+                let _ = writeln!(
+                    out,
+                    "Symbols below the {:.0}th percentile of importance have been omitted.",
+                    pct * 100.0,
+                );
+                out.push_str("Low-importance files are summarized as one-liners.\n");
+            }
             out.push_str("Request the full file if you need implementation details.\n\n");
         }
         Mode::Full => {}
@@ -488,12 +530,39 @@ fn render(
         }
     }
 
-    // File contents as XML documents
+    // Determine demoted files (all symbols below rank cutoff)
+    let demoted: HashSet<usize> = if let Some(cutoff) = rank_cutoff {
+        files
+            .iter()
+            .enumerate()
+            .filter(|(i, _fd)| {
+                let syms = &analyses[*i].symbols;
+                !syms.is_empty()
+                    && syms.iter().all(|sym| {
+                        sym_rank
+                            .get(&(sym.file.as_str(), sym.name.as_str()))
+                            .copied()
+                            .unwrap_or(0.0)
+                            < cutoff
+                    })
+            })
+            .map(|(i, _)| i)
+            .collect()
+    } else {
+        HashSet::new()
+    };
+
+    // File contents as XML documents (skip demoted files)
     out.push_str("\n--- FILE CONTENTS ---\n");
     out.push_str("<documents>\n");
 
+    let mut doc_idx = 0usize;
     for (i, fd) in files.iter().enumerate() {
-        let _ = writeln!(out, "<document index=\"{}\">", i + 1);
+        if demoted.contains(&i) {
+            continue;
+        }
+        doc_idx += 1;
+        let _ = writeln!(out, "<document index=\"{}\">", doc_idx);
         let _ = writeln!(out, "<source>{}</source>", fd.path);
         out.push_str("<document_content>\n");
 
@@ -513,25 +582,44 @@ fn render(
 
     out.push_str("</documents>\n");
 
+    // Low-rank file summaries
+    if !demoted.is_empty() {
+        out.push_str("\n--- LOW-RANK FILES ---\n");
+        for &i in &demoted {
+            let fd = &files[i];
+            let summary = summarize_file(&analyses[i].symbols);
+            if summary.is_empty() {
+                let _ = writeln!(out, "  {}", fd.path);
+            } else {
+                let _ = writeln!(out, "  {} — {}", fd.path, summary);
+            }
+        }
+    }
+
     // Symbol index
     let has_symbols = analyses.iter().any(|a| !a.symbols.is_empty());
     if has_symbols {
         out.push_str("\n--- SYMBOL INDEX ---\n");
-        for (fd, analysis) in files.iter().zip(analyses.iter()) {
-            if analysis.symbols.is_empty() {
+        for (i, (fd, analysis)) in files.iter().zip(analyses.iter()).enumerate() {
+            if analysis.symbols.is_empty() || demoted.contains(&i) {
                 continue;
             }
             let _ = writeln!(out, "\n## {}", fd.path);
-            for sym in &analysis.symbols {
-                let display = if let Some(ref parent) = sym.parent {
-                    format!("{}::{}", parent, sym.name)
-                } else {
-                    sym.name.clone()
-                };
-                if !sym.signature.is_empty() {
-                    let _ = writeln!(out, "  [{}] {}  {}", sym.kind.tag(), display, sym.signature);
-                } else {
-                    let _ = writeln!(out, "  [{}] {}", sym.kind.tag(), display);
+            if mode == Mode::Map {
+                render_symbol_index_grouped(&mut out, &analysis.symbols, &sym_rank, rank_cutoff);
+            } else {
+                for sym in &analysis.symbols {
+                    let display = if let Some(ref parent) = sym.parent {
+                        format!("{}::{}", parent, sym.name)
+                    } else {
+                        sym.name.clone()
+                    };
+                    if !sym.signature.is_empty() {
+                        let _ =
+                            writeln!(out, "  [{}] {}  {}", sym.kind.tag(), display, sym.signature);
+                    } else {
+                        let _ = writeln!(out, "  [{}] {}", sym.kind.tag(), display);
+                    }
                 }
             }
         }
@@ -623,6 +711,193 @@ fn render(
     out
 }
 
+// ── File summarization ──────────────────────────────────────────────
+
+fn summarize_file(symbols: &[Symbol]) -> String {
+    let mut fn_names: Vec<&str> = Vec::new();
+    let mut struct_count = 0u32;
+    let mut enum_count = 0u32;
+    let mut trait_count = 0u32;
+    let mut class_count = 0u32;
+    let mut const_count = 0u32;
+
+    for sym in symbols {
+        match sym.kind {
+            SymbolKind::Function | SymbolKind::Method => fn_names.push(&sym.name),
+            SymbolKind::Struct => struct_count += 1,
+            SymbolKind::Enum => enum_count += 1,
+            SymbolKind::Trait | SymbolKind::Interface => trait_count += 1,
+            SymbolKind::Class => class_count += 1,
+            SymbolKind::Const | SymbolKind::Macro | SymbolKind::Type => const_count += 1,
+            SymbolKind::File => {}
+        }
+    }
+
+    let mut parts: Vec<String> = Vec::new();
+    if !fn_names.is_empty() {
+        let names = if fn_names.len() <= 5 {
+            fn_names.join(", ")
+        } else {
+            format!("{}, ... +{}", fn_names[..4].join(", "), fn_names.len() - 4)
+        };
+        parts.push(format!("{} fns ({})", fn_names.len(), names));
+    }
+    if struct_count > 0 {
+        parts.push(format!("{} structs", struct_count));
+    }
+    if enum_count > 0 {
+        parts.push(format!("{} enums", enum_count));
+    }
+    if trait_count > 0 {
+        parts.push(format!("{} traits", trait_count));
+    }
+    if class_count > 0 {
+        parts.push(format!("{} classes", class_count));
+    }
+    if const_count > 0 {
+        parts.push(format!("{} consts", const_count));
+    }
+
+    parts.join(", ")
+}
+
+// ── Grouped symbol rendering ────────────────────────────────────────
+
+fn render_symbol_index_grouped(
+    out: &mut String,
+    symbols: &[Symbol],
+    sym_rank: &HashMap<(&str, &str), f64>,
+    rank_cutoff: Option<f64>,
+) {
+    use std::collections::BTreeMap;
+    use std::fmt::Write;
+
+    let passes = |sym: &Symbol| -> bool {
+        match rank_cutoff {
+            None => true,
+            Some(cutoff) => {
+                sym_rank
+                    .get(&(sym.file.as_str(), sym.name.as_str()))
+                    .copied()
+                    .unwrap_or(0.0)
+                    >= cutoff
+            }
+        }
+    };
+
+    // Classify: parent types, children (have parent field), orphans
+    let mut parent_types: BTreeMap<&str, &Symbol> = BTreeMap::new();
+    let mut children_by_parent: BTreeMap<&str, Vec<&Symbol>> = BTreeMap::new();
+    let mut orphans: Vec<&Symbol> = Vec::new();
+
+    for sym in symbols {
+        if let Some(ref parent) = sym.parent {
+            children_by_parent
+                .entry(parent.as_str())
+                .or_default()
+                .push(sym);
+        } else if matches!(
+            sym.kind,
+            SymbolKind::Struct
+                | SymbolKind::Class
+                | SymbolKind::Enum
+                | SymbolKind::Trait
+                | SymbolKind::Interface
+        ) {
+            parent_types.insert(&sym.name, sym);
+        } else {
+            orphans.push(sym);
+        }
+    }
+
+    // Parent types with their children grouped
+    for (name, parent_sym) in &parent_types {
+        let children = children_by_parent.remove(*name);
+        if let Some(children) = children {
+            let passing: Vec<&str> = children
+                .iter()
+                .filter(|s| passes(s))
+                .map(|s| s.name.as_str())
+                .collect();
+            let parent_passes = passes(parent_sym);
+
+            if !parent_passes && passing.is_empty() {
+                continue;
+            }
+
+            if passing.is_empty() {
+                // Type passes but no methods do
+                if !parent_sym.signature.is_empty() {
+                    let _ = writeln!(
+                        out,
+                        "  [{}] {}  {}",
+                        parent_sym.kind.tag(),
+                        name,
+                        parent_sym.signature
+                    );
+                } else {
+                    let _ = writeln!(out, "  [{}] {}", parent_sym.kind.tag(), name);
+                }
+            } else {
+                let _ = writeln!(
+                    out,
+                    "  [{}] {} {{ {} }}",
+                    parent_sym.kind.tag(),
+                    name,
+                    passing.join(", ")
+                );
+            }
+        } else {
+            if !passes(parent_sym) {
+                continue;
+            }
+            // Type with no methods
+            if !parent_sym.signature.is_empty() {
+                let _ = writeln!(
+                    out,
+                    "  [{}] {}  {}",
+                    parent_sym.kind.tag(),
+                    name,
+                    parent_sym.signature
+                );
+            } else {
+                let _ = writeln!(out, "  [{}] {}", parent_sym.kind.tag(), name);
+            }
+        }
+    }
+
+    // Orphaned children (parent type defined in another file, e.g. impl blocks)
+    for (parent_name, children) in &children_by_parent {
+        let passing: Vec<&str> = children
+            .iter()
+            .filter(|s| passes(s))
+            .map(|s| s.name.as_str())
+            .collect();
+        if passing.is_empty() {
+            continue;
+        }
+        let _ = writeln!(out, "  [impl] {} {{ {} }}", parent_name, passing.join(", "));
+    }
+
+    // Standalone symbols keep their signature
+    for sym in &orphans {
+        if !passes(sym) {
+            continue;
+        }
+        if !sym.signature.is_empty() {
+            let _ = writeln!(
+                out,
+                "  [{}] {}  {}",
+                sym.kind.tag(),
+                sym.name,
+                sym.signature
+            );
+        } else {
+            let _ = writeln!(out, "  [{}] {}", sym.kind.tag(), sym.name);
+        }
+    }
+}
+
 // ── Tests ───────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -649,7 +924,7 @@ mod tests {
 
     fn analyze_one(root: &str, file: &str, mode: Mode) -> Result<AnalysisResult> {
         let full = Path::new(root).join(file).to_string_lossy().to_string();
-        analyze(root, &[full], 2, None, mode, &test_perf())
+        analyze(root, &[full], 2, None, mode, &test_perf(), None)
     }
 
     // ── Single-file tests (migrated from old ctx.rs) ────────────
@@ -789,6 +1064,7 @@ mod tests {
             None,
             Mode::Full,
             &test_perf(),
+            None,
         )
         .unwrap();
         assert_eq!(result.file_count, 1);
@@ -806,6 +1082,7 @@ mod tests {
             None,
             Mode::Full,
             &test_perf(),
+            None,
         )
         .unwrap();
         assert_eq!(result.file_count, 2);
@@ -823,6 +1100,7 @@ mod tests {
             Some(r"\.rs$"),
             Mode::Full,
             &test_perf(),
+            None,
         )
         .unwrap();
         assert_eq!(result.file_count, 1);
@@ -839,6 +1117,7 @@ mod tests {
             None,
             Mode::Full,
             &test_perf(),
+            None,
         );
         assert!(result.is_err());
     }
@@ -853,6 +1132,7 @@ mod tests {
             Some(r"\.rs$"),
             Mode::Full,
             &test_perf(),
+            None,
         );
         assert!(result.is_err());
     }
@@ -868,6 +1148,7 @@ mod tests {
             None,
             Mode::Full,
             &test_perf(),
+            None,
         )
         .unwrap();
         assert!(result.plain.contains("================================"));
@@ -886,6 +1167,7 @@ mod tests {
             None,
             Mode::Full,
             &test_perf(),
+            None,
         )
         .unwrap();
         assert_eq!(result.total_bytes, 10);
@@ -910,6 +1192,7 @@ mod tests {
             None,
             Mode::Full,
             &test_perf(),
+            None,
         )
         .unwrap();
         // Should have hierarchy section with parent reference
@@ -936,6 +1219,7 @@ mod tests {
             None,
             Mode::Full,
             &test_perf(),
+            None,
         )
         .unwrap();
         assert!(result.plain.contains("DEPENDENCIES"));
@@ -955,6 +1239,7 @@ mod tests {
             None,
             Mode::Full,
             &test_perf(),
+            None,
         )
         .unwrap();
         assert!(result.plain.contains("Directory:"));
@@ -973,6 +1258,7 @@ mod tests {
             None,
             Mode::Full,
             &test_perf(),
+            None,
         )
         .unwrap();
         assert!(result.plain.contains("Files:"));
@@ -1007,6 +1293,7 @@ mod tests {
             None,
             Mode::Full,
             &test_perf(),
+            None,
         )
         .unwrap();
         assert_eq!(result.file_count, 2);
@@ -1067,6 +1354,7 @@ mod tests {
             None,
             Mode::Full,
             &small_perf,
+            None,
         );
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
@@ -1085,6 +1373,7 @@ mod tests {
             None,
             Mode::Full,
             &small_perf,
+            None,
         );
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
@@ -1100,6 +1389,7 @@ mod tests {
             None,
             Mode::Full,
             &test_perf(),
+            None,
         );
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
@@ -1116,6 +1406,7 @@ mod tests {
             Some(r"\.rs$"), // regex only matches .rs files, but we only have .txt
             Mode::Full,
             &test_perf(),
+            None,
         );
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
@@ -1145,6 +1436,7 @@ mod tests {
             None,
             Mode::Full,
             &big_perf,
+            None,
         )
         .unwrap();
         assert_eq!(result.file_count, 22);
@@ -1169,6 +1461,7 @@ mod tests {
             None,
             Mode::Full,
             &test_perf(),
+            None,
         )
         .unwrap();
         // Should find used-by references from main.rs

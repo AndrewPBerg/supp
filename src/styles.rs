@@ -8,9 +8,11 @@ use colored::Colorize;
 // ── Token estimation ────────────────────────────────────────────────
 
 /// Estimate token count from byte length.
-/// Code tokenizes at roughly 3.5 chars/token with BPE tokenizers.
+/// Code tokenizes at roughly 3–4 bytes/token with BPE tokenizers.
+/// We use 3.0 as a conservative divisor so estimates lean slightly high
+/// rather than under-counting (whitespace-heavy code tokenizes worse).
 pub fn estimate_tokens(byte_len: usize) -> usize {
-    (byte_len as f64 / 3.5).round() as usize
+    (byte_len as f64 / 3.0).round() as usize
 }
 
 // ── Shared utilities ───────────────────────────────────────────────
@@ -483,11 +485,27 @@ fn print_footer(
         );
     }
     let tokens = estimate_tokens(text.len());
-    out!(
-        "  {} {}",
-        "≈".dimmed(),
-        format!("~{} tokens (est.)", format_number(tokens)).dimmed(),
-    );
+    if let Some((original, total)) = original_bytes
+        && original > total
+    {
+        let orig_tokens = estimate_tokens(original);
+        out!(
+            "  {} {}",
+            "≈".dimmed(),
+            format!(
+                "~{} → ~{} tokens (est.)",
+                format_number(orig_tokens),
+                format_number(tokens)
+            )
+            .dimmed(),
+        );
+    } else {
+        out!(
+            "  {} {}",
+            "≈".dimmed(),
+            format!("~{} tokens (est.)", format_number(tokens)).dimmed(),
+        );
+    }
     out!(
         "  {}",
         format!("Done in {}", format_elapsed(start.elapsed())).dimmed()
@@ -1019,8 +1037,8 @@ mod tests {
 
     #[test]
     fn estimate_tokens_code() {
-        // 350 bytes of code → ~100 tokens at 3.5 bytes/token
-        assert_eq!(estimate_tokens(350), 100);
+        // 300 bytes of code → 100 tokens at 3.0 bytes/token
+        assert_eq!(estimate_tokens(300), 100);
     }
 
     #[test]
@@ -1030,7 +1048,7 @@ mod tests {
 
     #[test]
     fn estimate_tokens_small() {
-        // 7 bytes → 2 tokens
+        // 7 bytes → 2 tokens (7/3.0 = 2.33, rounds to 2)
         assert_eq!(estimate_tokens(7), 2);
     }
     // ── file_status_indicator colored output ────────────────────
@@ -1684,7 +1702,7 @@ mod tests {
 
     #[test]
     fn estimate_tokens_large() {
-        let tokens = estimate_tokens(35000);
+        let tokens = estimate_tokens(30000);
         assert_eq!(tokens, 10000);
     }
 

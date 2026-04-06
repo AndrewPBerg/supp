@@ -144,7 +144,7 @@ See [Performance Modes](https://github.com/AndrewPBerg/supp/blob/main/docs/perf.
 
 ## Token estimation
 
-supp shows an approximate token count for all output (`≈ ~N tokens`). This uses a fast heuristic — `bytes / 3.5` — rather than running a full BPE tokenizer. For mixed code, this is typically accurate within ~10% of the true cl100k count. The tradeoff is speed: estimation is instant, while tokenization would add hundreds of milliseconds.
+supp shows an approximate token count for all output (`≈ ~N tokens`). This uses a fast heuristic — `bytes / 3.0` — rather than running a full BPE tokenizer. The conservative divisor means estimates lean slightly high, providing a safety buffer for whitespace-heavy or indentation-heavy code that tokenizes at worse ratios. The tradeoff is speed: estimation is instant, while tokenization would add hundreds of milliseconds.
 
 ## Symbol cache
 

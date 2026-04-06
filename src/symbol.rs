@@ -58,9 +58,13 @@ pub struct Symbol {
     pub keywords: Vec<String>,
 }
 
+pub struct SymbolIndex {
+    pub symbols: Vec<Symbol>,
+    pub ranks: Vec<f64>,
+}
+
 #[derive(Serialize)]
 pub struct SearchResult {
-    // add comments here
     pub matches: Vec<(Symbol, f64)>,
     pub total_symbols: usize,
 }
@@ -1630,10 +1634,13 @@ pub fn search(root: &str, query: &[String], pagerank_iters: usize) -> Result<Sea
     })
 }
 
-/// Load all indexed symbols (from cache or fresh build). Used by `why` for dependency lookup.
-pub fn load_symbols(root: &Path, pagerank_iters: usize) -> Vec<Symbol> {
+/// Load all indexed symbols with their PageRank scores.
+pub fn load_symbols(root: &Path, pagerank_iters: usize) -> SymbolIndex {
     let result = build_and_save(root, pagerank_iters);
-    result.symbols
+    SymbolIndex {
+        symbols: result.symbols,
+        ranks: result.ranks,
+    }
 }
 
 /// Delete the symbol cache for the given project root.
@@ -2553,9 +2560,10 @@ function hello() {}
             "pub fn my_func() {}\npub struct MyStruct {}\n",
         )
         .unwrap();
-        let symbols = load_symbols(tmp.path(), 15);
-        assert!(symbols.len() >= 2);
-        let names: Vec<&str> = symbols.iter().map(|s| s.name.as_str()).collect();
+        let index = load_symbols(tmp.path(), 15);
+        assert_eq!(index.symbols.len(), index.ranks.len());
+        assert!(index.symbols.len() >= 2);
+        let names: Vec<&str> = index.symbols.iter().map(|s| s.name.as_str()).collect();
         assert!(names.contains(&"my_func"));
         assert!(names.contains(&"MyStruct"));
     }

@@ -48,4 +48,4 @@ supp [-n] tree [PATH] [OPTIONS]
   ≈ ~81 tokens (est.)
 ```
 
-An estimated token count (bytes / 3.5) is always shown. With `-n`, the clipboard step is skipped.
+An estimated token count (bytes / 3.0) is always shown. With `-n`, the clipboard step is skipped.

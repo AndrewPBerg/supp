@@ -92,7 +92,7 @@ pub fn explain(
     );
 
     // 6. Load full symbol index + file imports for dependency resolution
-    let all_symbols = symbol::load_symbols(&root_path, perf.pagerank_iters);
+    let all_symbols = symbol::load_symbols(&root_path, perf.pagerank_iters).symbols;
     let file_imports = imports::extract_file_imports(&content, &sym.file, &root_path);
 
     // 7. Find dependencies (what this symbol calls/uses)

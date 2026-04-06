@@ -63,4 +63,4 @@ supp [-n] diff [PATH] [OPTIONS]
   ≈ ~8,432 tokens (est.)
 ```
 
-An estimated token count (bytes / 3.5) is always shown. With `-n`, the clipboard step is skipped and the last line shows `– (27.6 KB, not copied)`.
+An estimated token count (bytes / 3.0) is always shown. With `-n`, the clipboard step is skipped and the last line shows `– (27.6 KB, not copied)`.

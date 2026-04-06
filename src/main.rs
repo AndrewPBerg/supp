@@ -170,7 +170,15 @@ fn main() -> anyhow::Result<()> {
             let pick_start = std::time::Instant::now();
             let depth = cli.resolve_depth(&config);
             let mode = picked_mode.unwrap_or_else(|| cli.resolve_mode(&config));
-            let result = ctx::analyze(".", &selected, depth, cli.regex.as_deref(), mode, &perf)?;
+            let result = ctx::analyze(
+                ".",
+                &selected,
+                depth,
+                cli.regex.as_deref(),
+                mode,
+                &perf,
+                cli.resolve_map_threshold(),
+            )?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&result)?);
             } else {
@@ -232,7 +240,15 @@ fn main() -> anyhow::Result<()> {
 
             if paths.len() == 1 && std::path::Path::new(&paths[0]).is_file() {
                 let depth = cli.resolve_depth(&config);
-                let result = ctx::analyze(".", &paths, depth, cli.regex.as_deref(), mode, &perf)?;
+                let result = ctx::analyze(
+                    ".",
+                    &paths,
+                    depth,
+                    cli.regex.as_deref(),
+                    mode,
+                    &perf,
+                    cli.resolve_map_threshold(),
+                )?;
                 if json {
                     println!("{}", serde_json::to_string_pretty(&result)?);
                 } else {
@@ -240,7 +256,15 @@ fn main() -> anyhow::Result<()> {
                 }
             } else {
                 let depth = cli.resolve_depth(&config);
-                let result = ctx::analyze(".", &paths, depth, cli.regex.as_deref(), mode, &perf)?;
+                let result = ctx::analyze(
+                    ".",
+                    &paths,
+                    depth,
+                    cli.regex.as_deref(),
+                    mode,
+                    &perf,
+                    cli.resolve_map_threshold(),
+                )?;
                 if json {
                     println!("{}", serde_json::to_string_pretty(&result)?);
                 } else {

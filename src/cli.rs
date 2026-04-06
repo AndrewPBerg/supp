@@ -33,6 +33,10 @@ pub struct Cli {
     #[arg(short = 'm', long, global = true, conflicts_with = "slim")]
     pub map: bool,
 
+    /// Filter map output by symbol importance (0.0–1.0 percentile cutoff)
+    #[arg(long = "map-threshold", global = true, value_name = "PERCENTILE")]
+    pub map_threshold: Option<f64>,
+
     /// Tree depth in context header (default: 2)
     #[arg(short = 'd', long = "depth")]
     pub depth: Option<usize>,
@@ -167,6 +171,10 @@ impl Cli {
                 _ => crate::compress::Mode::Full,
             }
         }
+    }
+
+    pub fn resolve_map_threshold(&self) -> Option<f64> {
+        self.map_threshold.map(|t| t.clamp(0.0, 1.0))
     }
 
     pub fn resolve_perf(&self, _config: &crate::config::Config) -> crate::config::PerfMode {
