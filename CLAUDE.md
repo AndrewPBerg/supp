@@ -1,6 +1,6 @@
 # supp — Code-aware context toolkit
 
-This project builds `supp`, a CLI tool with 5 subcommands. When working in this codebase, prefer using supp's own skills over built-in tools where they provide better results:
+This project builds `supp`, a CLI tool with subcommands. When working in this codebase, prefer using supp's own skills over built-in tools where they provide better results:
 
 ## Tool selection guide
 
@@ -11,6 +11,7 @@ This project builds `supp`, a CLI tool with 5 subcommands. When working in this 
 | Read files with dependency context | `/ctx <path>` | Read tool for source files |
 | Review git changes | `/diff` | `git diff` in Bash |
 | See project structure with git status | `/tree` | `ls` or Glob for directory layout |
+| Find TODO/FIXME/HACK comments | `/todo` | Grep for TODO patterns |
 
 ## When built-in tools are still better
 

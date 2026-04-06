@@ -37,6 +37,10 @@ pub struct Cli {
     #[arg(long = "map-threshold", global = true, value_name = "PERCENTILE")]
     pub map_threshold: Option<f64>,
 
+    /// Token budget: auto-select per-file compression to fit within N tokens
+    #[arg(long, global = true, value_name = "TOKENS", conflicts_with_all = ["slim", "map", "map_threshold"])]
+    pub budget: Option<usize>,
+
     /// Tree depth in context header (default: 2)
     #[arg(short = 'd', long = "depth")]
     pub depth: Option<usize>,
@@ -113,6 +117,44 @@ pub enum Commands {
         query: Vec<String>,
     },
 
+    /// Visualize file-level import/dependency relationships
+    #[command(alias = "d")]
+    Deps {
+        /// File to focus on (omit for whole-project graph)
+        path: Option<String>,
+
+        /// Show reverse dependencies (what depends on the target)
+        #[arg(short = 'R', long)]
+        reverse: bool,
+
+        /// Maximum traversal depth
+        #[arg(short = 'd', long)]
+        depth: Option<usize>,
+
+        /// Output DOT format for Graphviz
+        #[arg(long)]
+        dot: bool,
+    },
+
+    /// Find TODO, FIXME, HACK, and XXX comments across the codebase
+    #[command(alias = "t")]
+    Todo {
+        /// Directory to scan (defaults to ".")
+        path: Option<String>,
+
+        /// Filter by tag types (comma-separated: TODO,FIXME,HACK,XXX)
+        #[arg(short = 't', long, value_delimiter = ',')]
+        tags: Option<Vec<String>>,
+
+        /// Include git blame info (author, date)
+        #[arg(short = 'B', long)]
+        blame: bool,
+
+        /// Number of context lines around each match
+        #[arg(short = 'C', long = "context", default_value = "0")]
+        context: usize,
+    },
+
     /// Interactively pick files with fzf for context generation
     #[command(alias = "p")]
     Pick {
@@ -175,6 +217,10 @@ impl Cli {
 
     pub fn resolve_map_threshold(&self) -> Option<f64> {
         self.map_threshold.map(|t| t.clamp(0.0, 1.0))
+    }
+
+    pub fn resolve_budget(&self) -> Option<usize> {
+        self.budget
     }
 
     pub fn resolve_perf(&self, _config: &crate::config::Config) -> crate::config::PerfMode {
@@ -678,9 +724,114 @@ mod tests {
         assert!(matches!(cli.command, Some(Commands::Why { .. })));
     }
 
+    // ── Todo flags ───────────────────────────────────────────────
+
+    #[test]
+    fn todo_subcommand() {
+        let cli = parse(&["supp", "todo"]).unwrap();
+        assert!(matches!(cli.command, Some(Commands::Todo { .. })));
+    }
+
+    #[test]
+    fn todo_alias_t() {
+        let cli = parse(&["supp", "t"]).unwrap();
+        assert!(matches!(cli.command, Some(Commands::Todo { .. })));
+    }
+
+    #[test]
+    fn todo_with_path() {
+        let cli = parse(&["supp", "todo", "/tmp/dir"]).unwrap();
+        match cli.command {
+            Some(Commands::Todo { path, .. }) => assert_eq!(path.as_deref(), Some("/tmp/dir")),
+            _ => panic!("expected todo"),
+        }
+    }
+
+    #[test]
+    fn todo_blame_flag() {
+        let cli = parse(&["supp", "todo", "-B"]).unwrap();
+        match cli.command {
+            Some(Commands::Todo { blame, .. }) => assert!(blame),
+            _ => panic!("expected todo"),
+        }
+    }
+
+    #[test]
+    fn todo_context_flag() {
+        let cli = parse(&["supp", "todo", "-C", "3"]).unwrap();
+        match cli.command {
+            Some(Commands::Todo { context, .. }) => assert_eq!(context, 3),
+            _ => panic!("expected todo"),
+        }
+    }
+
+    #[test]
+    fn todo_tags_filter() {
+        let cli = parse(&["supp", "todo", "-t", "FIXME,HACK"]).unwrap();
+        match cli.command {
+            Some(Commands::Todo { tags, .. }) => {
+                assert_eq!(tags, Some(vec!["FIXME".to_string(), "HACK".to_string()]));
+            }
+            _ => panic!("expected todo"),
+        }
+    }
+
+    #[test]
+    fn todo_default_context_zero() {
+        let cli = parse(&["supp", "todo"]).unwrap();
+        match cli.command {
+            Some(Commands::Todo { context, .. }) => assert_eq!(context, 0),
+            _ => panic!("expected todo"),
+        }
+    }
+
     #[test]
     fn version_flag() {
         let cli = parse(&["supp", "--version"]).unwrap();
         assert!(cli.version_flag);
+    }
+
+    // ── Budget flag ─────────────────────────────────────────────────
+
+    #[test]
+    fn budget_parses() {
+        let cli = parse(&["supp", "--budget", "8000", "src/"]).unwrap();
+        assert_eq!(cli.budget, Some(8000));
+    }
+
+    #[test]
+    fn budget_conflicts_with_slim() {
+        let result = parse(&["supp", "--budget", "8000", "--slim", "src/"]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn budget_conflicts_with_map() {
+        let result = parse(&["supp", "--budget", "8000", "--map", "src/"]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn budget_conflicts_with_map_threshold() {
+        let result = parse(&["supp", "--budget", "8000", "--map-threshold", "0.5", "src/"]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn budget_default_none() {
+        let cli = parse(&["supp", "src/"]).unwrap();
+        assert_eq!(cli.budget, None);
+    }
+
+    #[test]
+    fn resolve_budget_returns_value() {
+        let cli = parse(&["supp", "--budget", "5000", "src/"]).unwrap();
+        assert_eq!(cli.resolve_budget(), Some(5000));
+    }
+
+    #[test]
+    fn resolve_budget_returns_none() {
+        let cli = parse(&["supp", "src/"]).unwrap();
+        assert_eq!(cli.resolve_budget(), None);
     }
 }

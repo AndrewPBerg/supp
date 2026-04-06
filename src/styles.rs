@@ -346,6 +346,91 @@ pub fn print_diff_result(result: DiffResult, no_copy: bool, start: std::time::In
     print_footer(&clipboard_text, no_copy, start, None, false);
 }
 
+// ── Todo display ──────────────────────────────────────────────────
+
+pub fn print_todo_result(
+    result: &crate::todo::TodoResult,
+    no_copy: bool,
+    start: std::time::Instant,
+) {
+    use crate::todo::TodoTag;
+
+    println!();
+    println!("  {}  {}", "supp todo".bold().cyan(), ".".dimmed());
+    println!("  {}", "─".repeat(40).dimmed());
+
+    if result.items.is_empty() {
+        println!();
+        println!("  {}", "No TODO/FIXME/HACK/XXX comments found.".dimmed());
+    } else {
+        let mut current_tag: Option<TodoTag> = None;
+
+        // Compute max file:line width for alignment
+        let max_loc = result
+            .items
+            .iter()
+            .map(|item| format!("{}:{}", item.file, item.line).len())
+            .max()
+            .unwrap_or(0);
+
+        for item in &result.items {
+            if current_tag != Some(item.tag) {
+                println!();
+                let count = result
+                    .tag_counts
+                    .get(item.tag.label())
+                    .copied()
+                    .unwrap_or(0);
+                let tag_colored = match item.tag {
+                    TodoTag::Todo => item.tag.label().yellow().bold(),
+                    TodoTag::Fixme => item.tag.label().red().bold(),
+                    TodoTag::Hack => item.tag.label().magenta().bold(),
+                    TodoTag::Xxx => item.tag.label().red().bold(),
+                };
+                println!("  {} ({})", tag_colored, count);
+                current_tag = Some(item.tag);
+            }
+
+            let location = format!("{}:{}", item.file, item.line);
+            println!(
+                "    {:<width$}  {}",
+                location.dimmed(),
+                item.text,
+                width = max_loc,
+            );
+
+            if let Some(ref blame) = item.blame {
+                println!(
+                    "    {:<width$}  {}",
+                    "",
+                    format!("({}, {})", blame.author, blame.date).dimmed(),
+                    width = max_loc,
+                );
+            }
+
+            if !item.context.is_empty() {
+                for ctx_line in &item.context {
+                    println!("    {}  {}", " ".repeat(max_loc), ctx_line.dimmed());
+                }
+            }
+        }
+    }
+
+    // Summary line
+    let mut parts: Vec<String> = Vec::new();
+    for tag in &[TodoTag::Todo, TodoTag::Fixme, TodoTag::Hack, TodoTag::Xxx] {
+        let count = result.tag_counts.get(tag.label()).copied().unwrap_or(0);
+        if count > 0 {
+            parts.push(format!("{} {}", count, tag.label()));
+        }
+    }
+    parts.push(format!("{} files scanned", result.files_scanned));
+
+    println!();
+    print_footer(&result.plain, no_copy, start, None, false);
+    eprintln!("  {}", parts.join(" · ").dimmed());
+}
+
 // ── Tree display ───────────────────────────────────────────────────
 
 pub fn print_tree_result(result: TreeResult, root: &str, no_copy: bool, start: std::time::Instant) {
@@ -423,6 +508,57 @@ pub fn print_tree_result(result: TreeResult, root: &str, no_copy: bool, start: s
             status_parts.join(", "),
         );
     }
+    println!();
+
+    print_footer(&result.plain, no_copy, start, None, false);
+}
+
+// ── Deps ───────────────────────────────────────────────────────────
+
+pub fn print_deps_result(
+    result: &crate::deps::DepsResult,
+    no_copy: bool,
+    start: std::time::Instant,
+) {
+    println!();
+
+    let header = if let Some(ref target) = result.target {
+        let direction = if result.reverse {
+            "dependents of"
+        } else {
+            "dependencies of"
+        };
+        format!("supp deps  {} {}", direction, target)
+    } else {
+        "supp deps  project graph".to_string()
+    };
+
+    println!("  {}", header.bold().cyan());
+    println!("  {}", "─".repeat(40).dimmed());
+    println!();
+
+    for line in result.display.lines() {
+        println!("  {}", line);
+    }
+
+    let file_s = if result.file_count == 1 {
+        "file"
+    } else {
+        "files"
+    };
+    let edge_s = if result.edge_count == 1 {
+        "edge"
+    } else {
+        "edges"
+    };
+
+    println!(
+        "\n  {} {} · {} {}",
+        result.file_count.to_string().bold(),
+        file_s,
+        result.edge_count.to_string().bold(),
+        edge_s,
+    );
     println!();
 
     print_footer(&result.plain, no_copy, start, None, false);
@@ -511,6 +647,40 @@ fn print_footer(
         format!("Done in {}", format_elapsed(start.elapsed())).dimmed()
     );
     out!();
+}
+
+fn print_budget_info(budget_info: &Option<crate::ctx::BudgetInfo>, use_stderr: bool) {
+    macro_rules! out {
+        ($($arg:tt)*) => {
+            if use_stderr { eprintln!($($arg)*); } else { println!($($arg)*); }
+        };
+    }
+
+    if let Some(bi) = budget_info {
+        let mut parts = Vec::new();
+        if bi.full_count > 0 {
+            parts.push(format!("{} full", bi.full_count));
+        }
+        if bi.slim_count > 0 {
+            parts.push(format!("{} slim", bi.slim_count));
+        }
+        if bi.map_count > 0 {
+            parts.push(format!("{} map", bi.map_count));
+        }
+        if bi.dropped_count > 0 {
+            parts.push(format!("{} dropped", bi.dropped_count));
+        }
+        out!(
+            "  {} {}",
+            "budget".bold().cyan(),
+            format!(
+                "~{} target — {}",
+                format_number(bi.target),
+                parts.join(", ")
+            )
+            .dimmed(),
+        );
+    }
 }
 
 // ── Sym display ─────────────────────────────────────────────────
@@ -853,6 +1023,7 @@ pub fn print_ctx_result(
 
     let compression = Some((result.original_bytes, result.total_bytes));
     print_footer(&result.plain, no_copy, start, compression, false);
+    print_budget_info(&result.budget_info, false);
 }
 
 // ── Context display ─────────────────────────────────────────────
@@ -873,6 +1044,7 @@ pub fn print_context_result(result: &AnalysisResult, no_copy: bool, start: std::
 
     let compression = Some((result.original_bytes, result.total_bytes));
     print_footer(&result.plain, no_copy, start, compression, false);
+    print_budget_info(&result.budget_info, false);
 }
 
 // ── Pick display ────────────────────────────────────────────────
@@ -893,6 +1065,7 @@ pub fn print_pick_stats(result: &AnalysisResult, no_copy: bool, start: std::time
 
     let compression = Some((result.original_bytes, result.total_bytes));
     print_footer(&result.plain, no_copy, start, compression, true);
+    print_budget_info(&result.budget_info, true);
 }
 
 #[cfg(test)]
@@ -1639,6 +1812,7 @@ mod tests {
             original_bytes: 8192,
             dep_file_count: 2,
             used_by_count: 5,
+            budget_info: None,
         };
         print_ctx_result(&result, true, std::time::Instant::now());
     }
@@ -1655,6 +1829,7 @@ mod tests {
             original_bytes: 2048,
             dep_file_count: 0,
             used_by_count: 1,
+            budget_info: None,
         };
         print_context_result(&result, true, std::time::Instant::now());
     }
@@ -1671,6 +1846,7 @@ mod tests {
             original_bytes: 4096,
             dep_file_count: 1,
             used_by_count: 3,
+            budget_info: None,
         };
         print_pick_stats(&result, true, std::time::Instant::now());
     }

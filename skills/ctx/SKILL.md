@@ -19,6 +19,7 @@ supp --json $ARGUMENTS
 - You want full file contents with token estimates so you know how much context you're consuming
 - Combine with `--map` (or `-m`) for just signatures and type definitions — useful for scanning large directories
 - Combine with `--slim` to strip comments and collapse blanks for a compact view
+- Combine with `--budget <tokens>` to auto-fit context within a token limit — supp picks per-file compression (full/slim/map) to maximize signal within the budget
 
 ## When NOT to use — pick a different supp tool instead
 

@@ -103,7 +103,7 @@ pub fn node_text<'a>(source: &'a str, node: tree_sitter::Node) -> &'a str {
 
 // ── Slim Mode ──────────────────────────────────────────────────────
 
-fn is_comment_kind(kind: &str, lang: Lang) -> bool {
+pub(crate) fn is_comment_kind(kind: &str, lang: Lang) -> bool {
     match lang {
         Lang::Rust | Lang::Java => matches!(kind, "line_comment" | "block_comment"),
         Lang::Python => kind == "comment",
@@ -153,7 +153,7 @@ fn slim(content: &str, lang: Lang) -> String {
     collapse_blank_lines(&cleaned)
 }
 
-fn collect_comments(
+pub(crate) fn collect_comments(
     cursor: &mut tree_sitter::TreeCursor,
     lang: Lang,
     ranges: &mut Vec<(usize, usize)>,

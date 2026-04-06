@@ -25,6 +25,17 @@ pub struct AnalysisResult {
     pub original_bytes: usize,
     pub dep_file_count: usize,
     pub used_by_count: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub budget_info: Option<BudgetInfo>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct BudgetInfo {
+    pub target: usize,
+    pub full_count: usize,
+    pub slim_count: usize,
+    pub map_count: usize,
+    pub dropped_count: usize,
 }
 
 // ── Internal types ──────────────────────────────────────────────────
@@ -48,6 +59,7 @@ struct FileData {
     path: String,
     compressed: String,
     original: String,
+    mode: Mode,
 }
 
 struct FileAnalysis {
@@ -59,6 +71,7 @@ struct FileAnalysis {
 
 // ── Public API ──────────────────────────────────────────────────────
 
+#[allow(clippy::too_many_arguments)]
 pub fn analyze(
     root: &str,
     paths: &[String],
@@ -67,6 +80,7 @@ pub fn analyze(
     mode: Mode,
     perf: &PerfProfile,
     map_threshold: Option<f64>,
+    budget: Option<usize>,
 ) -> Result<AnalysisResult> {
     let max_files = perf.max_files;
     let max_total_bytes = perf.max_total_mb * 1024 * 1024;
@@ -131,35 +145,76 @@ pub fn analyze(
     };
 
     // 3. Overlap file reads (rayon) with symbol index loading (background thread)
-    let (mut read_files, all_symbols, all_ranks) = std::thread::scope(|s| {
+    //    In budget mode, precompute all 3 compression levels per file.
+    struct BudgetPrecomp {
+        slim_content: String,
+        slim_tokens: usize,
+        map_tokens: usize,
+        full_tokens: usize,
+    }
+
+    let (mut read_files, mut budget_precomps, all_symbols, all_ranks) = std::thread::scope(|s| {
         let rp = &root_path;
         let sym_handle = s.spawn(move || symbol::load_symbols(rp, pagerank_iters));
 
-        let read_files: Vec<FileData> = file_paths
+        let results: Vec<(FileData, Option<BudgetPrecomp>)> = file_paths
             .par_iter()
             .filter_map(|fp| {
                 let content = std::fs::read_to_string(fp).ok()?;
-                let compressed = compress::compress(&content, fp, mode);
-                Some(FileData {
-                    path: fp.clone(),
-                    compressed,
-                    original: content,
-                })
+                if budget.is_some() {
+                    let slim = compress::compress(&content, fp, Mode::Slim);
+                    let map = compress::compress(&content, fp, Mode::Map);
+                    let precomp = BudgetPrecomp {
+                        slim_tokens: crate::styles::estimate_tokens(slim.len()),
+                        map_tokens: crate::styles::estimate_tokens(map.len()),
+                        full_tokens: crate::styles::estimate_tokens(content.len()),
+                        slim_content: slim,
+                    };
+                    // Start at Map mode for budget; will be upgraded later
+                    Some((
+                        FileData {
+                            path: fp.clone(),
+                            compressed: map,
+                            original: content,
+                            mode: Mode::Map,
+                        },
+                        Some(precomp),
+                    ))
+                } else {
+                    let compressed = compress::compress(&content, fp, mode);
+                    Some((
+                        FileData {
+                            path: fp.clone(),
+                            compressed,
+                            original: content,
+                            mode,
+                        },
+                        None,
+                    ))
+                }
             })
             .collect();
 
+        let (files, precomps): (Vec<_>, Vec<_>) = results.into_iter().unzip();
         let sym_index = sym_handle.join().unwrap();
-        (read_files, sym_index.symbols, sym_index.ranks)
+        (files, precomps, sym_index.symbols, sym_index.ranks)
     });
 
+    // Sort files (and budget precomps) to match input order
     let order: HashMap<&str, usize> = file_paths
         .iter()
         .enumerate()
         .map(|(i, p)| (p.as_str(), i))
         .collect();
-    read_files.sort_by_key(|f| order.get(f.path.as_str()).copied().unwrap_or(usize::MAX));
+    {
+        let mut pairs: Vec<(FileData, Option<BudgetPrecomp>)> =
+            read_files.into_iter().zip(budget_precomps).collect();
+        pairs.sort_by_key(|(fd, _)| order.get(fd.path.as_str()).copied().unwrap_or(usize::MAX));
+        let (f, p): (Vec<_>, Vec<_>) = pairs.into_iter().unzip();
+        read_files = f;
+        budget_precomps = p;
+    }
 
-    let file_count = read_files.len();
     let original_bytes: usize = read_files.iter().map(|f| f.original.len()).sum();
 
     if (original_bytes as u64) > max_total_bytes {
@@ -170,6 +225,130 @@ pub fn analyze(
         );
     }
 
+    // ── Budget fitting ─────────────────────────────────────────────
+    let mut dropped_count = 0usize;
+    let budget_info = if let Some(token_budget) = budget {
+        if token_budget < 100 {
+            bail!("budget must be at least 100 tokens");
+        }
+
+        // Build per-file importance from PageRank (max score of any symbol in file)
+        let individual_set: std::collections::HashSet<&str> =
+            individual_files.iter().map(|s| s.as_str()).collect();
+        let mut file_importance: Vec<f64> = read_files
+            .iter()
+            .map(|fd| {
+                let base = all_symbols
+                    .iter()
+                    .zip(all_ranks.iter())
+                    .filter(|(s, _)| {
+                        s.kind != SymbolKind::File
+                            && (s.file == fd.path
+                                || fd.path.ends_with(&s.file)
+                                || s.file.ends_with(&fd.path))
+                    })
+                    .map(|(_, &r)| r)
+                    .fold(0.0_f64, f64::max);
+                // Explicitly-named files get a bonus
+                if individual_set.contains(fd.path.as_str()) {
+                    base + 1.0
+                } else {
+                    base
+                }
+            })
+            .collect();
+
+        // Estimate overhead tokens (header, tree, etc.) — conservative ~200 token floor
+        let overhead_tokens = 200usize;
+        let file_budget = token_budget.saturating_sub(overhead_tokens);
+
+        // Current total at Map mode
+        let mut current_tokens: usize = budget_precomps
+            .iter()
+            .map(|p| p.as_ref().map_or(0, |p| p.map_tokens))
+            .sum();
+
+        // Drop lowest-ranked files if Map baseline exceeds budget
+        if current_tokens > file_budget {
+            // Indices sorted by importance ascending (drop least important first)
+            let mut drop_order: Vec<usize> = (0..read_files.len()).collect();
+            drop_order.sort_by(|&a, &b| {
+                file_importance[a]
+                    .partial_cmp(&file_importance[b])
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+            for &idx in &drop_order {
+                if current_tokens <= file_budget {
+                    break;
+                }
+                if let Some(ref p) = budget_precomps[idx] {
+                    current_tokens -= p.map_tokens;
+                    file_importance[idx] = -1.0; // Mark as dropped
+                    dropped_count += 1;
+                }
+            }
+        }
+
+        // Upgrade loop: iterate by importance descending
+        let mut upgrade_order: Vec<usize> = (0..read_files.len())
+            .filter(|&i| file_importance[i] >= 0.0)
+            .collect();
+        upgrade_order.sort_by(|&a, &b| {
+            file_importance[b]
+                .partial_cmp(&file_importance[a])
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        for &idx in &upgrade_order {
+            let precomp = match budget_precomps[idx].as_ref() {
+                Some(p) => p,
+                None => continue,
+            };
+
+            // Try Map → Slim
+            let slim_delta = precomp.slim_tokens.saturating_sub(precomp.map_tokens);
+            if current_tokens + slim_delta <= file_budget {
+                current_tokens += slim_delta;
+                read_files[idx].compressed = precomp.slim_content.clone();
+                read_files[idx].mode = Mode::Slim;
+
+                // Try Slim → Full
+                let full_delta = precomp.full_tokens.saturating_sub(precomp.slim_tokens);
+                if current_tokens + full_delta <= file_budget {
+                    current_tokens += full_delta;
+                    read_files[idx].compressed = read_files[idx].original.clone();
+                    read_files[idx].mode = Mode::Full;
+                }
+            }
+        }
+
+        // Remove dropped files
+        if dropped_count > 0 {
+            let keep: Vec<bool> = file_importance.iter().map(|&imp| imp >= 0.0).collect();
+            read_files = read_files
+                .into_iter()
+                .enumerate()
+                .filter(|(i, _)| keep[*i])
+                .map(|(_, fd)| fd)
+                .collect();
+        }
+
+        let full_count = read_files.iter().filter(|f| f.mode == Mode::Full).count();
+        let slim_count = read_files.iter().filter(|f| f.mode == Mode::Slim).count();
+        let map_count = read_files.iter().filter(|f| f.mode == Mode::Map).count();
+
+        Some(BudgetInfo {
+            target: token_budget,
+            full_count,
+            slim_count,
+            map_count,
+            dropped_count,
+        })
+    } else {
+        None
+    };
+
+    let file_count = read_files.len();
     let total_bytes: usize = read_files.iter().map(|f| f.compressed.len()).sum();
     let total_lines: usize = read_files
         .iter()
@@ -346,6 +525,7 @@ pub fn analyze(
         &dir_paths,
         &individual_files,
         map_threshold,
+        &budget_info,
     );
 
     Ok(AnalysisResult {
@@ -356,6 +536,7 @@ pub fn analyze(
         original_bytes,
         dep_file_count: total_dep_files,
         used_by_count: total_used_by,
+        budget_info,
     })
 }
 
@@ -449,6 +630,7 @@ fn render(
     dir_paths: &[String],
     individual_files: &[String],
     map_threshold: Option<f64>,
+    budget_info: &Option<BudgetInfo>,
 ) -> String {
     use std::collections::HashSet;
     use std::fmt::Write;
@@ -485,32 +667,54 @@ fn render(
     out.push_str("CONTEXT FOR LLM\n");
     out.push_str("================================\n");
 
-    match mode {
-        Mode::Slim => {
-            out.push_str("NOTE: This context was generated in SLIM mode.\n");
-            out.push_str("Comments have been stripped and blank lines collapsed.\n");
-            out.push_str("All code is intact — only documentation artifacts were removed.\n\n");
+    if let Some(bi) = budget_info {
+        let _ = writeln!(
+            out,
+            "NOTE: This context was generated in BUDGET mode (target: ~{} tokens).",
+            crate::styles::format_number(bi.target),
+        );
+        let _ = writeln!(
+            out,
+            "Files use mixed compression: {} full, {} slim, {} map.",
+            bi.full_count, bi.slim_count, bi.map_count,
+        );
+        if bi.dropped_count > 0 {
+            let _ = writeln!(
+                out,
+                "{} low-importance file{} dropped to fit budget.",
+                bi.dropped_count,
+                if bi.dropped_count == 1 { "" } else { "s" },
+            );
         }
-        Mode::Map => {
-            out.push_str("NOTE: This context was generated in MAP mode.\n");
-            out.push_str(
-                "Only imports, type definitions, and function/method signatures are shown.\n",
-            );
-            out.push_str(
-                "Function bodies have been replaced with { ... } (or : ... for Python).\n",
-            );
-            if let Some(pct) = map_threshold {
-                use std::fmt::Write as _;
-                let _ = writeln!(
-                    out,
-                    "Symbols below the {:.0}th percentile of importance have been omitted.",
-                    pct * 100.0,
-                );
-                out.push_str("Low-importance files are summarized as one-liners.\n");
+        out.push_str("Request the full file if you need implementation details.\n\n");
+    } else {
+        match mode {
+            Mode::Slim => {
+                out.push_str("NOTE: This context was generated in SLIM mode.\n");
+                out.push_str("Comments have been stripped and blank lines collapsed.\n");
+                out.push_str("All code is intact — only documentation artifacts were removed.\n\n");
             }
-            out.push_str("Request the full file if you need implementation details.\n\n");
+            Mode::Map => {
+                out.push_str("NOTE: This context was generated in MAP mode.\n");
+                out.push_str(
+                    "Only imports, type definitions, and function/method signatures are shown.\n",
+                );
+                out.push_str(
+                    "Function bodies have been replaced with { ... } (or : ... for Python).\n",
+                );
+                if let Some(pct) = map_threshold {
+                    use std::fmt::Write as _;
+                    let _ = writeln!(
+                        out,
+                        "Symbols below the {:.0}th percentile of importance have been omitted.",
+                        pct * 100.0,
+                    );
+                    out.push_str("Low-importance files are summarized as one-liners.\n");
+                }
+                out.push_str("Request the full file if you need implementation details.\n\n");
+            }
+            Mode::Full => {}
         }
-        Mode::Full => {}
     }
 
     // Directory tree listing
@@ -605,7 +809,8 @@ fn render(
                 continue;
             }
             let _ = writeln!(out, "\n## {}", fd.path);
-            if mode == Mode::Map {
+            let file_mode = if budget_info.is_some() { fd.mode } else { mode };
+            if file_mode == Mode::Map {
                 render_symbol_index_grouped(&mut out, &analysis.symbols, &sym_rank, rank_cutoff);
             } else {
                 for sym in &analysis.symbols {
@@ -924,7 +1129,7 @@ mod tests {
 
     fn analyze_one(root: &str, file: &str, mode: Mode) -> Result<AnalysisResult> {
         let full = Path::new(root).join(file).to_string_lossy().to_string();
-        analyze(root, &[full], 2, None, mode, &test_perf(), None)
+        analyze(root, &[full], 2, None, mode, &test_perf(), None, None)
     }
 
     // ── Single-file tests (migrated from old ctx.rs) ────────────
@@ -1065,6 +1270,7 @@ mod tests {
             Mode::Full,
             &test_perf(),
             None,
+            None,
         )
         .unwrap();
         assert_eq!(result.file_count, 1);
@@ -1082,6 +1288,7 @@ mod tests {
             None,
             Mode::Full,
             &test_perf(),
+            None,
             None,
         )
         .unwrap();
@@ -1101,6 +1308,7 @@ mod tests {
             Mode::Full,
             &test_perf(),
             None,
+            None,
         )
         .unwrap();
         assert_eq!(result.file_count, 1);
@@ -1118,6 +1326,7 @@ mod tests {
             Mode::Full,
             &test_perf(),
             None,
+            None,
         );
         assert!(result.is_err());
     }
@@ -1132,6 +1341,7 @@ mod tests {
             Some(r"\.rs$"),
             Mode::Full,
             &test_perf(),
+            None,
             None,
         );
         assert!(result.is_err());
@@ -1148,6 +1358,7 @@ mod tests {
             None,
             Mode::Full,
             &test_perf(),
+            None,
             None,
         )
         .unwrap();
@@ -1167,6 +1378,7 @@ mod tests {
             None,
             Mode::Full,
             &test_perf(),
+            None,
             None,
         )
         .unwrap();
@@ -1192,6 +1404,7 @@ mod tests {
             None,
             Mode::Full,
             &test_perf(),
+            None,
             None,
         )
         .unwrap();
@@ -1220,6 +1433,7 @@ mod tests {
             Mode::Full,
             &test_perf(),
             None,
+            None,
         )
         .unwrap();
         assert!(result.plain.contains("DEPENDENCIES"));
@@ -1240,6 +1454,7 @@ mod tests {
             Mode::Full,
             &test_perf(),
             None,
+            None,
         )
         .unwrap();
         assert!(result.plain.contains("Directory:"));
@@ -1258,6 +1473,7 @@ mod tests {
             None,
             Mode::Full,
             &test_perf(),
+            None,
             None,
         )
         .unwrap();
@@ -1293,6 +1509,7 @@ mod tests {
             None,
             Mode::Full,
             &test_perf(),
+            None,
             None,
         )
         .unwrap();
@@ -1355,6 +1572,7 @@ mod tests {
             Mode::Full,
             &small_perf,
             None,
+            None,
         );
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
@@ -1374,6 +1592,7 @@ mod tests {
             Mode::Full,
             &small_perf,
             None,
+            None,
         );
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
@@ -1389,6 +1608,7 @@ mod tests {
             None,
             Mode::Full,
             &test_perf(),
+            None,
             None,
         );
         assert!(result.is_err());
@@ -1406,6 +1626,7 @@ mod tests {
             Some(r"\.rs$"), // regex only matches .rs files, but we only have .txt
             Mode::Full,
             &test_perf(),
+            None,
             None,
         );
         assert!(result.is_err());
@@ -1437,6 +1658,7 @@ mod tests {
             Mode::Full,
             &big_perf,
             None,
+            None,
         )
         .unwrap();
         assert_eq!(result.file_count, 22);
@@ -1461,6 +1683,7 @@ mod tests {
             None,
             Mode::Full,
             &test_perf(),
+            None,
             None,
         )
         .unwrap();

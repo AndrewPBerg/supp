@@ -24,6 +24,10 @@
 - [x] Smarter hierarchy — multi-level inheritance chains, mixin/trait resolution
 - [x] Pipe-friendly output — detect `| pipe` and skip color/clipboard automatically
 
+- [x] `--budget <tokens>` — token-budget-aware per-file compression mode selection
+- [x] `supp todo` — find TODO/FIXME/HACK/XXX comments with tree-sitter-aware scanning, git blame, and context lines
+- [x] `supp deps` — file-level dependency graph visualization with focus, reverse, depth, and DOT output
+
 ## TODO
 - [x] Upgrade wording and prompting around supp -mapping, context, and symbols
 - [x] make base `supp` dfeault to `.` path

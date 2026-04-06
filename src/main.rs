@@ -2,12 +2,14 @@ mod cli;
 mod compress;
 mod config;
 mod ctx;
+mod deps;
 mod git;
 
 mod pick;
 mod self_update;
 mod styles;
 mod symbol;
+mod todo;
 mod tree;
 mod why;
 
@@ -73,6 +75,53 @@ fn main() -> anyhow::Result<()> {
                 println!("{}", serde_json::to_string_pretty(&result)?);
             } else {
                 styles::print_why_result(&result, no_copy, start);
+            }
+            return Ok(());
+        }
+
+        Some(Commands::Deps {
+            ref path,
+            reverse,
+            depth,
+            dot,
+        }) => {
+            let result = deps::analyze(
+                ".",
+                path.as_deref(),
+                reverse,
+                depth,
+                dot,
+                cli.regex.as_deref(),
+            )?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&result)?);
+            } else if dot {
+                print!("{}", result.dot.as_ref().unwrap());
+            } else {
+                styles::print_deps_result(&result, no_copy, start);
+            }
+            return Ok(());
+        }
+
+        Some(Commands::Todo {
+            ref path,
+            ref tags,
+            blame,
+            context,
+        }) => {
+            let root = path.as_deref().unwrap_or(".");
+            let tag_filter = tags.as_ref().map(|t| todo::parse_tags(t)).transpose()?;
+            let result = todo::scan(
+                root,
+                cli.regex.as_deref(),
+                tag_filter.as_deref(),
+                context,
+                blame,
+            )?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&result)?);
+            } else {
+                styles::print_todo_result(&result, no_copy, start);
             }
             return Ok(());
         }
@@ -178,6 +227,7 @@ fn main() -> anyhow::Result<()> {
                 mode,
                 &perf,
                 cli.resolve_map_threshold(),
+                cli.resolve_budget(),
             )?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&result)?);
@@ -248,6 +298,7 @@ fn main() -> anyhow::Result<()> {
                     mode,
                     &perf,
                     cli.resolve_map_threshold(),
+                    cli.resolve_budget(),
                 )?;
                 if json {
                     println!("{}", serde_json::to_string_pretty(&result)?);
@@ -264,6 +315,7 @@ fn main() -> anyhow::Result<()> {
                     mode,
                     &perf,
                     cli.resolve_map_threshold(),
+                    cli.resolve_budget(),
                 )?;
                 if json {
                     println!("{}", serde_json::to_string_pretty(&result)?);
@@ -276,9 +328,11 @@ fn main() -> anyhow::Result<()> {
             Commands::Completions { .. }
             | Commands::Sym { .. }
             | Commands::Why { .. }
+            | Commands::Deps { .. }
             | Commands::Version
             | Commands::Update
             | Commands::Uninstall
+            | Commands::Todo { .. }
             | Commands::CleanCache { .. }
             | Commands::Perf { .. },
         ) => {
