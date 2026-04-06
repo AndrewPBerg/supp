@@ -1,19 +1,27 @@
 ---
 name: ctx
-description: "Analyze a file's full context: compressed source, dependencies, and who uses it — use before editing a file to understand its role and connections."
+description: "Read source files with dependency context — use INSTEAD OF the Read tool when you need file contents plus imports/exports/dependency graph"
 user_invocable: true
 ---
 
 Run the following command and show the user the output:
 
 ```
-supp --json $ARGUMENTS
+supp --no-copy --no-color --json $ARGUMENTS
 ```
 
-## When to use — USE THIS PROACTIVELY
+## When to use
 
-**Use `/ctx` before editing any file to understand its role, dependencies, and who depends on it.** This gives you compressed source + dependency graph in one call.
+- You need to read one or more source files with a project tree header for orientation
+- The user asks you to look at, review, or understand specific files or directories
+- Before modifying a file: understand what it imports, exports, and who references it
+- During planning: map out file-level dependencies to avoid breaking consumers
+- Combine with `--map` (or `-m`) for just signatures and type definitions — useful for scanning large directories
+- Combine with `--slim` to strip comments and collapse blanks for a compact view
 
-- **Before modifying a file**: Understand what the file imports, exports, and who references it.
-- **During plan mode**: Map out file-level dependencies to plan changes that won't break consumers.
-- **When the user points to a file**: Get the full picture before proposing changes.
+## When NOT to use — pick a different supp tool instead
+
+- **Need to find a symbol by name?** → Use `/sym` — it searches definitions across the project
+- **Need to understand a specific symbol's callers and dependencies?** → Use `/why`
+- **Need project structure?** → Use `/tree`
+- **Need to review git changes?** → Use `/diff`

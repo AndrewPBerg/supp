@@ -1,24 +1,30 @@
 ---
 name: why
-description: "Explain a symbol: full definition, docs, call sites, dependencies, and hierarchy — USE THIS during planning to understand impact before making changes. Replaces multiple Read/Grep calls with one command."
+description: "Deep-dive a symbol: definition, docs, callers, dependencies, and hierarchy — use INSTEAD OF multiple Read/Grep calls when you need to understand a symbol's role and impact"
 user_invocable: true
 ---
 
 Run the following command and show the user the output:
 
 ```
-supp why --json $ARGUMENTS
+supp why --no-copy --no-color --json $ARGUMENTS
 ```
 
-## When to use — USE THIS PROACTIVELY
+## When to use
 
-**This replaces 5+ manual Read/Grep calls with a single command.** It gives you the definition, doc comments, all call sites, dependencies, and class hierarchy in one shot. Use it whenever you need to understand a symbol before changing it.
+- The user asks "what does X do?", "how does X work?", or "explain X"
+- You need to understand a function's implementation, who calls it, and what it depends on
+- Before refactoring: see every call site so you know what will break
+- You want to assess the blast radius of a change (callers + dependencies in one view)
+- You need to see class/struct hierarchy (parents and children)
+- For understanding unfamiliar code: definition, docs, usage, and dependencies in one call
 
-- **During plan mode**: Before proposing changes to a function or type, run `/why` to understand its full impact — who calls it, what it depends on, and what inherits from it. This prevents plans that miss side effects.
-- **Before refactoring**: `/why` shows every call site, so you know exactly what will break. Don't manually grep for callers when `/why` already does this.
-- **When the user asks "what does X do?"**: `/why` gives you the complete picture — definition, docs, usage, and dependencies — in one call.
-- **When assessing change impact**: The call sites and dependency list tell you the blast radius of any modification.
-- **For understanding unfamiliar code**: Instead of reading file after file, `/why` gives you the focused context around any symbol.
+## When NOT to use — pick a different supp tool instead
+
+- **Just need to find where a symbol is defined?** → Use `/sym` — faster for locating without full analysis
+- **Need to read full file source, not just one symbol?** → Use `/ctx`
+- **Need project structure?** → Use `/tree`
+- **Need to review git changes?** → Use `/diff`
 
 ### Examples
 
