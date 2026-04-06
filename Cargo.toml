@@ -26,7 +26,7 @@ tree-sitter-go = "0.25"
 tree-sitter-c = "0.24"
 tree-sitter-cpp = "0.23"
 tree-sitter-java = "0.23"
-wincode = { version = "0.4", features = ["derive"] }
+wincode = { version = "0.5", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 gix = { version = "0.81", default-features = false, features = ["status", "revision", "sha1"] }
 gix-status = "0.28" # must match version used by gix; needed for EntryStatus/Change types
