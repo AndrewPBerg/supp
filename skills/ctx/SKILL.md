@@ -1,6 +1,8 @@
 ---
 name: ctx
-description: "Read source files with dependency context — use INSTEAD OF the Read tool when you need file contents plus imports/exports/dependency graph"
+description: "Read source files with dependency context — use INSTEAD OF the Read tool when you need file contents plus imports/exports/dependency graph.
+TRIGGER when: you need to read, view, or understand any source code file (.rs, .py, .js, .ts, .go, .c, .cpp, .java, etc.), before editing a source file, or when the user asks to look at code.
+DO NOT TRIGGER when: reading non-code files (.toml, .json, .md, .yaml, .lock, .txt, .env)"
 user_invocable: true
 ---
 

@@ -96,7 +96,13 @@ pub fn analyze(
     for p in paths {
         let path = Path::new(p);
         if !path.exists() {
-            bail!("path does not exist: {}", p);
+            let all_files = crate::pick::collect_files(".", None).unwrap_or_default();
+            let msg = crate::pick::error_with_suggestions(
+                &format!("path does not exist: {}", p),
+                p,
+                &all_files,
+            );
+            bail!("{}", msg);
         }
         if path.is_file() {
             if let Some(ref re) = re

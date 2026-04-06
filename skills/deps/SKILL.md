@@ -1,6 +1,8 @@
 ---
 name: deps
-description: "Visualize file-level import/dependency graph — use when you need to understand what a module depends on or what depends on it"
+description: "Visualize file-level import/dependency graph — use when you need to understand what a module depends on or what depends on it.
+TRIGGER when: you need to understand file-level dependencies, what imports what, or assess blast radius of changing a module.
+DO NOT TRIGGER when: you need symbol-level dependencies (use /why) or just need to read file contents (use /ctx)"
 user_invocable: true
 ---
 

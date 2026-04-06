@@ -1,6 +1,8 @@
 ---
 name: diff
-description: "Review git changes: staged, unstaged, or branch diffs with full patches — use INSTEAD OF git diff in Bash when reviewing work or preparing commits"
+description: "Review git changes: staged, unstaged, or branch diffs with full patches — use INSTEAD OF git diff in Bash when reviewing work or preparing commits.
+TRIGGER when: you need to see what changed, review diffs, check staged/unstaged changes, or prepare a commit message.
+DO NOT TRIGGER when: you need project structure (use /tree) or need to understand code logic (use /why or /ctx)"
 user_invocable: true
 ---
 

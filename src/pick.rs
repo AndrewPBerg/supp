@@ -9,10 +9,56 @@ use crossterm::event::{self, Event, KeyCode, KeyEvent};
 use crossterm::terminal;
 use ignore::WalkBuilder;
 use regex::Regex;
+use strsim::jaro_winkler;
 
 use crate::compress::Mode;
 
 const MAX_HISTORY: usize = 20;
+const MAX_SUGGESTIONS: usize = 5;
+const SUGGESTION_THRESHOLD: f64 = 0.6;
+
+/// Find the closest matches to `query` from `candidates` using fuzzy string similarity.
+/// Returns up to `MAX_SUGGESTIONS` candidates above `SUGGESTION_THRESHOLD`.
+pub fn suggest_similar(query: &str, candidates: &[String]) -> Vec<String> {
+    // Normalize: strip leading "./"
+    let q = query.strip_prefix("./").unwrap_or(query);
+
+    let mut scored: Vec<(f64, &String)> = candidates
+        .iter()
+        .map(|c| {
+            let c_norm = c.strip_prefix("./").unwrap_or(c);
+            // Score against full path and also just the filename for short queries
+            let full_score = jaro_winkler(q, c_norm);
+            let file_score = Path::new(c_norm)
+                .file_name()
+                .map(|f| jaro_winkler(q, &f.to_string_lossy()))
+                .unwrap_or(0.0);
+            // Also check if the candidate contains the query as a substring
+            let contains_bonus = if c_norm.contains(q) { 0.15 } else { 0.0 };
+            (full_score.max(file_score) + contains_bonus, c)
+        })
+        .filter(|(score, _)| *score >= SUGGESTION_THRESHOLD)
+        .collect();
+
+    scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+    scored.truncate(MAX_SUGGESTIONS);
+    scored.into_iter().map(|(_, c)| c.clone()).collect()
+}
+
+/// Build an error message with fuzzy path suggestions appended.
+/// If no suggestions are found, returns the base message unchanged.
+pub fn error_with_suggestions(base_msg: &str, query: &str, candidates: &[String]) -> String {
+    let suggestions = suggest_similar(query, candidates);
+    if suggestions.is_empty() {
+        return base_msg.to_string();
+    }
+    let mut msg = base_msg.to_string();
+    msg.push_str("\n\nDid you mean:");
+    for s in &suggestions {
+        msg.push_str(&format!("\n  - {}", s));
+    }
+    msg
+}
 
 /// Collect all files and directories under `root`, respecting .gitignore, with optional regex filter.
 /// Includes dotfiles and dotfolders (except .git).
@@ -782,5 +828,65 @@ mod tests {
     fn fzf_args_history_preview_uses_field_refs() {
         let args = build_fzf_args(false, 50, true);
         assert!(args.iter().any(|a| a.contains("{1}{2}")));
+    }
+
+    // ── suggest_similar ──────────────────────────────────────────
+
+    #[test]
+    fn suggest_similar_finds_typo() {
+        let candidates = vec![
+            "src/main.rs".into(),
+            "src/cli.rs".into(),
+            "src/config.rs".into(),
+        ];
+        let suggestions = suggest_similar("src/mian.rs", &candidates);
+        assert!(!suggestions.is_empty());
+        assert_eq!(suggestions[0], "src/main.rs");
+    }
+
+    #[test]
+    fn suggest_similar_strips_dot_slash() {
+        let candidates = vec!["./src/main.rs".into(), "./src/cli.rs".into()];
+        let suggestions = suggest_similar("src/main.rs", &candidates);
+        assert!(!suggestions.is_empty());
+        assert_eq!(suggestions[0], "./src/main.rs");
+    }
+
+    #[test]
+    fn suggest_similar_matches_filename() {
+        let candidates = vec!["src/deeply/nested/utils.rs".into(), "src/other.rs".into()];
+        let suggestions = suggest_similar("utils.rs", &candidates);
+        assert!(!suggestions.is_empty());
+        assert_eq!(suggestions[0], "src/deeply/nested/utils.rs");
+    }
+
+    #[test]
+    fn suggest_similar_no_match() {
+        let candidates = vec!["src/main.rs".into(), "src/cli.rs".into()];
+        let suggestions = suggest_similar("zzzzzzz_no_match.xyz", &candidates);
+        assert!(suggestions.is_empty());
+    }
+
+    #[test]
+    fn suggest_similar_limits_results() {
+        let candidates: Vec<String> = (0..20).map(|i| format!("src/file{}.rs", i)).collect();
+        let suggestions = suggest_similar("src/file", &candidates);
+        assert!(suggestions.len() <= MAX_SUGGESTIONS);
+    }
+
+    #[test]
+    fn error_with_suggestions_appends() {
+        let candidates = vec!["src/main.rs".into()];
+        let msg = error_with_suggestions("path not found: src/mian.rs", "src/mian.rs", &candidates);
+        assert!(msg.contains("Did you mean:"));
+        assert!(msg.contains("src/main.rs"));
+    }
+
+    #[test]
+    fn error_with_suggestions_no_match() {
+        let candidates = vec!["src/main.rs".into()];
+        let msg = error_with_suggestions("not found", "zzzzz.xyz", &candidates);
+        assert!(!msg.contains("Did you mean:"));
+        assert_eq!(msg, "not found");
     }
 }

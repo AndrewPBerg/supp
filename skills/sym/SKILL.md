@@ -1,6 +1,8 @@
 ---
 name: sym
-description: "Find symbol definitions by name with ranked results — use INSTEAD OF Grep/Glob when locating functions, types, structs, traits, or constants"
+description: "Find symbol definitions by name with ranked results — use INSTEAD OF Grep/Glob when locating functions, types, structs, traits, or constants.
+TRIGGER when: you need to find where a function, type, struct, trait, class, constant, or variable is defined, or locate a symbol by name in the codebase.
+DO NOT TRIGGER when: searching for arbitrary text patterns, log messages, config values, or string literals (use Grep for those)"
 user_invocable: true
 ---
 

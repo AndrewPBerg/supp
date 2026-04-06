@@ -1,6 +1,8 @@
 ---
 name: todo
-description: "Find TODO, FIXME, HACK, and XXX comments across the codebase with optional git blame and context"
+description: "Find TODO, FIXME, HACK, and XXX comments across the codebase with optional git blame and context.
+TRIGGER when: you need to find TODOs, FIXMEs, HACKs, XXXs, or outstanding work items in the codebase.
+DO NOT TRIGGER when: searching for arbitrary text patterns that aren't TODO markers (use Grep for those)"
 user_invocable: true
 ---
 

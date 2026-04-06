@@ -1,6 +1,6 @@
 {
   "name": "supp",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Code-aware context tool for LLMs — diffs, symbol search, tree views, and file analysis",
   "author": {
     "name": "AndrewPBerg",

@@ -1,6 +1,8 @@
 ---
 name: why
-description: "Deep-dive a symbol: definition, docs, callers, dependencies, and hierarchy — use INSTEAD OF multiple Read/Grep calls when you need to understand a symbol's role and impact"
+description: "Deep-dive a symbol: definition, docs, callers, dependencies, and hierarchy — use INSTEAD OF multiple Read/Grep calls when you need to understand a symbol's role and impact.
+TRIGGER when: you need to understand what a function/type/symbol does, who calls it, what it depends on, or its blast radius before refactoring.
+DO NOT TRIGGER when: you just need to find where a symbol is defined (use /sym) or read a whole file (use /ctx)"
 user_invocable: true
 ---
 

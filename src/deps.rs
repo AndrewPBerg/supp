@@ -45,7 +45,13 @@ pub fn analyze(
             // Target might be a dep but not a key — check values too
             let exists = full_graph.values().any(|deps| deps.contains(&normalized));
             if !exists {
-                anyhow::bail!("file '{}' not found in dependency graph", target_raw);
+                let candidates: Vec<String> = full_graph.keys().cloned().collect();
+                let msg = crate::pick::error_with_suggestions(
+                    &format!("file '{}' not found in dependency graph", target_raw),
+                    target_raw,
+                    &candidates,
+                );
+                anyhow::bail!("{}", msg);
             }
         }
         let sub = extract_subgraph(&full_graph, &normalized, reverse, depth);
