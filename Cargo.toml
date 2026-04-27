@@ -12,7 +12,7 @@ categories = ["command-line-utilities", "development-tools"]
 [dependencies]
 anyhow = "1.0.102"
 chrono = "0.4"
-clap = { version = "4.6.0", features = ["derive"] }
+clap = { version = "4.6.1", features = ["derive"] }
 clap_complete = "4"
 colored = "3"
 ignore = "0.4.25"
@@ -28,14 +28,14 @@ tree-sitter-cpp = "0.23"
 tree-sitter-java = "0.23"
 wincode = { version = "0.5", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
-gix = { version = "0.81", default-features = false, features = ["status", "revision", "sha1"] }
-gix-status = "0.28" # must match version used by gix; needed for EntryStatus/Change types
+gix = { version = "0.82", default-features = false, features = ["status", "revision", "sha1"] }
+gix-status = "0.29" # must match version used by gix; needed for EntryStatus/Change types
 strsim = "0.11"
 crossterm = "0.29"
 
 serde_json = "1"
 ureq = { version = "3", features = ["json"] }
-rayon = "1.11.0"
+rayon = "1.12.0"
 
 [target.'cfg(not(target_os = "linux"))'.dependencies]
 arboard = "3"
