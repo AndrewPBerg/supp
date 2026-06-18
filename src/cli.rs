@@ -136,6 +136,38 @@ pub enum Commands {
         dot: bool,
     },
 
+    /// Summarize repository identity: languages, tools, tests, entrypoints, instructions
+    Project,
+
+    /// Find likely tests and focused validation commands for a file, symbol, or current diff
+    #[command(name = "tests-for", alias = "test-map")]
+    TestsFor {
+        /// File path or symbol name to map to tests
+        target: Option<String>,
+
+        /// Infer tests for changed files from git status
+        #[arg(long)]
+        diff: bool,
+    },
+
+    /// Suggest or run the narrowest validation command for a target or changed files
+    Validate {
+        /// File path or symbol name to validate
+        target: Option<String>,
+
+        /// Infer validation commands for changed files from git status
+        #[arg(long)]
+        changed: bool,
+
+        /// Prefer fastest useful project-level validation
+        #[arg(long)]
+        fast: bool,
+
+        /// Run the first suggested command instead of only printing it
+        #[arg(long)]
+        run: bool,
+    },
+
     /// Find TODO, FIXME, HACK, and XXX comments across the codebase
     #[command(alias = "t")]
     Todo {
@@ -783,6 +815,24 @@ mod tests {
             Some(Commands::Todo { context, .. }) => assert_eq!(context, 0),
             _ => panic!("expected todo"),
         }
+    }
+
+    #[test]
+    fn project_subcommand() {
+        let cli = parse(&["supp", "project"]).unwrap();
+        assert!(matches!(cli.command, Some(Commands::Project)));
+    }
+
+    #[test]
+    fn tests_for_subcommand() {
+        let cli = parse(&["supp", "tests-for", "src/main.rs"]).unwrap();
+        assert!(matches!(cli.command, Some(Commands::TestsFor { .. })));
+    }
+
+    #[test]
+    fn validate_subcommand() {
+        let cli = parse(&["supp", "validate", "--changed", "--fast"]).unwrap();
+        assert!(matches!(cli.command, Some(Commands::Validate { .. })));
     }
 
     #[test]

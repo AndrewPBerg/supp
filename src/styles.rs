@@ -1068,6 +1068,98 @@ pub fn print_pick_stats(result: &AnalysisResult, no_copy: bool, start: std::time
     print_budget_info(&result.budget_info, true);
 }
 
+// ── Agent workflow arms ─────────────────────────────────────────
+
+pub fn print_project_result(result: &crate::project::ProjectResult, start: std::time::Instant) {
+    println!();
+    println!("  {}  project", "supp".bold().cyan());
+    println!("  {}", "─".repeat(40).dimmed());
+    println!();
+    print_list("Languages", &result.languages);
+    print_list("Frameworks", &result.frameworks);
+    print_list("Package managers", &result.package_managers);
+    print_list("Test runners", &result.test_runners);
+    print_list("Test paths", &result.test_paths);
+    print_list("Entrypoints", &result.entrypoints);
+    print_list("Instruction files", &result.instruction_files);
+    print_list("Common commands", &result.common_commands);
+    println!();
+    println!(
+        "  {}",
+        format!("Done in {}", format_elapsed(start.elapsed())).dimmed()
+    );
+}
+
+pub fn print_tests_for_result(
+    result: &crate::tests_for::TestsForResult,
+    start: std::time::Instant,
+) {
+    println!();
+    println!(
+        "  {}  tests-for  {}",
+        "supp".bold().cyan(),
+        result.target.bold()
+    );
+    println!("  {}", "─".repeat(40).dimmed());
+    println!();
+    if let Some(target) = &result.resolved_target {
+        println!("Resolved target: {}", target);
+        println!();
+    }
+    print_list("Likely test files", &result.likely_test_files);
+    print_list("Focused commands", &result.focused_commands);
+    print_list("Warnings", &result.warnings);
+    println!();
+    println!(
+        "  {}",
+        format!("Done in {}", format_elapsed(start.elapsed())).dimmed()
+    );
+}
+
+pub fn print_validate_result(result: &crate::validate::ValidateResult, start: std::time::Instant) {
+    println!();
+    println!(
+        "  {}  validate  {}",
+        "supp".bold().cyan(),
+        result.target.bold()
+    );
+    println!("  {}", "─".repeat(40).dimmed());
+    println!();
+    print_list("Commands", &result.commands);
+    print_list("Warnings", &result.warnings);
+    if result.ran {
+        println!(
+            "Ran: yes  exit: {}",
+            result
+                .exit_code
+                .map(|c| c.to_string())
+                .unwrap_or_else(|| "signal".to_string())
+        );
+        if let Some(output) = &result.output {
+            println!();
+            println!("{}", output);
+        }
+    } else if !result.commands.is_empty() {
+        println!("Run with {} to execute the first command.", "--run".bold());
+    }
+    println!();
+    println!(
+        "  {}",
+        format!("Done in {}", format_elapsed(start.elapsed())).dimmed()
+    );
+}
+
+fn print_list(label: &str, items: &[String]) {
+    if items.is_empty() {
+        return;
+    }
+    println!("{}", label.bold());
+    for item in items {
+        println!("  - {}", item);
+    }
+    println!();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

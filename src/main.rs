@@ -6,11 +6,14 @@ mod deps;
 mod git;
 
 mod pick;
+mod project;
 mod self_update;
 mod styles;
 mod symbol;
+mod tests_for;
 mod todo;
 mod tree;
+mod validate;
 mod why;
 
 use std::io::IsTerminal;
@@ -126,6 +129,38 @@ fn main() -> anyhow::Result<()> {
             return Ok(());
         }
 
+        Some(Commands::Project) => {
+            let result = project::analyze(".")?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&result)?);
+            } else {
+                styles::print_project_result(&result, start);
+            }
+            return Ok(());
+        }
+        Some(Commands::TestsFor { ref target, diff }) => {
+            let result = tests_for::analyze(".", target.as_deref(), diff, perf.pagerank_iters)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&result)?);
+            } else {
+                styles::print_tests_for_result(&result, start);
+            }
+            return Ok(());
+        }
+        Some(Commands::Validate {
+            ref target,
+            changed,
+            fast,
+            run,
+        }) => {
+            let result = validate::plan(".", target.as_deref(), changed, fast, run)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&result)?);
+            } else {
+                styles::print_validate_result(&result, start);
+            }
+            return Ok(());
+        }
         Some(Commands::Version) => {
             self_update::print_version();
             return Ok(());
@@ -333,6 +368,9 @@ fn main() -> anyhow::Result<()> {
             | Commands::Update
             | Commands::Uninstall
             | Commands::Todo { .. }
+            | Commands::Project
+            | Commands::TestsFor { .. }
+            | Commands::Validate { .. }
             | Commands::CleanCache { .. }
             | Commands::Perf { .. },
         ) => {

@@ -262,6 +262,29 @@ supp diff -f "examples/*"
 supp -n examples/
 ```
 
+## Agent workflow arms
+
+These commands are meant to keep context small and action-oriented.
+
+```bash
+# Start a session with a compact repo fingerprint
+supp -n project
+
+# Find the likely validation surface for a file or symbol
+supp -n tests-for src/auth/session.py
+supp -n tests-for createSession
+supp -n tests-for --diff
+
+# Suggest validation commands without running them
+supp -n validate src/auth/session.py
+supp -n validate --changed
+
+# Execute the first suggested validation command
+supp -n validate --changed --run
+```
+
+Use these before asking an agent to edit: `project` tells it what repo it is in, `tests-for` tells it what should cover the change, and `validate` gives it a concrete next command.
+
 ## Workflow: giving an LLM context about unfamiliar code
 
 A typical three-step workflow — orient, gather, deep-dive:

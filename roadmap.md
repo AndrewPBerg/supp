@@ -27,6 +27,9 @@
 - [x] `--budget <tokens>` — token-budget-aware per-file compression mode selection
 - [x] `supp todo` — find TODO/FIXME/HACK/XXX comments with tree-sitter-aware scanning, git blame, and context lines
 - [x] `supp deps` — file-level dependency graph visualization with focus, reverse, depth, and DOT output
+- [x] `supp project` — compact repo fingerprint: languages, frameworks, package managers, test runners, commands, entrypoints, instruction files
+- [x] `supp tests-for` / `supp test-map` — likely test files and focused validation commands for a file, symbol, or changed files
+- [x] `supp validate` — validation router that suggests commands by target/changed files and can run the first command with `--run`
 
 ## TODO
 - [x] Upgrade wording and prompting around supp -mapping, context, and symbols

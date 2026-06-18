@@ -63,6 +63,9 @@ Add `-n` to any command to print output without copying to clipboard.
 | `supp sym <query>` | Find functions, types, and constants by name |
 | `supp why <symbol>` | Explain a symbol — definition, call sites, and dependencies |
 | `supp pick` | Interactive file picker (requires fzf) |
+| `supp project` | Small repo identity summary: stack, tests, commands, entrypoints |
+| `supp tests-for <target>` | Find likely test files and focused validation commands |
+| `supp validate [target]` | Suggest or run the narrowest useful validation command |
 | `supp perf [mode]` | Set or check the global performance mode |
 | `supp clean-cache` | Delete the symbol cache for a project |
 
@@ -92,6 +95,9 @@ Detailed usage for each command:
 - [Tree](https://github.com/AndrewPBerg/supp/blob/main/docs/tree.md) — directory tree
 - [Examples](https://github.com/AndrewPBerg/supp/blob/main/docs/examples.md) — workflows and multi-language demos
 - [Config](https://github.com/AndrewPBerg/supp/blob/main/docs/config.md) — configuration
+- [Project](https://github.com/AndrewPBerg/supp/blob/main/docs/project.md) — compact repo fingerprint for agents
+- [Tests For](https://github.com/AndrewPBerg/supp/blob/main/docs/tests-for.md) — likely tests and focused validation commands
+- [Validate](https://github.com/AndrewPBerg/supp/blob/main/docs/validate.md) — validation command router
 - [Performance](https://github.com/AndrewPBerg/supp/blob/main/docs/perf.md) — performance modes for large codebases
 
 ## Claude Code integration
