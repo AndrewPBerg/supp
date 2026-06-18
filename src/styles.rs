@@ -1068,6 +1068,175 @@ pub fn print_pick_stats(result: &AnalysisResult, no_copy: bool, start: std::time
     print_budget_info(&result.budget_info, true);
 }
 
+// ── Agent workflow arms ─────────────────────────────────────────
+
+pub fn print_project_result(result: &crate::project::ProjectResult, start: std::time::Instant) {
+    println!();
+    println!("  {}  project", "supp".bold().cyan());
+    println!("  {}", "─".repeat(40).dimmed());
+    println!();
+    print_list("Languages", &result.languages);
+    print_list("Frameworks", &result.frameworks);
+    print_list("Package managers", &result.package_managers);
+    print_list("Test runners", &result.test_runners);
+    print_list("Test paths", &result.test_paths);
+    print_list("Entrypoints", &result.entrypoints);
+    print_list("Instruction files", &result.instruction_files);
+    print_list("Common commands", &result.common_commands);
+    println!();
+    println!(
+        "  {}",
+        format!("Done in {}", format_elapsed(start.elapsed())).dimmed()
+    );
+}
+
+pub fn print_commands_result(result: &crate::commands::CommandsResult, start: std::time::Instant) {
+    println!();
+    println!("  {}  commands", "supp".bold().cyan());
+    println!("  {}", "─".repeat(40).dimmed());
+    println!();
+    if result.commands.is_empty() {
+        println!("  {}", "No commands discovered.".dimmed());
+    } else {
+        for entry in &result.commands {
+            println!(
+                "{}  {}  {}",
+                entry.purpose.bold(),
+                entry.command,
+                format!("({})", entry.source).dimmed()
+            );
+        }
+    }
+    println!();
+    println!(
+        "  {}",
+        format!("Done in {}", format_elapsed(start.elapsed())).dimmed()
+    );
+}
+
+pub fn print_docs_result(result: &crate::docs_search::DocsResult, start: std::time::Instant) {
+    println!();
+    println!(
+        "  {}  docs  {}",
+        "supp".bold().cyan(),
+        if result.query.is_empty() {
+            "<all>"
+        } else {
+            &result.query
+        }
+        .bold()
+    );
+    println!("  {}", "─".repeat(40).dimmed());
+    println!();
+    if result.matches.is_empty() {
+        println!("  {}", "No docs/comments matches found.".dimmed());
+    } else {
+        for item in &result.matches {
+            println!(
+                "{}:{}  {}  {}",
+                item.file,
+                item.line,
+                format!("[{}]", item.kind).dimmed(),
+                item.text
+            );
+        }
+    }
+    println!();
+    println!(
+        "  {} files scanned",
+        result.files_scanned.to_string().dimmed()
+    );
+    println!(
+        "  {}",
+        format!("Done in {}", format_elapsed(start.elapsed())).dimmed()
+    );
+}
+
+pub fn print_review_result(
+    result: &crate::review::ReviewResult,
+    no_copy: bool,
+    start: std::time::Instant,
+) {
+    println!();
+    println!(
+        "  {}  {}",
+        "supp review".bold().cyan(),
+        result.label.dimmed()
+    );
+    println!("  {}", "─".repeat(40).dimmed());
+    println!();
+
+    if result.files.is_empty() {
+        println!("  {}", "No changes found.".dimmed());
+    } else {
+        println!("{}", "Changed files".bold());
+        for file in &result.files {
+            println!(
+                "  - {}  {}  +{} -{}",
+                file.path,
+                file.status.dimmed(),
+                file.additions.to_string().green(),
+                file.deletions.to_string().red()
+            );
+        }
+        println!();
+    }
+
+    print_list("Likely test files", &result.likely_test_files);
+    print_list("Focused commands", &result.focused_commands);
+    print_list("Warnings", &result.warnings);
+
+    if !result.docs_mentions.is_empty() {
+        println!("{}", "Potential docs/comments context".bold());
+        for item in result.docs_mentions.iter().take(8) {
+            println!(
+                "  - {}:{} [{}] {}",
+                item.file, item.line, item.kind, item.text
+            );
+        }
+        println!();
+    }
+
+    print_footer(&result.patch, no_copy, start, None, false);
+}
+
+pub fn print_tests_for_result(
+    result: &crate::tests_for::TestsForResult,
+    start: std::time::Instant,
+) {
+    println!();
+    println!(
+        "  {}  tests-for  {}",
+        "supp".bold().cyan(),
+        result.target.bold()
+    );
+    println!("  {}", "─".repeat(40).dimmed());
+    println!();
+    if let Some(target) = &result.resolved_target {
+        println!("Resolved target: {}", target);
+        println!();
+    }
+    print_list("Likely test files", &result.likely_test_files);
+    print_list("Focused commands", &result.focused_commands);
+    print_list("Warnings", &result.warnings);
+    println!();
+    println!(
+        "  {}",
+        format!("Done in {}", format_elapsed(start.elapsed())).dimmed()
+    );
+}
+
+fn print_list(label: &str, items: &[String]) {
+    if items.is_empty() {
+        return;
+    }
+    println!("{}", label.bold());
+    for item in items {
+        println!("  - {}", item);
+    }
+    println!();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

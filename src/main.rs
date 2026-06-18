@@ -1,14 +1,19 @@
 mod cli;
+mod commands;
 mod compress;
 mod config;
 mod ctx;
 mod deps;
+mod docs_search;
 mod git;
 
 mod pick;
+mod project;
+mod review;
 mod self_update;
 mod styles;
 mod symbol;
+mod tests_for;
 mod todo;
 mod tree;
 mod why;
@@ -126,6 +131,42 @@ fn main() -> anyhow::Result<()> {
             return Ok(());
         }
 
+        Some(Commands::Config) => {
+            let result = project::analyze(".")?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&result)?);
+            } else {
+                styles::print_project_result(&result, start);
+            }
+            return Ok(());
+        }
+        Some(Commands::CommandList) => {
+            let result = commands::analyze(".")?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&result)?);
+            } else {
+                styles::print_commands_result(&result, start);
+            }
+            return Ok(());
+        }
+        Some(Commands::Docs { ref query, limit }) => {
+            let result = docs_search::search(".", query, limit)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&result)?);
+            } else {
+                styles::print_docs_result(&result, start);
+            }
+            return Ok(());
+        }
+        Some(Commands::Tests { ref target, diff }) => {
+            let result = tests_for::analyze(".", target.as_deref(), diff, perf.pagerank_iters)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&result)?);
+            } else {
+                styles::print_tests_for_result(&result, start);
+            }
+            return Ok(());
+        }
         Some(Commands::Version) => {
             self_update::print_version();
             return Ok(());
@@ -192,6 +233,35 @@ fn main() -> anyhow::Result<()> {
                 println!("{}", serde_json::to_string_pretty(&result)?);
             } else {
                 styles::print_diff_result(result, no_copy, start);
+            }
+        }
+        Some(Commands::Review {
+            path,
+            untracked,
+            tracked,
+            staged,
+            local,
+            all,
+            branch,
+            context_lines,
+        }) => {
+            let repo_path = path.as_deref().unwrap_or(".");
+            let opts = DiffOptions {
+                untracked,
+                tracked,
+                staged,
+                local,
+                all,
+                branch,
+                context_lines: context_lines.or(Some(config.diff.context_lines)),
+                max_untracked_size,
+            };
+            let result =
+                review::analyze(repo_path, opts, cli.regex.as_deref(), perf.pagerank_iters)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&result)?);
+            } else {
+                styles::print_review_result(&result, no_copy, start);
             }
         }
         Some(Commands::Pick { ref path, single }) => {
@@ -333,6 +403,10 @@ fn main() -> anyhow::Result<()> {
             | Commands::Update
             | Commands::Uninstall
             | Commands::Todo { .. }
+            | Commands::Config
+            | Commands::CommandList
+            | Commands::Docs { .. }
+            | Commands::Tests { .. }
             | Commands::CleanCache { .. }
             | Commands::Perf { .. },
         ) => {

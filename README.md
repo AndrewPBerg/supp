@@ -63,6 +63,11 @@ Add `-n` to any command to print output without copying to clipboard.
 | `supp sym <query>` | Find functions, types, and constants by name |
 | `supp why <symbol>` | Explain a symbol — definition, call sites, and dependencies |
 | `supp pick` | Interactive file picker (requires fzf) |
+| `supp config` | Small repo identity summary: stack, tests, commands, entrypoints |
+| `supp commands` | List discovered build, test, lint, eval, and benchmark commands |
+| `supp tests <target>` | Find likely test files and focused validation commands |
+| `supp docs <query>` | Search docs, docstrings, and comments for context |
+| `supp review` | Reviewer-focused diff packet with tests and docs context |
 | `supp perf [mode]` | Set or check the global performance mode |
 | `supp clean-cache` | Delete the symbol cache for a project |
 
@@ -91,7 +96,12 @@ Detailed usage for each command:
 - [Why](https://github.com/AndrewPBerg/supp/blob/main/docs/why.md) — deep-diving a symbol
 - [Tree](https://github.com/AndrewPBerg/supp/blob/main/docs/tree.md) — directory tree
 - [Examples](https://github.com/AndrewPBerg/supp/blob/main/docs/examples.md) — workflows and multi-language demos
-- [Config](https://github.com/AndrewPBerg/supp/blob/main/docs/config.md) — configuration
+- [Config file](https://github.com/AndrewPBerg/supp/blob/main/docs/config.md) — supp configuration
+- [Config summary](https://github.com/AndrewPBerg/supp/blob/main/docs/config-summary.md) — compact repo fingerprint for agents
+- [Commands](https://github.com/AndrewPBerg/supp/blob/main/docs/commands.md) — discovered command surface
+- [Tests](https://github.com/AndrewPBerg/supp/blob/main/docs/tests.md) — likely tests and focused validation commands
+- [Docs](https://github.com/AndrewPBerg/supp/blob/main/docs/docs.md) — docs/docstring/comment search
+- [Review](https://github.com/AndrewPBerg/supp/blob/main/docs/review.md) — reviewer-focused diff packets
 - [Performance](https://github.com/AndrewPBerg/supp/blob/main/docs/perf.md) — performance modes for large codebases
 
 ## Claude Code integration

@@ -262,6 +262,31 @@ supp diff -f "examples/*"
 supp -n examples/
 ```
 
+## Agent workflow arms
+
+These commands are meant to keep context small and action-oriented.
+
+```bash
+# Start a session with a compact repo fingerprint
+supp -n config
+
+# Inspect discovered commands without dumping project config
+supp -n commands
+
+# Find the likely validation surface for a file or symbol
+supp -n tests src/auth/session.py
+supp -n tests createSession
+supp -n tests --diff
+
+# Search prose context: docs, docstrings, and comments
+supp -n docs auth session
+
+# Build a reviewer packet for current changes
+supp -n review -t
+```
+
+Use these before asking an agent to edit or review: `config` tells it what repo it is in, `commands` tells it how the repo is operated, `tests` tells it what should cover the change, `docs` finds human-written context, and `review` packages changed code with review-specific context.
+
 ## Workflow: giving an LLM context about unfamiliar code
 
 A typical three-step workflow — orient, gather, deep-dive:
