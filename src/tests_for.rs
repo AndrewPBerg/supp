@@ -21,7 +21,7 @@ pub fn analyze(
     diff: bool,
     pagerank_iters: usize,
 ) -> anyhow::Result<TestsForResult> {
-    let root_path = std::fs::canonicalize(root)?;
+    let root_path = project::discover_root(root)?;
     let files = project::collect_files(&root_path);
     let project_info = project::analyze(root)?;
 
@@ -35,8 +35,9 @@ pub fn analyze(
     if diff {
         targets.extend(changed_files(&root_path)?);
     } else if let Some(t) = target {
-        if root_path.join(t).exists() || Path::new(t).extension().is_some() {
-            targets.push(t.to_string());
+        let normalized = project::normalize_target(&root_path, t);
+        if root_path.join(&normalized).exists() || Path::new(&normalized).extension().is_some() {
+            targets.push(normalized);
         } else {
             let query = vec![t.to_string()];
             if let Ok(result) = symbol::search(root, &query, pagerank_iters)

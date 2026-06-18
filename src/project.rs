@@ -19,7 +19,7 @@ pub struct ProjectResult {
 }
 
 pub fn analyze(root: &str) -> anyhow::Result<ProjectResult> {
-    let root_path = std::fs::canonicalize(root)?;
+    let root_path = discover_root(root)?;
     let files = collect_files(&root_path);
     let file_set: BTreeSet<String> = files.iter().cloned().collect();
 
@@ -184,6 +184,46 @@ pub fn analyze(root: &str) -> anyhow::Result<ProjectResult> {
         entrypoints: entrypoints.into_iter().collect(),
         instruction_files,
     })
+}
+
+pub fn discover_root(start: &str) -> anyhow::Result<PathBuf> {
+    let mut path = std::fs::canonicalize(start)?;
+    if path.is_file() {
+        path.pop();
+    }
+
+    let markers = [
+        ".git",
+        "Cargo.toml",
+        "go.mod",
+        "pyproject.toml",
+        "package.json",
+    ];
+    let mut cur = Some(path.as_path());
+    while let Some(dir) = cur {
+        if markers.iter().any(|m| dir.join(m).exists()) {
+            return Ok(dir.to_path_buf());
+        }
+        cur = dir.parent();
+    }
+
+    Ok(path)
+}
+
+pub fn normalize_target(root: &Path, target: &str) -> String {
+    let direct = root.join(target);
+    if direct.exists() {
+        return target.replace('\\', "/");
+    }
+
+    if let Ok(abs) = std::fs::canonicalize(target)
+        && let Ok(rel) = abs.strip_prefix(root)
+        && let Some(s) = rel.to_str()
+    {
+        return s.replace('\\', "/");
+    }
+
+    target.replace('\\', "/")
 }
 
 pub fn collect_files(root: &Path) -> Vec<String> {

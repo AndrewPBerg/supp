@@ -24,7 +24,7 @@ pub fn plan(
     run: bool,
 ) -> anyhow::Result<ValidateResult> {
     let project_info = project::analyze(root)?;
-    let root_path = std::fs::canonicalize(root)?;
+    let root_path = project::discover_root(root)?;
     let mut commands = BTreeSet::new();
     let label = if changed {
         "--changed".to_string()
@@ -42,12 +42,13 @@ pub fn plan(
             add_project_defaults(&mut commands, &project_info, fast);
         }
     } else if let Some(t) = target {
+        let normalized = project::normalize_target(&root_path, t);
         let tests = tests_for::analyze(root, Some(t), false, 20)?;
         for cmd in tests.focused_commands {
             commands.insert(cmd);
         }
         if commands.is_empty() {
-            add_for_path(&mut commands, t, &project_info);
+            add_for_path(&mut commands, &normalized, &project_info);
         }
     } else {
         add_project_defaults(&mut commands, &project_info, fast);
