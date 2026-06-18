@@ -627,7 +627,7 @@ fn get_diff_inner(repo_dir: &Path, opts: DiffOptions) -> Result<DiffResult> {
 
         // Merge staged and unstaged: combine by path, summing line counts
         let mut merged: HashMap<String, FileEntry> = HashMap::new();
-        for f in staged_files.into_iter().chain(local_files.into_iter()) {
+        for f in staged_files.into_iter().chain(local_files) {
             let entry = merged.entry(f.path.clone()).or_insert(FileEntry {
                 path: f.path.clone(),
                 old_path: f.old_path.clone(),
