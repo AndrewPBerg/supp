@@ -321,3 +321,113 @@ pub fn package_dir(path: &str) -> String {
         .unwrap_or(".")
         .to_string()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    fn write(root: &std::path::Path, path: &str, content: &str) {
+        let path = root.join(path);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, content).unwrap();
+    }
+
+    #[test]
+    fn analyze_detects_rust_go_python_and_js_project_shape() {
+        let dir = tempdir().unwrap();
+        write(dir.path(), "Cargo.toml", "[package]\nname='x'\n");
+        write(dir.path(), "src/main.rs", "fn main() {}\n");
+        write(dir.path(), "go.mod", "module example.com/x\n");
+        write(
+            dir.path(),
+            "cmd/app/main.go",
+            "package main\nfunc main() {}\n",
+        );
+        write(
+            dir.path(),
+            "pyproject.toml",
+            "[project]\ndependencies=['pytest','pytest-django']\n[tool.pytest.ini_options]\ntestpaths = ['tests', 'integration']\n[tool.poe.tasks]\nlint = 'ruff check .'\n",
+        );
+        write(
+            dir.path(),
+            "package.json",
+            r#"{"scripts":{"test":"vitest","lint":"eslint .","typecheck":"tsc"},"dependencies":{"next":"latest","react":"latest","vitest":"latest"}}"#,
+        );
+        write(dir.path(), "uv.lock", "");
+        write(dir.path(), "pnpm-lock.yaml", "");
+        write(dir.path(), "README.md", "# readme\n");
+        write(
+            dir.path(),
+            "src/app.tsx",
+            "export default function App() {}\n",
+        );
+        write(dir.path(), "tests/test_app.py", "def test_x(): pass\n");
+
+        let result = analyze(dir.path().to_str().unwrap()).unwrap();
+        assert!(result.languages.contains(&"Rust".to_string()));
+        assert!(result.languages.contains(&"Go".to_string()));
+        assert!(result.languages.contains(&"TypeScript".to_string()));
+        assert!(result.frameworks.contains(&"Django".to_string()));
+        assert!(result.frameworks.contains(&"Next.js".to_string()));
+        assert!(result.package_managers.contains(&"cargo".to_string()));
+        assert!(result.package_managers.contains(&"uv".to_string()));
+        assert!(result.package_managers.contains(&"pnpm".to_string()));
+        assert!(
+            result
+                .common_commands
+                .contains(&"uv run poe lint".to_string())
+        );
+        assert!(
+            result
+                .common_commands
+                .contains(&"npm run typecheck".to_string())
+        );
+        assert_eq!(
+            result.test_paths,
+            vec!["integration".to_string(), "tests".to_string()]
+        );
+        assert!(result.entrypoints.contains(&"src/main.rs".to_string()));
+        assert!(result.instruction_files.contains(&"README.md".to_string()));
+    }
+
+    #[test]
+    fn parser_helpers_extract_config_bits() {
+        assert_eq!(
+            parse_pytest_testpaths("testpaths = ['a', \"b\"]"),
+            vec!["a", "b"]
+        );
+        assert_eq!(
+            parse_poe_tasks("[tool.poe.tasks]\ntest = 'pytest'\nlint = 'ruff'\n[tool.other]\nx=1"),
+            vec!["test", "lint"]
+        );
+        assert_eq!(
+            parse_package_scripts(r#"{"scripts":{"test":"x","lint":"x","build":"x"}}"#),
+            vec!["npm run lint", "npm run test"]
+        );
+        assert!(parse_package_scripts("not json").is_empty());
+    }
+
+    #[test]
+    fn path_helpers_normalize_and_classify_tests() {
+        let dir = tempdir().unwrap();
+        write(dir.path(), "src/lib.rs", "");
+        assert_eq!(normalize_target(dir.path(), "src/lib.rs"), "src/lib.rs");
+        assert!(is_test_file("src/tests/foo.rs"));
+        assert!(is_test_file("test_api.py"));
+        assert!(is_test_file("api_test.go"));
+        assert!(is_test_file("api.spec.tsx"));
+        assert!(!is_test_file("src/lib.rs"));
+        assert_eq!(package_dir("src/lib.rs"), "src");
+        assert_eq!(package_dir("main.rs"), "");
+    }
+
+    #[test]
+    fn discover_root_walks_up_to_marker() {
+        let dir = tempdir().unwrap();
+        write(dir.path(), "Cargo.toml", "[package]\nname='x'\n");
+        write(dir.path(), "src/nested/file.rs", "");
+        let root = discover_root(dir.path().join("src/nested/file.rs").to_str().unwrap()).unwrap();
+        assert_eq!(root, dir.path());
+    }
+}

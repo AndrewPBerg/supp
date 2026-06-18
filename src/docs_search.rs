@@ -215,3 +215,93 @@ fn ends_docstring_same_line(s: &str) -> bool {
     (s.starts_with("\"\"\"") && s[3..].contains("\"\"\""))
         || (s.starts_with("'''") && s[3..].contains("'''"))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    fn write(root: &std::path::Path, path: &str, content: &str) {
+        let path = root.join(path);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, content).unwrap();
+    }
+
+    #[test]
+    fn search_finds_docs_comments_and_docstrings() {
+        let dir = tempdir().unwrap();
+        write(
+            dir.path(),
+            "README.md",
+            "# Review guide\nUse diff review carefully.\n",
+        );
+        write(
+            dir.path(),
+            "src/lib.rs",
+            "/// Review parser docs\nfn parse() {}\n// inline review note\n",
+        );
+        write(
+            dir.path(),
+            "pkg/mod.py",
+            "\"\"\"Review python docstring\"\"\"\n# review comment\nprint('x')\n",
+        );
+
+        let result = search(dir.path().to_str().unwrap(), &["review".into()], 10).unwrap();
+        assert_eq!(result.files_scanned, 3);
+        assert!(
+            result
+                .matches
+                .iter()
+                .any(|m| m.file == "README.md" && m.kind == "doc")
+        );
+        assert!(result.matches.iter().any(|m| m.kind == "doc-comment"));
+        assert!(result.matches.iter().any(|m| m.kind == "docstring"));
+        assert!(result.matches.iter().all(|m| m.score > 0));
+    }
+
+    #[test]
+    fn search_respects_limit_and_sorts_by_score() {
+        let dir = tempdir().unwrap();
+        write(dir.path(), "docs/a.md", "alpha beta\nalpha\n");
+        write(dir.path(), "docs/b.md", "beta\n");
+
+        let result = search(
+            dir.path().to_str().unwrap(),
+            &["alpha".into(), "beta".into()],
+            1,
+        )
+        .unwrap();
+        assert_eq!(result.matches.len(), 1);
+        assert_eq!(result.matches[0].score, 2);
+    }
+
+    #[test]
+    fn empty_query_returns_relevant_lines_only() {
+        let dir = tempdir().unwrap();
+        write(dir.path(), "README.md", "# Agent notes\nBody line\n");
+        write(
+            dir.path(),
+            "src/lib.rs",
+            "fn code() {}\n// useful comment\n",
+        );
+        write(dir.path(), "target/blob.bin", "ignored\n");
+
+        let result = search(dir.path().to_str().unwrap(), &[], 20).unwrap();
+        assert!(result.matches.iter().any(|m| m.text == "Agent notes"));
+        assert!(result.matches.iter().any(|m| m.text == "useful comment"));
+        assert!(!result.matches.iter().any(|m| m.file == "target/blob.bin"));
+    }
+
+    #[test]
+    fn helpers_trim_markers_and_detect_doc_files() {
+        assert_eq!(trim_doc_line("## Heading"), "Heading");
+        assert_eq!(trim_doc_line("- bullet"), "bullet");
+        assert_eq!(trim_marker("/// hello", &["///"]), "hello");
+        assert_eq!(trim_block_comment("/** hello */"), "hello");
+        assert_eq!(trim_py_docstring("\"\"\"hello\"\"\""), "hello");
+        assert!(ends_docstring_same_line("\"\"\"hello\"\"\""));
+        assert!(is_doc_file("docs/readme.rst"));
+        assert!(is_relevant_file("src/main.rs"));
+        assert!(!is_relevant_file("image.png"));
+    }
+}

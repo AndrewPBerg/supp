@@ -222,3 +222,136 @@ fn is_python_test(path: &str) -> bool {
 fn _pathbuf(s: &str) -> PathBuf {
     PathBuf::from(s)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    fn write(root: &std::path::Path, path: &str, content: &str) {
+        let path = root.join(path);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, content).unwrap();
+    }
+
+    fn project_info() -> project::ProjectResult {
+        project::ProjectResult {
+            root: String::new(),
+            languages: vec![],
+            frameworks: vec![],
+            package_managers: vec!["cargo".into(), "uv".into(), "pnpm".into()],
+            test_runners: vec!["pytest".into(), "vitest".into()],
+            test_paths: vec!["tests".into()],
+            common_commands: vec![],
+            entrypoints: vec![],
+            instruction_files: vec![],
+        }
+    }
+
+    #[test]
+    fn likely_tests_match_by_name_directory_and_inline_rust() {
+        let dir = tempdir().unwrap();
+        write(dir.path(), "src/parser.rs", "#[cfg(test)]\nmod tests {}\n");
+        let files = vec![
+            "src/parser.rs".to_string(),
+            "tests/parser_test.py".to_string(),
+            "src/parser.test.ts".to_string(),
+            "other/unrelated.py".to_string(),
+        ];
+
+        assert_eq!(
+            likely_tests_for_file(dir.path(), "src/parser.rs", &files),
+            vec!["src/parser.rs"]
+        );
+        let tests = likely_tests_for_file(dir.path(), "src/view.ts", &files);
+        assert!(tests.contains(&"src/parser.test.ts".to_string()));
+        assert!(
+            likely_tests_for_file(dir.path(), "tests/parser_test.py", &files)
+                .contains(&"tests/parser_test.py".to_string())
+        );
+    }
+
+    #[test]
+    fn validation_commands_cover_languages_and_package_managers() {
+        let dir = tempdir().unwrap();
+        write(dir.path(), "src/lib.rs", "#[test]\nfn it_works() {}\n");
+        let info = project_info();
+
+        assert!(
+            validation_commands_for_file(dir.path(), "src/lib.rs", &info)
+                .contains(&"cargo test lib".to_string())
+        );
+        assert!(
+            validation_commands_for_file(dir.path(), "pkg/main.go", &info)
+                .contains(&"go test ./pkg".to_string())
+        );
+        assert!(
+            validation_commands_for_file(dir.path(), "tests/test_app.py", &info)
+                .contains(&"uv run pytest tests/test_app.py".to_string())
+        );
+        let mut ts_info = info.clone();
+        ts_info.package_managers = vec!["pnpm".to_string()];
+        assert!(
+            validation_commands_for_file(dir.path(), "src/app.tsx", &ts_info)
+                .contains(&"pnpm vitest src/app.tsx".to_string())
+        );
+    }
+
+    #[test]
+    fn analyze_resolves_path_and_warns_for_tests_outside_pytest_paths() {
+        let dir = tempdir().unwrap();
+        write(
+            dir.path(),
+            "pyproject.toml",
+            "[project]\ndependencies=['pytest']\n[tool.pytest.ini_options]\ntestpaths = ['tests']\n",
+        );
+        write(dir.path(), "src/api.py", "def api(): pass\n");
+        write(dir.path(), "other/test_api.py", "def test_api(): pass\n");
+
+        let result = analyze(dir.path().to_str().unwrap(), Some("src/api.py"), false, 5).unwrap();
+        assert_eq!(result.resolved_target.as_deref(), Some("src/api.py"));
+        assert!(
+            result
+                .likely_test_files
+                .contains(&"other/test_api.py".to_string())
+        );
+        assert!(
+            result
+                .warnings
+                .iter()
+                .any(|w| w.contains("outside configured pytest testpaths"))
+        );
+    }
+
+    #[test]
+    fn analyze_warns_when_target_cannot_resolve() {
+        let dir = tempdir().unwrap();
+        write(dir.path(), "Cargo.toml", "[package]\nname='x'\n");
+        let result = analyze(
+            dir.path().to_str().unwrap(),
+            Some("missing_symbol"),
+            false,
+            1,
+        )
+        .unwrap();
+        assert!(result.resolved_target.is_none());
+        assert!(
+            result
+                .warnings
+                .iter()
+                .any(|w| w.contains("No target files resolved"))
+        );
+    }
+
+    #[test]
+    fn helpers_detect_inline_tests_and_python_tests() {
+        let dir = tempdir().unwrap();
+        write(dir.path(), "src/lib.rs", "#[test]\nfn t() {}\n");
+        write(dir.path(), "src/main.rs", "fn main() {}\n");
+        assert!(has_inline_rust_tests(dir.path(), "src/lib.rs"));
+        assert!(!has_inline_rust_tests(dir.path(), "src/main.rs"));
+        assert!(!has_inline_rust_tests(dir.path(), "src/app.py"));
+        assert!(is_python_test("tests/test_app.py"));
+        assert!(!is_python_test("tests/app.rs"));
+    }
+}

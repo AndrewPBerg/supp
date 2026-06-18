@@ -172,3 +172,159 @@ fn build_review_packet(
     out.push_str(&diff.text);
     out
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::git::{DeltaStatus, DiffResult, FileEntry};
+    use tempfile::tempdir;
+
+    fn write(root: &std::path::Path, path: &str, content: &str) {
+        let path = root.join(path);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, content).unwrap();
+    }
+
+    fn git(root: &std::path::Path, args: &[&str]) {
+        let output = std::process::Command::new("git")
+            .args(args)
+            .current_dir(root)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git {:?}: {}",
+            args,
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn add_path_terms_keeps_meaningful_tokens() {
+        let mut terms = BTreeSet::new();
+        add_path_terms("src/docs_search-review_test.rs", &mut terms);
+        assert!(terms.contains("search"));
+        assert!(terms.contains("review"));
+        assert!(!terms.contains("src"));
+        assert!(!terms.contains("test"));
+    }
+
+    #[test]
+    fn build_review_packet_includes_sections() {
+        let diff = DiffResult {
+            label: "Tracked changes".into(),
+            files: vec![FileEntry {
+                path: "src/lib.rs".into(),
+                old_path: None,
+                status: DeltaStatus::Modified,
+                additions: 2,
+                deletions: 1,
+                patch: "patch".into(),
+            }],
+            text: "diff --git a/src/lib.rs b/src/lib.rs\n".into(),
+            has_conflicts: false,
+            is_branch_comparison: false,
+            commit_count: None,
+            stale_check: None,
+        };
+        let tests = tests_for::TestsForResult {
+            target: "--diff".into(),
+            resolved_target: Some("src/lib.rs".into()),
+            likely_test_files: vec!["src/lib.rs".into()],
+            focused_commands: vec!["cargo test lib".into()],
+            warnings: vec!["warning".into()],
+        };
+        let docs = docs_search::DocsResult {
+            query: "lib".into(),
+            matches: vec![docs_search::DocsMatch {
+                file: "README.md".into(),
+                line: 1,
+                kind: "doc".into(),
+                text: "Review docs".into(),
+                score: 2,
+            }],
+            files_scanned: 1,
+        };
+
+        let packet = build_review_packet(&diff, &tests, &docs);
+        assert!(packet.contains("Review focus"));
+        assert!(packet.contains("Likely related tests"));
+        assert!(packet.contains("Focused validation commands"));
+        assert!(packet.contains("Potential docs/comments context"));
+        assert!(packet.contains("diff --git"));
+    }
+
+    #[test]
+    fn analyze_reports_empty_git_diff_warning() {
+        let dir = tempdir().unwrap();
+        git(dir.path(), &["init"]);
+        git(dir.path(), &["config", "user.email", "a@example.com"]);
+        git(dir.path(), &["config", "user.name", "A"]);
+        write(
+            dir.path(),
+            "Cargo.toml",
+            "[package]\nname='x'\nversion='0.1.0'\nedition='2024'\n",
+        );
+        write(dir.path(), "src/main.rs", "fn main() {}\n");
+        git(dir.path(), &["add", "."]);
+        git(dir.path(), &["commit", "-m", "init"]);
+
+        let result = analyze(
+            dir.path().to_str().unwrap(),
+            DiffOptions {
+                all: true,
+                ..DiffOptions::default()
+            },
+            None,
+            1,
+        )
+        .unwrap();
+        assert!(result.files.is_empty());
+        assert!(
+            result
+                .warnings
+                .iter()
+                .any(|w| w.contains("No changed files"))
+        );
+    }
+
+    #[test]
+    fn analyze_includes_changed_file_and_commands() {
+        let dir = tempdir().unwrap();
+        git(dir.path(), &["init"]);
+        git(dir.path(), &["config", "user.email", "a@example.com"]);
+        git(dir.path(), &["config", "user.name", "A"]);
+        write(
+            dir.path(),
+            "Cargo.toml",
+            "[package]\nname='x'\nversion='0.1.0'\nedition='2024'\n",
+        );
+        write(
+            dir.path(),
+            "src/lib.rs",
+            "pub fn thing() -> bool { true }\n",
+        );
+        write(dir.path(), "README.md", "# lib review thing\n");
+        git(dir.path(), &["add", "."]);
+        git(dir.path(), &["commit", "-m", "init"]);
+        write(
+            dir.path(),
+            "src/lib.rs",
+            "pub fn thing() -> bool { false }\n",
+        );
+
+        let result = analyze(
+            dir.path().to_str().unwrap(),
+            DiffOptions {
+                all: true,
+                ..DiffOptions::default()
+            },
+            None,
+            1,
+        )
+        .unwrap();
+        assert_eq!(result.files[0].path, "src/lib.rs");
+        assert!(result.focused_commands.contains(&"cargo test".to_string()));
+        assert!(result.patch.contains("src/lib.rs"));
+    }
+}
