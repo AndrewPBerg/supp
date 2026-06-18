@@ -268,22 +268,24 @@ These commands are meant to keep context small and action-oriented.
 
 ```bash
 # Start a session with a compact repo fingerprint
-supp -n project
+supp -n config
+
+# Inspect discovered commands without dumping project config
+supp -n commands
 
 # Find the likely validation surface for a file or symbol
-supp -n tests-for src/auth/session.py
-supp -n tests-for createSession
-supp -n tests-for --diff
+supp -n tests src/auth/session.py
+supp -n tests createSession
+supp -n tests --diff
 
-# Suggest validation commands without running them
-supp -n validate src/auth/session.py
-supp -n validate --changed
+# Search prose context: docs, docstrings, and comments
+supp -n docs auth session
 
-# Execute the first suggested validation command
-supp -n validate --changed --run
+# Build a reviewer packet for current changes
+supp -n review -t
 ```
 
-Use these before asking an agent to edit: `project` tells it what repo it is in, `tests-for` tells it what should cover the change, and `validate` gives it a concrete next command.
+Use these before asking an agent to edit or review: `config` tells it what repo it is in, `commands` tells it how the repo is operated, `tests` tells it what should cover the change, `docs` finds human-written context, and `review` packages changed code with review-specific context.
 
 ## Workflow: giving an LLM context about unfamiliar code
 

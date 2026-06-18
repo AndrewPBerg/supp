@@ -1,10 +1,13 @@
-# supp project
+# supp config
 
 Summarize the repository's identity in a small, agent-friendly packet. This is intended as a low-token startup/orientation command: enough to know the stack, test runner, entrypoints, and local instructions without dumping the whole repo.
+
+Alias: `supp project`.
 
 ## Usage
 
 ```
+supp [-n] config [OPTIONS]
 supp [-n] project [OPTIONS]
 ```
 
@@ -31,12 +34,15 @@ supp [-n] project [OPTIONS]
 
 ```bash
 # Human-readable summary
+supp -n config
+
+# Backward-compatible alias
 supp -n project
 
 # JSON for editor/agent integrations
-supp -n project --json
+supp -n config --json
 ```
 
 ## When to use
 
-Use `supp project` at the start of a session or before planning validation. It is intentionally smaller than `supp tree` or full context generation: less is more.
+Use `supp config` at the start of a session or before planning validation. It is intentionally smaller than `supp tree` or full context generation: less is more.

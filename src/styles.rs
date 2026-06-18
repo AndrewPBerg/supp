@@ -1090,6 +1090,116 @@ pub fn print_project_result(result: &crate::project::ProjectResult, start: std::
     );
 }
 
+pub fn print_commands_result(result: &crate::commands::CommandsResult, start: std::time::Instant) {
+    println!();
+    println!("  {}  commands", "supp".bold().cyan());
+    println!("  {}", "─".repeat(40).dimmed());
+    println!();
+    if result.commands.is_empty() {
+        println!("  {}", "No commands discovered.".dimmed());
+    } else {
+        for entry in &result.commands {
+            println!(
+                "{}  {}  {}",
+                entry.purpose.bold(),
+                entry.command,
+                format!("({})", entry.source).dimmed()
+            );
+        }
+    }
+    println!();
+    println!(
+        "  {}",
+        format!("Done in {}", format_elapsed(start.elapsed())).dimmed()
+    );
+}
+
+pub fn print_docs_result(result: &crate::docs_search::DocsResult, start: std::time::Instant) {
+    println!();
+    println!(
+        "  {}  docs  {}",
+        "supp".bold().cyan(),
+        if result.query.is_empty() {
+            "<all>"
+        } else {
+            &result.query
+        }
+        .bold()
+    );
+    println!("  {}", "─".repeat(40).dimmed());
+    println!();
+    if result.matches.is_empty() {
+        println!("  {}", "No docs/comments matches found.".dimmed());
+    } else {
+        for item in &result.matches {
+            println!(
+                "{}:{}  {}  {}",
+                item.file,
+                item.line,
+                format!("[{}]", item.kind).dimmed(),
+                item.text
+            );
+        }
+    }
+    println!();
+    println!(
+        "  {} files scanned",
+        result.files_scanned.to_string().dimmed()
+    );
+    println!(
+        "  {}",
+        format!("Done in {}", format_elapsed(start.elapsed())).dimmed()
+    );
+}
+
+pub fn print_review_result(
+    result: &crate::review::ReviewResult,
+    no_copy: bool,
+    start: std::time::Instant,
+) {
+    println!();
+    println!(
+        "  {}  {}",
+        "supp review".bold().cyan(),
+        result.label.dimmed()
+    );
+    println!("  {}", "─".repeat(40).dimmed());
+    println!();
+
+    if result.files.is_empty() {
+        println!("  {}", "No changes found.".dimmed());
+    } else {
+        println!("{}", "Changed files".bold());
+        for file in &result.files {
+            println!(
+                "  - {}  {}  +{} -{}",
+                file.path,
+                file.status.dimmed(),
+                file.additions.to_string().green(),
+                file.deletions.to_string().red()
+            );
+        }
+        println!();
+    }
+
+    print_list("Likely test files", &result.likely_test_files);
+    print_list("Focused commands", &result.focused_commands);
+    print_list("Warnings", &result.warnings);
+
+    if !result.docs_mentions.is_empty() {
+        println!("{}", "Potential docs/comments context".bold());
+        for item in result.docs_mentions.iter().take(8) {
+            println!(
+                "  - {}:{} [{}] {}",
+                item.file, item.line, item.kind, item.text
+            );
+        }
+        println!();
+    }
+
+    print_footer(&result.patch, no_copy, start, None, false);
+}
+
 pub fn print_tests_for_result(
     result: &crate::tests_for::TestsForResult,
     start: std::time::Instant,
@@ -1109,39 +1219,6 @@ pub fn print_tests_for_result(
     print_list("Likely test files", &result.likely_test_files);
     print_list("Focused commands", &result.focused_commands);
     print_list("Warnings", &result.warnings);
-    println!();
-    println!(
-        "  {}",
-        format!("Done in {}", format_elapsed(start.elapsed())).dimmed()
-    );
-}
-
-pub fn print_validate_result(result: &crate::validate::ValidateResult, start: std::time::Instant) {
-    println!();
-    println!(
-        "  {}  validate  {}",
-        "supp".bold().cyan(),
-        result.target.bold()
-    );
-    println!("  {}", "─".repeat(40).dimmed());
-    println!();
-    print_list("Commands", &result.commands);
-    print_list("Warnings", &result.warnings);
-    if result.ran {
-        println!(
-            "Ran: yes  exit: {}",
-            result
-                .exit_code
-                .map(|c| c.to_string())
-                .unwrap_or_else(|| "signal".to_string())
-        );
-        if let Some(output) = &result.output {
-            println!();
-            println!("{}", output);
-        }
-    } else if !result.commands.is_empty() {
-        println!("Run with {} to execute the first command.", "--run".bold());
-    }
     println!();
     println!(
         "  {}",

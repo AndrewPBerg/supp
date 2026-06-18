@@ -1,12 +1,13 @@
-# supp tests-for
+# supp tests
 
 Find the likely validation surface for a file, symbol, or current git changes. This bridges code context to test context: "if I change this, what should I run?"
 
-Alias: `supp test-map`.
+Aliases: `supp tests-for`, `supp test-map`.
 
 ## Usage
 
 ```
+supp [-n] tests [TARGET] [OPTIONS]
 supp [-n] tests-for [TARGET] [OPTIONS]
 supp [-n] test-map [TARGET] [OPTIONS]
 ```
@@ -36,13 +37,13 @@ supp [-n] test-map [TARGET] [OPTIONS]
 
 ```bash
 # Tests likely covering a file
-supp -n tests-for src/auth/session.py
+supp -n tests src/auth/session.py
 
 # Resolve a symbol first, then infer tests
-supp -n tests-for create_session
+supp -n tests create_session
 
 # Infer tests for current changed files
-supp -n tests-for --diff
+supp -n tests --diff
 ```
 
 ## Notes

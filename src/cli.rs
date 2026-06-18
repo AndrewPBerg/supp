@@ -136,36 +136,67 @@ pub enum Commands {
         dot: bool,
     },
 
-    /// Summarize repository identity: languages, tools, tests, entrypoints, instructions
-    Project,
+    /// Summarize project configuration: languages, tools, tests, entrypoints, instructions
+    #[command(alias = "project")]
+    Config,
+
+    /// List discovered build, test, lint, and eval commands
+    #[command(name = "commands", alias = "cmds")]
+    CommandList,
+
+    /// Search docs, docstrings, and inline comments for contextual hints
+    Docs {
+        /// Search query (free-form text, split into tokens)
+        query: Vec<String>,
+
+        /// Maximum number of matches to show
+        #[arg(short = 'l', long = "limit", default_value = "20")]
+        limit: usize,
+    },
+
+    /// Reviewer-focused diff packet with related tests and docs/comments context
+    Review {
+        /// Path or registered repo name (defaults to '.')
+        path: Option<String>,
+
+        /// Untracked files only
+        #[arg(short = 'u', long)]
+        untracked: bool,
+
+        /// Unstaged changes to tracked files
+        #[arg(short = 't', long)]
+        tracked: bool,
+
+        /// Staged changes only
+        #[arg(short = 's', long)]
+        staged: bool,
+
+        /// All local changes vs self branch remote
+        #[arg(short = 'l', long)]
+        local: bool,
+
+        /// All branch changes vs remote default main (default behavior)
+        #[arg(short = 'a', long)]
+        all: bool,
+
+        /// Branch to compare to (used with -a)
+        #[arg(short = 'b', long)]
+        branch: Option<String>,
+
+        /// Number of context lines in unified diff output
+        #[arg(short = 'U', long = "unified")]
+        context_lines: Option<u32>,
+    },
 
     /// Find likely tests and focused validation commands for a file, symbol, or current diff
-    #[command(name = "tests-for", alias = "test-map")]
-    TestsFor {
+    #[command(name = "tests", aliases = ["tests-for", "test-map"])]
+    Tests {
         /// File path or symbol name to map to tests
         target: Option<String>,
 
         /// Infer tests for changed files from git status
         #[arg(long)]
         diff: bool,
-    },
-
-    /// Suggest or run the narrowest validation command for a target or changed files
-    Validate {
-        /// File path or symbol name to validate
-        target: Option<String>,
-
-        /// Infer validation commands for changed files from git status
-        #[arg(long)]
-        changed: bool,
-
-        /// Prefer fastest useful project-level validation
-        #[arg(long)]
-        fast: bool,
-
-        /// Run the first suggested command instead of only printing it
-        #[arg(long)]
-        run: bool,
     },
 
     /// Find TODO, FIXME, HACK, and XXX comments across the codebase
@@ -818,21 +849,54 @@ mod tests {
     }
 
     #[test]
-    fn project_subcommand() {
+    fn config_subcommand() {
+        let cli = parse(&["supp", "config"]).unwrap();
+        assert!(matches!(cli.command, Some(Commands::Config)));
+    }
+
+    #[test]
+    fn project_alias() {
         let cli = parse(&["supp", "project"]).unwrap();
-        assert!(matches!(cli.command, Some(Commands::Project)));
+        assert!(matches!(cli.command, Some(Commands::Config)));
     }
 
     #[test]
-    fn tests_for_subcommand() {
+    fn tests_subcommand() {
+        let cli = parse(&["supp", "tests", "src/main.rs"]).unwrap();
+        assert!(matches!(cli.command, Some(Commands::Tests { .. })));
+    }
+
+    #[test]
+    fn tests_for_alias() {
         let cli = parse(&["supp", "tests-for", "src/main.rs"]).unwrap();
-        assert!(matches!(cli.command, Some(Commands::TestsFor { .. })));
+        assert!(matches!(cli.command, Some(Commands::Tests { .. })));
     }
 
     #[test]
-    fn validate_subcommand() {
-        let cli = parse(&["supp", "validate", "--changed", "--fast"]).unwrap();
-        assert!(matches!(cli.command, Some(Commands::Validate { .. })));
+    fn commands_subcommand() {
+        let cli = parse(&["supp", "commands"]).unwrap();
+        assert!(matches!(cli.command, Some(Commands::CommandList)));
+    }
+
+    #[test]
+    fn docs_subcommand() {
+        let cli = parse(&["supp", "docs", "auth", "flow"]).unwrap();
+        match cli.command {
+            Some(Commands::Docs { query, limit }) => {
+                assert_eq!(query, vec!["auth", "flow"]);
+                assert_eq!(limit, 20);
+            }
+            _ => panic!("expected docs"),
+        }
+    }
+
+    #[test]
+    fn review_subcommand() {
+        let cli = parse(&["supp", "review", "-t"]).unwrap();
+        match cli.command {
+            Some(Commands::Review { tracked, .. }) => assert!(tracked),
+            _ => panic!("expected review"),
+        }
     }
 
     #[test]
