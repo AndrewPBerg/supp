@@ -49,6 +49,15 @@ supp why handle_request
 
 # Pick files interactively with fzf
 supp pick
+
+# Visualize file dependencies
+supp deps src/main.rs -R -d 2
+
+# Find TODO/FIXME/HACK/XXX comments
+supp todo -B
+
+# Fit context to a token budget
+supp --budget 8000 src/
 ```
 
 Add `-n` to any command to print output without copying to clipboard.
@@ -62,17 +71,20 @@ Add `-n` to any command to print output without copying to clipboard.
 | `supp tree` | Project layout with git status markers |
 | `supp sym <query>` | Find functions, types, and constants by name |
 | `supp why <symbol>` | Explain a symbol — definition, call sites, and dependencies |
+| `supp deps [path]` | Visualize file-level dependency/import relationships |
 | `supp pick` | Interactive file picker (requires fzf) |
 | `supp config` | Small repo identity summary: stack, tests, commands, entrypoints |
 | `supp commands` | List discovered build, test, lint, eval, and benchmark commands |
 | `supp tests <target>` | Find likely test files and focused validation commands |
 | `supp docs <query>` | Search docs, docstrings, and comments for context |
 | `supp review` | Reviewer-focused diff packet with tests and docs context |
+| `supp todo` | Find TODO, FIXME, HACK, and XXX comments, optionally with blame/context |
 | `supp perf [mode]` | Set or check the global performance mode |
 | `supp clean-cache` | Delete the symbol cache for a project |
+| `supp completions <shell>` | Generate shell completions (bash, zsh, fish) |
+| `supp version` / `update` / `uninstall` | Manage the installed supp binary |
 
 > **NOTE:** `supp pick` requires [fzf](https://github.com/junegunn/fzf) to be installed and available on your `PATH`. Install it via your package manager (e.g. `brew install fzf`, `winget install fzf`, `pacman -S fzf`, `xbps-install fzf`) before using this command.
-| `supp completions <shell>` | Generate shell completions (bash, zsh, fish) |
 
 ## Useful flags
 
@@ -80,9 +92,12 @@ Add `-n` to any command to print output without copying to clipboard.
 |------|-------|-------------|
 | `--no-copy` | `-n` | Print only, skip clipboard |
 | `--json` | | Output as JSON (machine-readable) |
+| `--no-color` | | Disable ANSI colors |
 | `--regex` | `-r` | Filter paths by regex |
 | `--slim` | | Reduce noise: strip comments, collapse blanks |
 | `--map` | `-m` | Outline mode: signatures, types, and API surface only |
+| `--map-threshold` | | In map mode, keep only symbols above an importance percentile |
+| `--budget` | | Fit output to a token budget by choosing full/slim/map per file |
 | `--depth` | `-d` | Limit tree depth |
 | `--perf` | `-p` | Override performance mode for this command |
 
@@ -94,6 +109,7 @@ Detailed usage for each command:
 - [Diff](https://github.com/AndrewPBerg/supp/blob/main/docs/diff.md) — git diffs and comparison modes
 - [Sym](https://github.com/AndrewPBerg/supp/blob/main/docs/sym.md) — finding symbols by name
 - [Why](https://github.com/AndrewPBerg/supp/blob/main/docs/why.md) — deep-diving a symbol
+- [Deps](https://github.com/AndrewPBerg/supp/blob/main/docs/deps.md) — file-level dependency graphs
 - [Tree](https://github.com/AndrewPBerg/supp/blob/main/docs/tree.md) — directory tree
 - [Examples](https://github.com/AndrewPBerg/supp/blob/main/docs/examples.md) — workflows and multi-language demos
 - [Config file](https://github.com/AndrewPBerg/supp/blob/main/docs/config.md) — supp configuration
@@ -102,6 +118,9 @@ Detailed usage for each command:
 - [Tests](https://github.com/AndrewPBerg/supp/blob/main/docs/tests.md) — likely tests and focused validation commands
 - [Docs](https://github.com/AndrewPBerg/supp/blob/main/docs/docs.md) — docs/docstring/comment search
 - [Review](https://github.com/AndrewPBerg/supp/blob/main/docs/review.md) — reviewer-focused diff packets
+- [Todo](https://github.com/AndrewPBerg/supp/blob/main/docs/todo.md) — TODO/FIXME/HACK/XXX discovery
+- [Completions & fzf](https://github.com/AndrewPBerg/supp/blob/main/docs/completions.md) — shell completions and interactive picking
+- [Claude Code skills](https://github.com/AndrewPBerg/supp/blob/main/docs/skills.md) — bundled slash-command skills
 - [Performance](https://github.com/AndrewPBerg/supp/blob/main/docs/perf.md) — performance modes for large codebases
 
 ## Claude Code integration
@@ -115,6 +134,7 @@ supp ships with [Claude Code skills](https://docs.anthropic.com/en/docs/claude-c
 | `/tree` | See project layout with git status |
 | `/sym <query>` | Find a symbol by name |
 | `/why <symbol>` | Explain a symbol — definition, call sites, dependencies |
+| `/deps [path]` | Visualize file-level dependency relationships |
 
 ### Suggested prompts
 
