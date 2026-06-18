@@ -56,10 +56,10 @@ pub fn analyze(
     let mut warnings = BTreeSet::new();
 
     for t in &targets {
-        for f in likely_tests_for_file(t, &files) {
+        for f in likely_tests_for_file(&root_path, t, &files) {
             tests.insert(f);
         }
-        for cmd in validation_commands_for_file(t, &project_info) {
+        for cmd in validation_commands_for_file(&root_path, t, &project_info) {
             commands.insert(cmd);
         }
     }
@@ -94,8 +94,8 @@ pub fn analyze(
     })
 }
 
-fn likely_tests_for_file(target: &str, files: &[String]) -> Vec<String> {
-    if project::is_test_file(target) {
+fn likely_tests_for_file(root: &Path, target: &str, files: &[String]) -> Vec<String> {
+    if project::is_test_file(target) || has_inline_rust_tests(root, target) {
         return vec![target.to_string()];
     }
 
@@ -129,13 +129,22 @@ fn likely_tests_for_file(target: &str, files: &[String]) -> Vec<String> {
 }
 
 fn validation_commands_for_file(
+    root: &Path,
     target: &str,
     project_info: &project::ProjectResult,
 ) -> Vec<String> {
     let mut commands = Vec::new();
     let dir = project::package_dir(target);
     if target.ends_with(".rs") || project_info.package_managers.iter().any(|p| p == "cargo") {
-        commands.push("cargo test".to_string());
+        if has_inline_rust_tests(root, target) {
+            if let Some(stem) = Path::new(target).file_stem().and_then(|s| s.to_str()) {
+                commands.push(format!("cargo test {stem}"));
+            } else {
+                commands.push("cargo test".to_string());
+            }
+        } else {
+            commands.push("cargo test".to_string());
+        }
     }
     if target.ends_with(".go") || project_info.package_managers.iter().any(|p| p == "go") {
         commands.push(format!(
@@ -180,6 +189,16 @@ fn validation_commands_for_file(
     commands.sort();
     commands.dedup();
     commands
+}
+
+fn has_inline_rust_tests(root: &Path, target: &str) -> bool {
+    if !target.ends_with(".rs") {
+        return false;
+    }
+    let Ok(content) = std::fs::read_to_string(root.join(target)) else {
+        return false;
+    };
+    content.contains("#[cfg(test)]") || content.contains("#[test]")
 }
 
 fn changed_files(root: &Path) -> anyhow::Result<Vec<String>> {
