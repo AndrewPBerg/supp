@@ -877,6 +877,9 @@ mod tests {
 
     #[test]
     fn get_diff_uses_jj_working_copy_diff() {
+        if Command::new("jj").arg("--version").output().is_err() {
+            return;
+        }
         let dir = TempDir::new().unwrap();
         let output = Command::new("jj")
             .args(["git", "init", "."])
