@@ -743,7 +743,7 @@ pub fn print_sym_results(
                 plain,
                 " {} {:<width_name$}  {:<width_file$}  {}",
                 tag,
-                &display_names[idx],
+                display_names[idx],
                 location,
                 sym.signature,
                 width_name = max_name,
