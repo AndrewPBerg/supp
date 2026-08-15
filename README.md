@@ -67,7 +67,7 @@ Add `-n` to any command to print output without copying to clipboard.
 | Command | What it does |
 |---------|-------------|
 | `supp <paths>` | Bundle files into structured context with token estimate |
-| `supp diff` | Git diff with file tree, line counts, and full patches |
+| `supp diff` | Git or Jujutsu diff with file tree, line counts, and full patches |
 | `supp tree` | Project layout with git status markers |
 | `supp sym <query>` | Find functions, types, and constants by name |
 | `supp why <symbol>` | Explain a symbol — definition, call sites, and dependencies |

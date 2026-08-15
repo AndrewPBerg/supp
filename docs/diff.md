@@ -44,6 +44,10 @@ supp [-n] diff [PATH] [OPTIONS]
 | `supp diff -a` | default branch ... current branch (explicit) |
 | `supp diff -a -b develop` | develop ... current branch |
 
+## Jujutsu repositories
+
+When run inside a Jujutsu repository, `supp diff` uses `jj diff --git` and compares the working copy (`@`) with its parent (`@-`). Jujutsu has no staging area, so `-s` is unavailable; `-t` is equivalent to the default working-copy diff, and `-u` shows newly added files.
+
 ## Example output
 
 ```

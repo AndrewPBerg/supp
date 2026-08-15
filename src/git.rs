@@ -102,6 +102,32 @@ fn try_run_git(dir: &Path, args: &[&str]) -> Option<String> {
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
 }
 
+fn try_jj_root(dir: &Path) -> Option<PathBuf> {
+    Command::new("jj")
+        .args(["root"])
+        .current_dir(dir)
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| PathBuf::from(String::from_utf8_lossy(&o.stdout).trim()))
+}
+
+fn run_jj(dir: &Path, args: &[&str]) -> Result<String> {
+    let output = Command::new("jj")
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .map_err(|e| anyhow!("failed to run jj: {}", e))?;
+    if !output.status.success() {
+        return Err(anyhow!(
+            "jj {} failed: {}",
+            args.first().unwrap_or(&""),
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
 /// Discover a git repository from `path`. Returns `Ok(None)` if not inside a repo.
 fn discover_repo(path: &str) -> Result<Option<(gix::Repository, PathBuf)>> {
     let p = Path::new(path);
@@ -415,10 +441,19 @@ pub(crate) fn apply_regex_filter(files: Vec<FileEntry>, pattern: &str) -> Result
 // ── Public diff entry point ─────────────────────────────────────────
 
 pub fn get_diff(repo_path: &str, opts: DiffOptions, regex: Option<&str>) -> Result<DiffResult> {
-    let (_, repo_dir) =
-        discover_repo(repo_path)?.ok_or_else(|| anyhow!("not a git repository: {}", repo_path))?;
-
-    let mut result = get_diff_inner(&repo_dir, opts)?;
+    let requested = Path::new(repo_path);
+    let requested_dir = if requested.is_file() {
+        requested.parent().unwrap_or(requested)
+    } else {
+        requested
+    };
+    let mut result = if let Some(repo_dir) = try_jj_root(requested_dir) {
+        get_jj_diff(&repo_dir, opts)?
+    } else {
+        let (_, repo_dir) = discover_repo(repo_path)?
+            .ok_or_else(|| anyhow!("not a git or jj repository: {}", repo_path))?;
+        get_diff_inner(&repo_dir, opts)?
+    };
 
     if let Some(pattern) = regex {
         result.files = apply_regex_filter(result.files, pattern)?;
@@ -426,6 +461,80 @@ pub fn get_diff(repo_path: &str, opts: DiffOptions, regex: Option<&str>) -> Resu
     }
 
     Ok(result)
+}
+
+fn get_jj_diff(repo_dir: &Path, opts: DiffOptions) -> Result<DiffResult> {
+    let is_branch_comparison = opts.branch.is_some();
+    if opts.staged {
+        return Err(anyhow!(
+            "jj has no staging area; use `supp diff -t` or `supp diff`"
+        ));
+    }
+
+    let mut args = vec!["diff".to_string(), "--git".to_string()];
+    if let Some(lines) = opts.context_lines {
+        args.extend(["--context".to_string(), lines.to_string()]);
+    }
+    let label = if let Some(branch) = opts.branch {
+        args.extend(["-r".to_string(), format!("{branch}..@")]);
+        format!("{} ... @", branch)
+    } else if opts.local {
+        "@- ... @".into()
+    } else if opts.untracked {
+        "New files".into()
+    } else {
+        "Working copy changes (@- ... @)".into()
+    };
+    let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    let text = run_jj(repo_dir, &arg_refs)?;
+    let mut files = jj_diff_entries(&text);
+    if opts.untracked {
+        files.retain(|f| matches!(f.status, DeltaStatus::Added));
+    }
+    let text = files.iter().map(|f| f.patch.as_str()).collect();
+
+    Ok(DiffResult {
+        label,
+        files,
+        text,
+        has_conflicts: false,
+        is_branch_comparison,
+        commit_count: None,
+        stale_check: None,
+    })
+}
+
+fn jj_diff_entries(full_patch: &str) -> Vec<FileEntry> {
+    let patches = split_diff_per_file(full_patch);
+    let mut files: Vec<FileEntry> = patches
+        .into_iter()
+        .map(|(path, (patch, additions, deletions))| {
+            let status = if patch.contains("new file mode") {
+                DeltaStatus::Added
+            } else if patch.contains("deleted file mode") {
+                DeltaStatus::Deleted
+            } else if patch.contains("rename from ") {
+                DeltaStatus::Renamed
+            } else {
+                DeltaStatus::Modified
+            };
+            let old_path = patch.lines().find_map(|line| {
+                line.strip_prefix("rename from ")
+                    .map(String::from)
+                    .or_else(|| line.strip_prefix("--- a/").map(String::from))
+            });
+            FileEntry {
+                path,
+                old_path,
+                status,
+                additions,
+                deletions,
+                patch,
+            }
+        })
+        .collect();
+    files.sort_by(|a, b| a.path.cmp(&b.path));
+    files
 }
 
 // ── Branch comparison with background fetch ─────────────────────────
@@ -764,6 +873,28 @@ mod tests {
 
     fn default_opts() -> DiffOptions {
         DiffOptions::default()
+    }
+
+    #[test]
+    fn get_diff_uses_jj_working_copy_diff() {
+        let dir = TempDir::new().unwrap();
+        let output = Command::new("jj")
+            .args(["git", "init", "."])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        fs::write(dir.path().join("new.txt"), "hello\n").unwrap();
+
+        let result = get_diff(dir.path().to_str().unwrap(), default_opts(), None).unwrap();
+        assert_eq!(result.label, "Working copy changes (@- ... @)");
+        assert_eq!(result.files.len(), 1);
+        assert_eq!(result.files[0].path, "new.txt");
+        assert_eq!(result.files[0].status, DeltaStatus::Added);
     }
 
     // ── get_status_map ───────────────────────────────────────────
@@ -1468,7 +1599,7 @@ mod tests {
         let result = get_diff(dir.path().to_str().unwrap(), opts, None);
         assert!(result.is_err());
         let err = result.err().unwrap().to_string();
-        assert!(err.contains("not a git repository"), "got: {}", err);
+        assert!(err.contains("not a git or jj repository"), "got: {}", err);
     }
 
     // ── run_diff with deletions ──────────────────────────────────

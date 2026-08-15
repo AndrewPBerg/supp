@@ -55,7 +55,7 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Commands {
-    /// Git diff with file tree, line counts, and full patch context
+    /// Git or Jujutsu diff with file tree, line counts, and full patch context
     Diff {
         /// Path or registered repo name (defaults to '.')
         path: Option<String>,
